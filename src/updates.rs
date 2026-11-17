@@ -11,12 +11,7 @@ pub const CONFIG: UpdateConfig = UpdateConfig {
     mac_target: MacTarget::Arm64Only,
     prereleases: fastframe_update::Prereleases::WhenRunningPrerelease,
     publisher_key: Some(include_str!("../packaging/update-public-key.hex")),
-    ..UpdateConfig::new(
-        "MaxTheTurtle0/wren",
-        "Wren",
-        "wren",
-        env!("CARGO_PKG_VERSION"),
-    )
+    ..UpdateConfig::new("gkachru/wren", "Wren", "wren", env!("CARGO_PKG_VERSION"))
 };
 
 #[derive(Debug, Default)]
@@ -85,7 +80,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("GET")).and(path("/latest.json"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "tag_name": "v0.1.1", "html_url": "https://github.com/MaxTheTurtle0/wren/releases/tag/v0.1.1"
+                "tag_name": "v0.1.1", "html_url": "https://github.com/gkachru/wren/releases/tag/v0.1.1"
             }))).expect(1).mount(&server).await;
         let uri = server.uri();
         let release = tokio::task::spawn_blocking(move || {

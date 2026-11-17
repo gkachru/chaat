@@ -47,8 +47,10 @@ updates to normal users; Wren reports the failed check in Settings.
    must match it exactly, such as `v0.1.0`.
 2. Ensure the GitHub repository secret `UPDATE_SIGNING_KEY` holds the PEM
    Ed25519 private key matching `packaging/update-public-key.hex`. Keep a
-   separate secure backup. Never commit the private key. The secret is
-   already configured for this repository.
+   separate secure backup. Never commit the private key. Generate a pair
+   with `openssl genpkey -algorithm ed25519 -out key.pem`; derive the hex
+   file with `openssl pkey -in key.pem -pubout -outform DER | tail -c 32 |
+   od -An -v -tx1 | tr -d ' \n'`.
    For macOS, also configure `MACOS_SIGNING_CERTIFICATE` with the base64
    PKCS#12 export of the persistent code-signing certificate and private key,
    and `MACOS_SIGNING_PASSWORD` with its export password. Use a Developer ID

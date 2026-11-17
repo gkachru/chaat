@@ -689,7 +689,7 @@ fn settings(app: &mut App, ctx: &egui::Context) {
                         actions.push(Action::CheckUpdate);
                     }
                     if ui.link("Release notes and downloads").clicked() {
-                        actions.push(Action::OpenUrl("https://github.com/MaxTheTurtle0/wren/releases".into()));
+                        actions.push(Action::OpenUrl("https://github.com/gkachru/wren/releases".into()));
                     }
                 });
                 ui.add_space(8.0);
