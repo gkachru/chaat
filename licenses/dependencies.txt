@@ -2341,7 +2341,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 Boost Software License 1.0 (BSL-1.0)
 
 Used by:
-  clipboard-win 5.4.1 <https://github.com/DoumanAsh/clipboard-win>
+  clipboard-win 5.4.3 <https://github.com/DoumanAsh/clipboard-win>
     Author: Douman <douman@gmx.se>
     Source: registry+https://github.com/rust-lang/crates.io-index
   error-code 3.4.0 <https://github.com/DoumanAsh/error-code>
@@ -2377,7 +2377,7 @@ DEALINGS IN THE SOFTWARE.
 Creative Commons Zero v1.0 Universal (CC0-1.0)
 
 Used by:
-  notify 8.2.0 <https://github.com/notify-rs/notify.git>
+  notify 8.2.2 <https://github.com/notify-rs/notify.git>
     Author: Félix Saparelli <me@passcod.name>
     Author: Daniel Faust <hessijames@gmail.com>
     Author: Aron Heinecke <Ox0p54r36@t-online.de>
@@ -3054,7 +3054,7 @@ THIS SOFTWARE.
 ISC License (ISC)
 
 Used by:
-  rustls-webpki 0.103.15 <https://github.com/rustls/webpki>
+  rustls-webpki 0.103.17 <https://github.com/rustls/webpki>
     Source: registry+https://github.com/rust-lang/crates.io-index
 
 Except as otherwise noted, this project is licensed under the following
@@ -3571,14 +3571,14 @@ DEALINGS IN THE SOFTWARE.
 MIT License (MIT)
 
 Used by:
-  cc 1.7.0 <https://github.com/rust-lang/cc-rs>
+  cc 1.11.2 <https://github.com/rust-lang/cc-rs>
     Source: registry+https://github.com/rust-lang/crates.io-index
   cfg-if 1.0.5 <https://github.com/rust-lang/cfg-if>
     Author: Alex Crichton <alex@alexcrichton.com>
     Source: registry+https://github.com/rust-lang/crates.io-index
-  find-msvc-tools 0.1.14 <https://github.com/rust-lang/cc-rs>
+  find-msvc-tools 0.1.15 <https://github.com/rust-lang/cc-rs>
     Source: registry+https://github.com/rust-lang/crates.io-index
-  openssl-probe 0.2.1 <https://github.com/rustls/openssl-probe>
+  openssl-probe 0.2.2 <https://github.com/rustls/openssl-probe>
     Author: Alex Crichton <alex@alexcrichton.com>
     Source: registry+https://github.com/rust-lang/crates.io-index
   pkg-config 0.3.34 <https://github.com/rust-lang/pkg-config-rs>
@@ -3623,7 +3623,7 @@ DEALINGS IN THE SOFTWARE.
 MIT License (MIT)
 
 Used by:
-  mio 1.2.4 <https://github.com/tokio-rs/mio>
+  mio 1.2.5 <https://github.com/tokio-rs/mio>
     Author: Carl Lerche <me@carllerche.com>
     Author: Thomas de Zeeuw <thomasdezeeuw@gmail.com>
     Author: Tokio Contributors <team@tokio.rs>
@@ -3654,7 +3654,7 @@ THE SOFTWARE.
 MIT License (MIT)
 
 Used by:
-  errno 0.3.14 <https://github.com/lambda-fairy/rust-errno>
+  errno 0.3.15 <https://github.com/lambda-fairy/rust-errno>
     Author: Chris Wong <lambda.fairy@gmail.com>
     Author: Dan Gohman <dev@sunfishcode.online>
     Source: registry+https://github.com/rust-lang/crates.io-index
@@ -3690,7 +3690,7 @@ DEALINGS IN THE SOFTWARE.
 MIT License (MIT)
 
 Used by:
-  mime 0.3.17 <https://github.com/hyperium/mime>
+  mime 0.3.18 <https://github.com/hyperium/mime>
     Author: Sean McArthur <sean@seanmonstar.com>
     Source: registry+https://github.com/rust-lang/crates.io-index
 
@@ -3726,7 +3726,7 @@ Used by:
   bitflags 2.13.2 <https://github.com/bitflags/bitflags>
     Author: The Rust Project Developers
     Source: registry+https://github.com/rust-lang/crates.io-index
-  log 0.4.34 <https://github.com/rust-lang/log>
+  log 0.4.35 <https://github.com/rust-lang/log>
     Author: The Rust Project Developers
     Source: registry+https://github.com/rust-lang/crates.io-index
   num-bigint 0.4.8 <https://github.com/rust-num/num-bigint>
@@ -3782,10 +3782,7 @@ DEALINGS IN THE SOFTWARE.
 MIT License (MIT)
 
 Used by:
-  uuid 1.28.0 <https://github.com/uuid-rs/uuid>
-    Author: Ashley Mannix<ashleymannix@live.com.au>
-    Author: Dylan DPC<dylan.dpc@gmail.com>
-    Author: Hunar Roop Kahlon<hunar.roop@gmail.com>
+  uuid 1.29.3 <https://github.com/uuid-rs/uuid>
     Source: registry+https://github.com/rust-lang/crates.io-index
 
 Copyright (c) 2014 The Rust Project Developers
@@ -3820,10 +3817,10 @@ DEALINGS IN THE SOFTWARE.
 MIT License (MIT)
 
 Used by:
-  libsqlite3-sys 0.38.2 <https://github.com/rusqlite/rusqlite>
+  libsqlite3-sys 0.40.0 <https://github.com/rusqlite/rusqlite>
     Author: The rusqlite developers
     Source: registry+https://github.com/rust-lang/crates.io-index
-  rusqlite 0.40.2 <https://github.com/rusqlite/rusqlite>
+  rusqlite 0.43.0 <https://github.com/rusqlite/rusqlite>
     Author: The rusqlite developers
     Source: registry+https://github.com/rust-lang/crates.io-index
 
@@ -3911,7 +3908,7 @@ IN THE SOFTWARE.
 MIT License (MIT)
 
 Used by:
-  flate2 1.1.10 <https://github.com/rust-lang/flate2-rs>
+  flate2 1.1.11 <https://github.com/rust-lang/flate2-rs>
     Author: Alex Crichton <alex@alexcrichton.com>
     Author: Josh Triplett <josh@joshtriplett.org>
     Source: registry+https://github.com/rust-lang/crates.io-index
@@ -4307,7 +4304,7 @@ DEALINGS IN THE SOFTWARE.
 MIT License (MIT)
 
 Used by:
-  schannel 0.1.29 <https://github.com/steffengy/schannel-rs>
+  schannel 0.1.30 <https://github.com/steffengy/schannel-rs>
     Author: Steven Fackler <sfackler@gmail.com>
     Author: Steffen Butzer <steffen.butzer@outlook.com>
     Source: registry+https://github.com/rust-lang/crates.io-index
@@ -4325,7 +4322,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 MIT License (MIT)
 
 Used by:
-  fixedbitset 0.5.7 <https://github.com/petgraph/fixedbitset>
+  fixedbitset 0.5.9 <https://github.com/petgraph/fixedbitset>
     Author: bluss
     Source: registry+https://github.com/rust-lang/crates.io-index
 
@@ -4586,7 +4583,7 @@ MIT License (MIT)
 Used by:
   hyper-rustls 0.27.10 <https://github.com/rustls/hyper-rustls>
     Source: registry+https://github.com/rust-lang/crates.io-index
-  rustls-native-certs 0.8.4 <https://github.com/rustls/rustls-native-certs>
+  rustls-native-certs 0.8.5 <https://github.com/rustls/rustls-native-certs>
     Source: registry+https://github.com/rust-lang/crates.io-index
   rustls 0.23.46 <https://github.com/rustls/rustls>
     Source: registry+https://github.com/rust-lang/crates.io-index
@@ -4831,7 +4828,7 @@ DEALINGS IN THE SOFTWARE.
 MIT License (MIT)
 
 Used by:
-  equivalent 1.0.2 <https://github.com/indexmap-rs/equivalent>
+  equivalent 1.0.3 <https://github.com/indexmap-rs/equivalent>
     Source: registry+https://github.com/rust-lang/crates.io-index
 
 Copyright (c) 2016--2023
@@ -4968,7 +4965,7 @@ Used by:
   sha1 0.11.0 <https://github.com/RustCrypto/hashes>
     Author: RustCrypto Developers
     Source: registry+https://github.com/rust-lang/crates.io-index
-  sha2 0.11.0 <https://github.com/RustCrypto/hashes>
+  sha2 0.11.1 <https://github.com/RustCrypto/hashes>
     Author: RustCrypto Developers
     Source: registry+https://github.com/rust-lang/crates.io-index
 
@@ -5277,7 +5274,7 @@ THE SOFTWARE.
 MIT License (MIT)
 
 Used by:
-  ron 0.12.2 <https://github.com/ron-rs/ron>
+  ron 0.12.3 <https://github.com/ron-rs/ron>
     Author: Christopher Durham <cad97@cad97.com>
     Author: Dzmitry Malyshau <kvarkus@gmail.com>
     Author: Thomas Schaller <torkleyy@gmail.com>
@@ -5378,6 +5375,41 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+
+===============================================================================
+MIT License (MIT)
+
+Used by:
+  arc-swap 1.9.5 <https://github.com/vorner/arc-swap>
+    Author: Michal 'vorner' Vaner <vorner@vorner.cz>
+    Source: registry+https://github.com/rust-lang/crates.io-index
+
+Copyright (c) 2017 arc-swap developers
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
 
 
 ===============================================================================
@@ -5744,7 +5776,7 @@ DEALINGS IN THE SOFTWARE.
 MIT License (MIT)
 
 Used by:
-  smallvec 1.16.3 <https://github.com/servo/rust-smallvec>
+  smallvec 1.16.5 <https://github.com/servo/rust-smallvec>
     Author: The Servo Project Developers
     Source: registry+https://github.com/rust-lang/crates.io-index
 
@@ -6159,7 +6191,7 @@ THE SOFTWARE.
 MIT License (MIT)
 
 Used by:
-  aes 0.9.3 <https://github.com/RustCrypto/block-ciphers>
+  aes 0.9.4 <https://github.com/RustCrypto/block-ciphers>
     Author: RustCrypto Developers
     Source: registry+https://github.com/rust-lang/crates.io-index
 
@@ -6340,7 +6372,7 @@ DEALINGS IN THE SOFTWARE.
 MIT License (MIT)
 
 Used by:
-  zeroize 1.9.1 <https://github.com/RustCrypto/utils>
+  zeroize 1.9.2 <https://github.com/RustCrypto/utils>
     Author: The RustCrypto Project Developers
     Source: registry+https://github.com/rust-lang/crates.io-index
 
@@ -6446,7 +6478,7 @@ DEALINGS IN THE SOFTWARE.
 MIT License (MIT)
 
 Used by:
-  font-types 0.12.6 <https://github.com/googlefonts/fontations>
+  font-types 0.12.7 <https://github.com/googlefonts/fontations>
     Source: registry+https://github.com/rust-lang/crates.io-index
   read-fonts 0.41.0 <https://github.com/googlefonts/fontations>
     Source: registry+https://github.com/rust-lang/crates.io-index
@@ -6484,7 +6516,7 @@ DEALINGS IN THE SOFTWARE.
 MIT License (MIT)
 
 Used by:
-  wl-clipboard-rs 0.9.4 <https://github.com/YaLTeR/wl-clipboard-rs>
+  wl-clipboard-rs 0.9.5 <https://github.com/YaLTeR/wl-clipboard-rs>
     Author: Ivan Molodetskikh <yalterz@gmail.com>
     Source: registry+https://github.com/rust-lang/crates.io-index
 
@@ -6880,7 +6912,7 @@ SOFTWARE.
 MIT License (MIT)
 
 Used by:
-  litrs 1.0.0 <https://github.com/LukasKalbertodt/litrs>
+  litrs 1.0.1 <https://github.com/LukasKalbertodt/litrs>
     Author: Lukas Kalbertodt <lukas.kalbertodt@gmail.com>
     Source: registry+https://github.com/rust-lang/crates.io-index
 
@@ -6915,7 +6947,7 @@ DEALINGS IN THE SOFTWARE.
 MIT License (MIT)
 
 Used by:
-  memmap2 0.9.11 <https://github.com/RazrFalcon/memmap2-rs>
+  memmap2 0.9.12 <https://github.com/RazrFalcon/memmap2-rs>
     Author: Dan Burkert <dan@danburkert.com>
     Author: Yevhenii Reizner <razrfalcon@gmail.com>
     Author: The Contributors
@@ -6953,8 +6985,8 @@ DEALINGS IN THE SOFTWARE.
 MIT License (MIT)
 
 Used by:
-  pollster 0.4.0 <https://github.com/zesterer/pollster>
-    Author: Joshua Barretto <joshua.s.barretto@gmail.com>
+  pollster 1.0.2 <https://github.com/zesterer/pollster>
+    Author: Joshua Barretto <joshua@jsbarretto.com>
     Source: registry+https://github.com/rust-lang/crates.io-index
 
 Copyright (c) 2020-2021 Joshua Barretto
@@ -7023,7 +7055,7 @@ DEALINGS IN THE SOFTWARE.
 MIT License (MIT)
 
 Used by:
-  const-oid 0.10.2 <https://github.com/RustCrypto/formats>
+  const-oid 0.10.3 <https://github.com/RustCrypto/formats>
     Author: RustCrypto Developers
     Source: registry+https://github.com/rust-lang/crates.io-index
   cpufeatures 0.3.1 <https://github.com/RustCrypto/utils>
@@ -7226,7 +7258,7 @@ SOFTWARE.
 MIT License (MIT)
 
 Used by:
-  inout 0.2.2 <https://github.com/RustCrypto/utils>
+  inout 0.2.6 <https://github.com/RustCrypto/utils>
     Author: RustCrypto Developers
     Source: registry+https://github.com/rust-lang/crates.io-index
 
@@ -7300,7 +7332,7 @@ DEALINGS IN THE SOFTWARE.
 MIT License (MIT)
 
 Used by:
-  rustls-pki-types 1.15.1 <https://github.com/rustls/pki-types>
+  rustls-pki-types 1.16.0 <https://github.com/rustls/pki-types>
     Source: registry+https://github.com/rust-lang/crates.io-index
 
 Copyright (c) 2023 Dirkjan Ochtman <dirkjan@ochtman.nl>
@@ -7426,7 +7458,7 @@ SOFTWARE.
 MIT License (MIT)
 
 Used by:
-  notify-types 2.1.0 <https://github.com/notify-rs/notify.git>
+  notify-types 2.3.1 <https://github.com/notify-rs/notify.git>
     Author: Daniel Faust <hessijames@gmail.com>
     Source: registry+https://github.com/rust-lang/crates.io-index
 
@@ -7525,7 +7557,7 @@ DEALINGS IN THE SOFTWARE.
 MIT License (MIT)
 
 Used by:
-  deranged 0.5.8 <https://github.com/jhpratt/deranged>
+  deranged 0.5.9 <https://github.com/jhpratt/deranged>
     Author: Jacob Pratt <jacob@jhpratt.dev>
     Source: registry+https://github.com/rust-lang/crates.io-index
 
@@ -7557,20 +7589,31 @@ Used by:
   zbus 5.19.0 <https://github.com/z-galaxy/zbus/>
     Author: Zeeshan Ali Khan <zeeshanak@gnome.org>
     Source: registry+https://github.com/rust-lang/crates.io-index
+  zbus 6.3.0 <https://github.com/z-galaxy/zbus/>
+    Author: Zeeshan Ali Khan <zeeshanak@gnome.org>
+    Source: registry+https://github.com/rust-lang/crates.io-index
   zbus_macros 5.19.0 <https://github.com/z-galaxy/zbus/>
     Author: Marc-André Lureau <marcandre.lureau@redhat.com>
     Author: Zeeshan Ali Khan <zeeshanak@gnome.org>
     Source: registry+https://github.com/rust-lang/crates.io-index
-  zbus_names 4.3.4 <https://github.com/z-galaxy/zbus/>
+  zbus_macros 6.3.0 <https://github.com/z-galaxy/zbus/>
+    Author: Marc-André Lureau <marcandre.lureau@redhat.com>
     Author: Zeeshan Ali Khan <zeeshanak@gnome.org>
+    Source: registry+https://github.com/rust-lang/crates.io-index
+  zbus_names 4.3.5 <https://github.com/z-galaxy/zbus/>
+    Author: Zeeshan Ali Khan <zeeshanak@gnome.org>
+    Source: registry+https://github.com/rust-lang/crates.io-index
+  zbus_utils 6.1.0 <https://github.com/z-galaxy/zbus/>
+    Author: Zeeshan Ali Khan <zeeshanak@gnome.org>
+    Author: turbocooler <turbocooler@cocaine.ninja>
     Source: registry+https://github.com/rust-lang/crates.io-index
   zbus_xml 5.2.1 <https://github.com/z-galaxy/zbus/>
     Author: Zeeshan Ali Khan <zeeshanak@gnome.org>
     Source: registry+https://github.com/rust-lang/crates.io-index
-  zvariant 5.15.0 <https://github.com/z-galaxy/zbus/>
+  zvariant 5.15.1 <https://github.com/z-galaxy/zbus/>
     Author: Zeeshan Ali Khan <zeeshanak@gnome.org>
     Source: registry+https://github.com/rust-lang/crates.io-index
-  zvariant_derive 5.15.0 <https://github.com/z-galaxy/zbus/>
+  zvariant_derive 5.15.1 <https://github.com/z-galaxy/zbus/>
     Author: Zeeshan Ali Khan <zeeshanak@gnome.org>
     Source: registry+https://github.com/rust-lang/crates.io-index
 
@@ -7640,7 +7683,7 @@ DEALINGS IN THE SOFTWARE.
 MIT License (MIT)
 
 Used by:
-  ctutils 0.4.3 <https://github.com/RustCrypto/utils>
+  ctutils 0.4.8 <https://github.com/RustCrypto/utils>
     Author: RustCrypto Developers
     Source: registry+https://github.com/rust-lang/crates.io-index
 
@@ -7675,7 +7718,7 @@ DEALINGS IN THE SOFTWARE.
 MIT License (MIT)
 
 Used by:
-  zcheapstr 1.1.0 <https://github.com/z-galaxy/zcheapstr/>
+  zcheapstr 1.2.0 <https://github.com/z-galaxy/zcheapstr/>
     Author: Zeeshan Ali Khan <zeeshanak@gnome.org>
     Source: registry+https://github.com/rust-lang/crates.io-index
 
@@ -7710,6 +7753,47 @@ DEALINGS IN THE SOFTWARE.
 MIT License (MIT)
 
 Used by:
+  zruntime 0.2.3 <https://github.com/z-galaxy/zruntime>
+    Author: Zeeshan Ali Khan <zeeshanak@gnome.org>
+    Source: registry+https://github.com/rust-lang/crates.io-index
+
+Copyright (c) 2026 Zeeshan Ali Khan & zruntime contributors
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+The broadcast channel (`src/broadcast.rs`), its tests (`src/tests/broadcast.rs`) and its
+benchmark (`benches/broadcast.rs`) come from the async-broadcast crate
+(https://github.com/smol-rs/async-broadcast), under the license above and this notice:
+
+Copyright (c) 2020 Yoshua Wuyts, Stjepan Glavina & Zeeshan Ali Khan
+
+
+===============================================================================
+MIT License (MIT)
+
+Used by:
   anstream 1.0.0 <https://github.com/rust-cli/anstyle.git>
     Source: registry+https://github.com/rust-lang/crates.io-index
   anstyle-parse 1.0.0 <https://github.com/rust-cli/anstyle.git>
@@ -7720,13 +7804,13 @@ Used by:
     Source: registry+https://github.com/rust-lang/crates.io-index
   anstyle 1.0.14 <https://github.com/rust-cli/anstyle.git>
     Source: registry+https://github.com/rust-lang/crates.io-index
-  clap 4.6.7 <https://github.com/clap-rs/clap>
+  clap 4.6.8 <https://github.com/clap-rs/clap>
     Source: registry+https://github.com/rust-lang/crates.io-index
   clap_builder 4.6.7 <https://github.com/clap-rs/clap>
     Source: registry+https://github.com/rust-lang/crates.io-index
-  clap_derive 4.6.7 <https://github.com/clap-rs/clap>
+  clap_derive 4.6.8 <https://github.com/clap-rs/clap>
     Source: registry+https://github.com/rust-lang/crates.io-index
-  clap_lex 1.1.1 <https://github.com/clap-rs/clap>
+  clap_lex 1.1.2 <https://github.com/clap-rs/clap>
     Source: registry+https://github.com/rust-lang/crates.io-index
   colorchoice 1.0.5 <https://github.com/rust-cli/anstyle.git>
     Source: registry+https://github.com/rust-lang/crates.io-index
@@ -7738,13 +7822,13 @@ Used by:
     Source: registry+https://github.com/rust-lang/crates.io-index
   once_cell_polyfill 1.70.2 <https://github.com/polyfill-rs/once_cell_polyfill>
     Source: registry+https://github.com/rust-lang/crates.io-index
-  serde_spanned 1.1.2 <https://github.com/toml-rs/toml>
+  serde_spanned 1.1.3 <https://github.com/toml-rs/toml>
     Source: registry+https://github.com/rust-lang/crates.io-index
-  toml 1.1.8+spec-1.1.0 <https://github.com/toml-rs/toml>
+  toml 1.2.1+spec-1.1.0 <https://github.com/toml-rs/toml>
     Source: registry+https://github.com/rust-lang/crates.io-index
-  toml_datetime 1.1.2+spec-1.1.0 <https://github.com/toml-rs/toml>
+  toml_datetime 1.1.3+spec-1.1.0 <https://github.com/toml-rs/toml>
     Source: registry+https://github.com/rust-lang/crates.io-index
-  toml_edit 0.25.17+spec-1.1.0 <https://github.com/toml-rs/toml>
+  toml_edit 0.25.19+spec-1.1.0 <https://github.com/toml-rs/toml>
     Source: registry+https://github.com/rust-lang/crates.io-index
   toml_parser 1.1.5+spec-1.1.0 <https://github.com/toml-rs/toml>
     Source: registry+https://github.com/rust-lang/crates.io-index
@@ -7837,7 +7921,7 @@ SOFTWARE.
 MIT License (MIT)
 
 Used by:
-  libc 0.2.190 <https://github.com/rust-lang/libc>
+  libc 0.2.191 <https://github.com/rust-lang/libc>
     Source: registry+https://github.com/rust-lang/crates.io-index
 
 Copyright (c) The Rust Project Developers
@@ -7941,7 +8025,7 @@ DEALINGS IN THE SOFTWARE.
 MIT License (MIT)
 
 Used by:
-  winresource 0.1.31 <https://github.com/BenjaminRi/winresource>
+  winresource 0.1.34 <https://github.com/BenjaminRi/winresource>
     Author: Max Resch <resch.max@gmail.com>
     Source: registry+https://github.com/rust-lang/crates.io-index
 
@@ -8046,7 +8130,7 @@ DEALINGS IN THE SOFTWARE.
 MIT License (MIT)
 
 Used by:
-  rand 0.10.3 <https://github.com/rust-random/rand>
+  rand 0.10.4 <https://github.com/rust-random/rand>
     Author: The Rand Project Developers
     Author: The Rust Project Developers
     Source: registry+https://github.com/rust-lang/crates.io-index
@@ -8236,9 +8320,9 @@ DEALINGS IN THE SOFTWARE.
 MIT License (MIT)
 
 Used by:
-  zerocopy-derive 0.8.62 <https://github.com/google/zerocopy>
+  zerocopy-derive 0.8.63 <https://github.com/google/zerocopy>
     Source: registry+https://github.com/rust-lang/crates.io-index
-  zerocopy 0.8.62 <https://github.com/google/zerocopy>
+  zerocopy 0.8.63 <https://github.com/google/zerocopy>
     Source: registry+https://github.com/rust-lang/crates.io-index
 
 Copyright 2023 The Fuchsia Authors
@@ -8273,7 +8357,10 @@ DEALINGS IN THE SOFTWARE.
 MIT License (MIT)
 
 Used by:
-  utf8_iter 1.0.4 <https://github.com/hsivonen/utf8_iter>
+  utf8_iter 1.1.0 <https://github.com/hsivonen/utf8_iter>
+    Author: Henri Sivonen <hsivonen@hsivonen.fi>
+    Source: registry+https://github.com/rust-lang/crates.io-index
+  utf_types 1.0.0 <https://github.com/hsivonen/utf_types>
     Author: Henri Sivonen <hsivonen@hsivonen.fi>
     Source: registry+https://github.com/rust-lang/crates.io-index
 
@@ -8513,7 +8600,7 @@ SOFTWARE.
 MIT License (MIT)
 
 Used by:
-  notify-rust 4.18.2 <https://github.com/hoodie/notify-rust>
+  notify-rust 4.19.0 <https://github.com/hoodie/notify-rust>
     Author: Hendrik Sollich <hendrik@hoodie.de>
     Source: registry+https://github.com/rust-lang/crates.io-index
 
@@ -8606,7 +8693,7 @@ SOFTWARE.
 MIT License (MIT)
 
 Used by:
-  crc32fast 1.5.2 <https://github.com/srijs/rust-crc32fast>
+  crc32fast 1.5.5 <https://github.com/srijs/rust-crc32fast>
     Author: Sam Rijs <srijs@airpost.net>
     Author: Alex Crichton <alex@alexcrichton.com>
     Source: registry+https://github.com/rust-lang/crates.io-index
@@ -8790,7 +8877,7 @@ DEALINGS IN THE SOFTWARE.
 MIT License (MIT)
 
 Used by:
-  rfd 0.17.2 <https://github.com/PolyMeilex/rfd>
+  rfd 0.18.0 <https://github.com/PolyMeilex/rfd>
     Author: Poly <marynczak.bartlomiej@gmail.com>
     Source: registry+https://github.com/rust-lang/crates.io-index
 
@@ -8901,7 +8988,7 @@ SOFTWARE.
 MIT License (MIT)
 
 Used by:
-  rfd 0.17.2 <https://github.com/PolyMeilex/rfd>
+  rfd 0.18.0 <https://github.com/PolyMeilex/rfd>
     Author: Poly <marynczak.bartlomiej@gmail.com>
     Source: registry+https://github.com/rust-lang/crates.io-index
 
@@ -8963,7 +9050,7 @@ SOFTWARE.
 MIT License (MIT)
 
 Used by:
-  arboard 3.6.1 <https://github.com/1Password/arboard>
+  arboard 3.7.0 <https://github.com/1Password/arboard>
     Source: registry+https://github.com/rust-lang/crates.io-index
 
 MIT License
@@ -9262,12 +9349,16 @@ Used by:
     Source: registry+https://github.com/rust-lang/crates.io-index
   objc2-core-graphics 0.3.2 <https://github.com/madsmtm/objc2>
     Source: registry+https://github.com/rust-lang/crates.io-index
+  objc2-core-services 0.3.2 <https://github.com/madsmtm/objc2>
+    Source: registry+https://github.com/rust-lang/crates.io-index
   objc2-encode 4.1.0 <https://github.com/madsmtm/objc2>
     Author: Mads Marquart <mads@marquart.dk>
     Source: registry+https://github.com/rust-lang/crates.io-index
   objc2-foundation 0.2.2 <https://github.com/madsmtm/objc2>
     Source: registry+https://github.com/rust-lang/crates.io-index
   objc2-foundation 0.3.2 <https://github.com/madsmtm/objc2>
+    Source: registry+https://github.com/rust-lang/crates.io-index
+  objc2-uniform-type-identifiers 0.3.2 <https://github.com/madsmtm/objc2>
     Source: registry+https://github.com/rust-lang/crates.io-index
   objc2 0.5.3 <https://github.com/madsmtm/objc2>
     Author: Steven Sheldon
@@ -9307,7 +9398,7 @@ Used by:
   tokio-util 0.7.20 <https://github.com/tokio-rs/tokio>
     Author: Tokio Contributors <team@tokio.rs>
     Source: registry+https://github.com/rust-lang/crates.io-index
-  tokio 1.53.3 <https://github.com/tokio-rs/tokio>
+  tokio 1.54.1 <https://github.com/tokio-rs/tokio>
     Author: Tokio Contributors <team@tokio.rs>
     Source: registry+https://github.com/rust-lang/crates.io-index
 
@@ -9650,14 +9741,14 @@ Used by:
   async-channel 2.5.0 <https://github.com/smol-rs/async-channel>
     Author: Stjepan Glavina <stjepang@gmail.com>
     Source: registry+https://github.com/rust-lang/crates.io-index
-  async-executor 1.14.0 <https://github.com/smol-rs/async-executor>
+  async-executor 1.14.1 <https://github.com/smol-rs/async-executor>
     Author: Stjepan Glavina <stjepang@gmail.com>
     Author: John Nunley <dev@notgull.net>
     Source: registry+https://github.com/rust-lang/crates.io-index
   async-io 2.6.0 <https://github.com/smol-rs/async-io>
     Author: Stjepan Glavina <stjepang@gmail.com>
     Source: registry+https://github.com/rust-lang/crates.io-index
-  async-lock 3.4.2 <https://github.com/smol-rs/async-lock>
+  async-lock 3.5.0 <https://github.com/smol-rs/async-lock>
     Author: Stjepan Glavina <stjepang@gmail.com>
     Source: registry+https://github.com/rust-lang/crates.io-index
   async-process 2.5.0 <https://github.com/smol-rs/async-process>
@@ -9706,7 +9797,7 @@ Used by:
     Author: Stjepan Glavina <stjepang@gmail.com>
     Author: Contributors to futures-rs
     Source: registry+https://github.com/rust-lang/crates.io-index
-  itoa 1.0.18 <https://github.com/dtolnay/itoa>
+  itoa 1.0.19 <https://github.com/dtolnay/itoa>
     Author: David Tolnay <dtolnay@gmail.com>
     Source: registry+https://github.com/rust-lang/crates.io-index
   linux-raw-sys 0.12.1 <https://github.com/sunfishcode/linux-raw-sys>
@@ -9754,9 +9845,12 @@ Used by:
     Author: Dan Gohman <dev@sunfishcode.online>
     Author: Jakub Konka <kubkon@jakubkonka.com>
     Source: registry+https://github.com/rust-lang/crates.io-index
-  rustix 1.1.5 <https://github.com/bytecodealliance/rustix>
+  rustix 1.1.6 <https://github.com/bytecodealliance/rustix>
     Author: Dan Gohman <dev@sunfishcode.online>
     Author: Jakub Konka <kubkon@jakubkonka.com>
+    Source: registry+https://github.com/rust-lang/crates.io-index
+  rustversion 1.0.23 <https://github.com/dtolnay/rustversion>
+    Author: David Tolnay <dtolnay@gmail.com>
     Source: registry+https://github.com/rust-lang/crates.io-index
   serde 1.0.229 <https://github.com/serde-rs/serde>
     Author: Erick Tryzelaar <erick.tryzelaar@gmail.com>
@@ -9770,7 +9864,7 @@ Used by:
     Author: Erick Tryzelaar <erick.tryzelaar@gmail.com>
     Author: David Tolnay <dtolnay@gmail.com>
     Source: registry+https://github.com/rust-lang/crates.io-index
-  serde_json 1.0.152 <https://github.com/serde-rs/json>
+  serde_json 1.0.154 <https://github.com/serde-rs/json>
     Source: registry+https://github.com/rust-lang/crates.io-index
   serde_path_to_error 0.1.20 <https://github.com/dtolnay/path-to-error>
     Author: David Tolnay <dtolnay@gmail.com>
@@ -9784,7 +9878,7 @@ Used by:
   syn 2.0.119 <https://github.com/dtolnay/syn>
     Author: David Tolnay <dtolnay@gmail.com>
     Source: registry+https://github.com/rust-lang/crates.io-index
-  syn 3.0.7 <https://github.com/dtolnay/syn>
+  syn 3.0.10 <https://github.com/dtolnay/syn>
     Author: David Tolnay <dtolnay@gmail.com>
     Source: registry+https://github.com/rust-lang/crates.io-index
   thiserror-impl 1.0.69 <https://github.com/dtolnay/thiserror>
@@ -9802,7 +9896,7 @@ Used by:
   typeid 1.0.3 <https://github.com/dtolnay/typeid>
     Author: David Tolnay <dtolnay@gmail.com>
     Source: registry+https://github.com/rust-lang/crates.io-index
-  unicode-ident 1.0.26 <https://github.com/dtolnay/unicode-ident>
+  unicode-ident 1.0.27 <https://github.com/dtolnay/unicode-ident>
     Author: David Tolnay <dtolnay@gmail.com>
     Source: registry+https://github.com/rust-lang/crates.io-index
   x11-dl 2.21.0 <https://github.com/AltF02/x11-rs.git>
@@ -9890,7 +9984,7 @@ DEALINGS IN THE SOFTWARE.
 MIT License (MIT)
 
 Used by:
-  winnow 1.0.4 <https://github.com/winnow-rs/winnow>
+  winnow 1.0.5 <https://github.com/winnow-rs/winnow>
     Source: registry+https://github.com/rust-lang/crates.io-index
 
 Permission is hereby granted, free of charge, to any person obtaining
@@ -10117,16 +10211,16 @@ Used by:
   byteorder 1.5.0 <https://github.com/BurntSushi/byteorder>
     Author: Andrew Gallant <jamslam@gmail.com>
     Source: registry+https://github.com/rust-lang/crates.io-index
-  jiff-core 0.1.1 <https://github.com/BurntSushi/jiff>
+  jiff-core 0.1.8 <https://github.com/BurntSushi/jiff>
     Author: Andrew Gallant <jamslam@gmail.com>
     Source: registry+https://github.com/rust-lang/crates.io-index
   jiff-tzdb-platform 0.1.3 <https://github.com/BurntSushi/jiff>
     Author: Andrew Gallant <jamslam@gmail.com>
     Source: registry+https://github.com/rust-lang/crates.io-index
-  jiff-tzdb 0.1.9 <https://github.com/BurntSushi/jiff>
+  jiff-tzdb 0.1.10 <https://github.com/BurntSushi/jiff>
     Author: Andrew Gallant <jamslam@gmail.com>
     Source: registry+https://github.com/rust-lang/crates.io-index
-  jiff 0.2.38 <https://github.com/BurntSushi/jiff>
+  jiff 0.2.46 <https://github.com/BurntSushi/jiff>
     Author: Andrew Gallant <jamslam@gmail.com>
     Source: registry+https://github.com/rust-lang/crates.io-index
   memchr 2.8.3 <https://github.com/BurntSushi/memchr>
@@ -10260,38 +10354,6 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
-
-
-===============================================================================
-MIT License (MIT)
-
-Used by:
-  fsevent-sys 4.1.0 <https://github.com/octplane/fsevent-rust/tree/master/fsevent-sys>
-    Author: Pierre Baillet <pierre@baillet.name>
-    Source: registry+https://github.com/rust-lang/crates.io-index
-
-The MIT License (MIT)
-
-Copyright (c) 2015 Pierre Baillet
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
 
 
 ===============================================================================
@@ -10521,15 +10583,15 @@ SOFTWARE.
 MIT License (MIT)
 
 Used by:
-  async-compression 0.4.50 <https://github.com/Nullus157/async-compression>
+  async-compression 0.4.52 <https://github.com/Nullus157/async-compression>
     Author: Wim Looman <wim@nemo157.com>
     Author: Allen Bui <fairingrey@gmail.com>
     Source: registry+https://github.com/rust-lang/crates.io-index
-  compression-codecs 0.4.45 <https://github.com/Nullus157/async-compression>
+  compression-codecs 0.4.47 <https://github.com/Nullus157/async-compression>
     Author: Wim Looman <wim@nemo157.com>
     Author: Allen Bui <fairingrey@gmail.com>
     Source: registry+https://github.com/rust-lang/crates.io-index
-  compression-core 0.4.33 <https://github.com/Nullus157/async-compression>
+  compression-core 0.4.34 <https://github.com/Nullus157/async-compression>
     Author: Wim Looman <wim@nemo157.com>
     Author: Allen Bui <fairingrey@gmail.com>
     Source: registry+https://github.com/rust-lang/crates.io-index
@@ -10623,6 +10685,8 @@ MIT License (MIT)
 
 Used by:
   crossbeam-channel 0.5.17 <https://github.com/crossbeam-rs/crossbeam>
+    Source: registry+https://github.com/rust-lang/crates.io-index
+  crossbeam-queue 0.3.14 <https://github.com/crossbeam-rs/crossbeam>
     Source: registry+https://github.com/rust-lang/crates.io-index
   crossbeam-utils 0.8.23 <https://github.com/crossbeam-rs/crossbeam>
     Source: registry+https://github.com/rust-lang/crates.io-index
@@ -10847,7 +10911,7 @@ THE SOFTWARE.
 MIT License (MIT)
 
 Used by:
-  open 5.4.4 <https://github.com/Byron/open-rs>
+  open 5.4.5 <https://github.com/Byron/open-rs>
     Author: Sebastian Thiel <byronimo@gmail.com>
     Source: registry+https://github.com/rust-lang/crates.io-index
 
@@ -11732,7 +11796,7 @@ DEALINGS IN THE FONT SOFTWARE.
 Unicode License v3 (Unicode-3.0)
 
 Used by:
-  unicode-ident 1.0.26 <https://github.com/dtolnay/unicode-ident>
+  unicode-ident 1.0.27 <https://github.com/dtolnay/unicode-ident>
     Author: David Tolnay <dtolnay@gmail.com>
     Source: registry+https://github.com/rust-lang/crates.io-index
 
@@ -11781,25 +11845,25 @@ authorization of the copyright holder.
 Unicode License v3 (Unicode-3.0)
 
 Used by:
-  icu_collections 2.3.0 <https://github.com/unicode-org/icu4x>
+  icu_collections 2.4.0 <https://github.com/unicode-org/icu4x>
     Author: The ICU4X Project Developers
     Source: registry+https://github.com/rust-lang/crates.io-index
-  icu_locale_core 2.3.0 <https://github.com/unicode-org/icu4x>
+  icu_locale_core 2.4.0 <https://github.com/unicode-org/icu4x>
     Author: The ICU4X Project Developers
     Source: registry+https://github.com/rust-lang/crates.io-index
-  icu_normalizer 2.3.0 <https://github.com/unicode-org/icu4x>
+  icu_normalizer 2.4.0 <https://github.com/unicode-org/icu4x>
     Author: The ICU4X Project Developers
     Source: registry+https://github.com/rust-lang/crates.io-index
-  icu_normalizer_data 2.3.0 <https://github.com/unicode-org/icu4x>
+  icu_normalizer_data 2.4.0 <https://github.com/unicode-org/icu4x>
     Author: The ICU4X Project Developers
     Source: registry+https://github.com/rust-lang/crates.io-index
-  icu_properties 2.3.0 <https://github.com/unicode-org/icu4x>
+  icu_properties 2.4.0 <https://github.com/unicode-org/icu4x>
     Author: The ICU4X Project Developers
     Source: registry+https://github.com/rust-lang/crates.io-index
-  icu_properties_data 2.3.0 <https://github.com/unicode-org/icu4x>
+  icu_properties_data 2.4.0 <https://github.com/unicode-org/icu4x>
     Author: The ICU4X Project Developers
     Source: registry+https://github.com/rust-lang/crates.io-index
-  icu_provider 2.3.1 <https://github.com/unicode-org/icu4x>
+  icu_provider 2.4.0 <https://github.com/unicode-org/icu4x>
     Author: The ICU4X Project Developers
     Source: registry+https://github.com/rust-lang/crates.io-index
   litemap 0.8.3 <https://github.com/unicode-org/icu4x>
@@ -11808,7 +11872,7 @@ Used by:
   potential_utf 0.1.6 <https://github.com/unicode-org/icu4x>
     Author: The ICU4X Project Developers
     Source: registry+https://github.com/rust-lang/crates.io-index
-  tinystr 0.8.4 <https://github.com/unicode-org/icu4x>
+  tinystr 0.8.5 <https://github.com/unicode-org/icu4x>
     Author: The ICU4X Project Developers
     Source: registry+https://github.com/rust-lang/crates.io-index
   writeable 0.6.4 <https://github.com/unicode-org/icu4x>
@@ -11817,7 +11881,7 @@ Used by:
   yoke-derive 0.8.4 <https://github.com/unicode-org/icu4x>
     Author: Manish Goregaokar <manishsmail@gmail.com>
     Source: registry+https://github.com/rust-lang/crates.io-index
-  yoke 0.8.3 <https://github.com/unicode-org/icu4x>
+  yoke 0.8.4 <https://github.com/unicode-org/icu4x>
     Author: Manish Goregaokar <manishsmail@gmail.com>
     Source: registry+https://github.com/rust-lang/crates.io-index
   zerofrom-derive 0.1.8 <https://github.com/unicode-org/icu4x>
@@ -11829,10 +11893,10 @@ Used by:
   zerotrie 0.2.5 <https://github.com/unicode-org/icu4x>
     Author: The ICU4X Project Developers
     Source: registry+https://github.com/rust-lang/crates.io-index
-  zerovec-derive 0.11.6 <https://github.com/unicode-org/icu4x>
+  zerovec-derive 0.11.7 <https://github.com/unicode-org/icu4x>
     Author: Manish Goregaokar <manishsmail@gmail.com>
     Source: registry+https://github.com/rust-lang/crates.io-index
-  zerovec 0.11.8 <https://github.com/unicode-org/icu4x>
+  zerovec 0.11.9 <https://github.com/unicode-org/icu4x>
     Author: The ICU4X Project Developers
     Source: registry+https://github.com/rust-lang/crates.io-index
 
@@ -11888,7 +11952,7 @@ ICU 1.8.1 to ICU 57.1 © 1995-2016 International Business Machines Corporation a
 The Unlicense (Unlicense)
 
 Used by:
-  ksni 0.3.6 <https://github.com/iovxw/ksni>
+  ksni 0.3.7 <https://github.com/iovxw/ksni>
     Author: iovxw <iovxw@outlook.com>
     Source: registry+https://github.com/rust-lang/crates.io-index
 

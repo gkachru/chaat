@@ -91,7 +91,7 @@ getrandom = "0.4"
 urlencoding = "2"
 # Local cache of chats, messages, teams and channels, with FTS5 search.
 # Bundled so every platform gets the same SQLite with FTS5.
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite = { version = "0.43", features = ["bundled"] }
 # Opens the system browser for sign-in and for meeting/call hand-off.
 open = "5"
 # Native desktop notifications: D-Bus on Linux, the notification centre on
@@ -99,7 +99,7 @@ open = "5"
 notify-rust = { version = "4", default-features = false, features = ["z"] }
 # The platform's own file picker for attachments (NSOpenPanel, the Windows
 # file dialog, the desktop portal on Linux), as ZapFast uses it.
-rfd = { version = "0.17", default-features = false, features = ["xdg-portal", "wayland"] }
+rfd = { version = "0.18", default-features = false, features = ["xdg-portal", "wayland"] }
 # QR codes of meeting links, to join on a phone (Nayuki's reference
 # implementation: MIT, no dependencies). Drawn as egui rectangles.
 qrcodegen = "1.8"
@@ -151,6 +151,18 @@ panic = "abort"
 # incremental.
 [profile.dev.package."*"]
 opt-level = 2
+# No debug info for dependencies: it is most of target/'s size and is rarely
+# stepped through.
+debug = false
+
+# Keep debug builds small. Line tables still give file:line in backtraces and
+# panics; use `debug = true` locally when you need a full debugger session.
+[profile.dev]
+debug = "line-tables-only"
+
+# Build scripts and proc macros need no debug info or optimization.
+[profile.dev.build-override]
+debug = false
 
 [patch.crates-io]
 # crmne/egui apps-0.36 and crmne/winit apps-0.30, shared with Spotifast,

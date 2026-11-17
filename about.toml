@@ -492,3 +492,19 @@ override-git-commit = "4fc083f1c6d6784577e38b0ee8dbd344481e2fd2"
 path = "LICENSE.txt"
 license = "MIT"
 checksum = "e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5"
+
+[objc2-core-services.clarify]
+license = "MIT OR Apache-2.0 OR Zlib"
+override-git-commit = "4fc083f1c6d6784577e38b0ee8dbd344481e2fd2"
+[[objc2-core-services.clarify.git]]
+path = "LICENSE.txt"
+license = "MIT"
+checksum = "e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5"
+
+[objc2-uniform-type-identifiers.clarify]
+license = "MIT OR Apache-2.0 OR Zlib"
+override-git-commit = "4fc083f1c6d6784577e38b0ee8dbd344481e2fd2"
+[[objc2-uniform-type-identifiers.clarify.git]]
+path = "LICENSE.txt"
+license = "MIT"
+checksum = "e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5"
