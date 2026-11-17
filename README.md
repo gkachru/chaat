@@ -64,7 +64,7 @@ are in
 ### Try the demo (no account needed)
 
 ```sh
-git clone https://github.com/MaxTheTurtle0/wren && cd wren
+git clone https://github.com/gkachru/wren && cd wren
 cargo run --release -- --demo
 ```
 

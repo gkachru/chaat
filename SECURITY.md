@@ -5,7 +5,7 @@ once releases are available. Older builds are not maintained separately.
 
 ## Report a vulnerability
 
-Use [GitHub's private vulnerability reporting form](https://github.com/MaxTheTurtle0/wren/security/advisories/new).
+Use [GitHub's private vulnerability reporting form](https://github.com/gkachru/wren/security/advisories/new).
 Keep suspected vulnerabilities out of public issues and pull requests.
 
 Include the affected Wren version or commit, operating system, steps to

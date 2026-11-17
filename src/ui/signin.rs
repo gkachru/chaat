@@ -10,8 +10,7 @@ use crate::model::Action;
 use crate::theme;
 
 pub const LOGO: &str = "bytes://wren-logo.svg";
-pub const DOCS: &str =
-    "https://github.com/MaxTheTurtle0/wren/blob/main/docs/azure-app-registration.md";
+pub const DOCS: &str = "https://github.com/gkachru/wren/blob/main/docs/azure-app-registration.md";
 
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let palette = app.palette;
