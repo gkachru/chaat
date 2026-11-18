@@ -9,9 +9,13 @@ push notifications, on 17 October 2026. The completed checks are listed in
 ## Next
 
 1. **Windows and Linux visual pass.** Run on both, capture screenshots, fix
-   platform chrome (title bar, fonts, tray).
+   platform chrome (title bar, fonts, tray). Known: on Windows the grey ✕ is
+   hard to see on Close's red hover; `fastframe-titlebar`'s `caption_button`
+   should draw it white while Close is hovered or pressed (upstream fix).
 2. **Push relay deployment.** Publish a container image and deployment
-   guide, add channel-post subscriptions.
+   guide, add channel-post subscriptions. Known: at exit, `stop_push` waits
+   only 50 ms for the subscription deletes, so a normal quit usually leaves
+   them in Graph until the next start removes them (`push-subscriptions.json`).
 3. **Upload progress** for large file attachments.
 
 ## Then
@@ -21,6 +25,9 @@ push notifications, on 17 October 2026. The completed checks are listed in
 - Lazy per-script fallback fonts (upstream in fastframe-fonts), about 29 MB
   less memory.
 - Unread divider and "jump to latest", pinned chats, chat muting.
+- Live presence for group-chat members who are not one-on-one contacts
+  (today they update when the chat opens). Graph allows one presence
+  subscription per person and app, up to 650 people.
 - Translations (fastframe-i18n).
 - Signed and notarized macOS builds, a Windows installer, Flatpak and AUR.
 
