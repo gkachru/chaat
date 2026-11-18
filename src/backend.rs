@@ -384,6 +384,12 @@ impl Backend {
         self.events.try_iter().collect()
     }
 
+    /// Asks the backend to stop without waiting for it, so several can wind
+    /// down (delete push subscriptions, end presence sessions) at once.
+    pub fn begin_shutdown(&self) {
+        let _ = self.commands.send(Command::Shutdown);
+    }
+
     pub fn shutdown(&mut self) {
         let _ = self.commands.send(Command::Shutdown);
         if let Some(thread) = self.thread.take() {

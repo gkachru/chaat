@@ -13,9 +13,7 @@ push notifications, on 17 October 2026. The completed checks are listed in
    hard to see on Close's red hover; `fastframe-titlebar`'s `caption_button`
    should draw it white while Close is hovered or pressed (upstream fix).
 2. **Push relay deployment.** Publish a container image and deployment
-   guide, add channel-post subscriptions. Known: at exit, `stop_push` waits
-   only 50 ms for the subscription deletes, so a normal quit usually leaves
-   them in Graph until the next start removes them (`push-subscriptions.json`).
+   guide, add channel-post subscriptions.
 3. **Upload progress** for large file attachments.
 
 ## Then

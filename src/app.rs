@@ -2520,6 +2520,10 @@ impl App {
 
     pub fn shutdown(&mut self) {
         self.save_settings();
+        // Every account winds down at once; then wait for all of them.
+        for account in &self.accounts {
+            account.backend.begin_shutdown();
+        }
         for account in &mut self.accounts {
             account.backend.shutdown();
         }

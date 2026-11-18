@@ -81,7 +81,8 @@ async fn a_change_notification_fetches_the_chat() {
         .await;
     Mock::given(method("DELETE"))
         .and(path("/v1.0/subscriptions/sub-1"))
-        .respond_with(ResponseTemplate::new(204))
+        // Slower than a quick quit, as Graph often is.
+        .respond_with(ResponseTemplate::new(204).set_delay(Duration::from_millis(400)))
         .mount(&server)
         .await;
     Mock::given(method("GET"))
@@ -258,27 +259,21 @@ async fn a_change_notification_fetches_the_chat() {
         "the notification caused a presence fetch"
     );
 
-    // Turning push off deletes the subscription.
+    // Turning push off deletes the subscriptions before it reports Off,
+    // even when Graph takes its time.
     backend.send(Command::Relay(None));
     wait_for(&backend, 5, |e| {
         matches!(e, Event::Push(PushStatus::Off)).then_some(())
     });
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        let requests = server.received_requests().await.unwrap();
-        if requests
-            .iter()
-            .any(|r| r.method.as_str() == "DELETE" && r.url.path() == "/v1.0/subscriptions/sub-1")
-            && !leftovers.exists()
-        {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the subscription was not deleted"
-        );
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    let deletes = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.method.as_str() == "DELETE" && r.url.path() == "/v1.0/subscriptions/sub-1")
+        .count();
+    assert_eq!(deletes, 2, "chat and presence subscriptions deleted");
+    assert!(!leftovers.exists(), "nothing left for the next start");
 }
 
 async fn axum_serve(listener: tokio::net::TcpListener) {

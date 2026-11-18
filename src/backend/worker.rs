@@ -91,6 +91,9 @@ enum Internal {
     },
 }
 
+/// How long stopping push may wait for its subscriptions to be deleted.
+const PUSH_CLEANUP: Duration = Duration::from_secs(3);
+
 /// How long presence notices gather before one fetch for all of them.
 const PRESENCE_BATCH: Duration = Duration::from_millis(1500);
 
@@ -121,7 +124,9 @@ struct Worker {
     downloads: Arc<Semaphore>,
     options: super::BackendOptions,
     relay: Option<String>,
-    stop_push: Option<watch::Sender<bool>>,
+    /// Stops the running push loop, and the loop itself, to wait for its
+    /// cleanup.
+    stop_push: Option<(watch::Sender<bool>, tokio::task::JoinHandle<()>)>,
     /// Whether Chaat keeps a presence session (setting), and when it last
     /// refreshed it.
     session_enabled: bool,
@@ -666,7 +671,6 @@ impl Worker {
             return;
         };
         let (stop, stopped) = watch::channel(false);
-        self.stop_push = Some(stop);
         let graph = Arc::clone(&account.graph);
         let me = account
             .record
@@ -693,14 +697,21 @@ impl Worker {
                 .join(realtime::LEFTOVERS_FILE),
             contacts: self.contacts.subscribe(),
         };
-        tokio::spawn(push_loop(graph, target, out, internal, stopped));
+        let task = tokio::spawn(push_loop(graph, target, out, internal, stopped));
+        self.stop_push = Some((stop, task));
     }
 
+    /// Stops the push loop and waits for it to delete its subscriptions,
+    /// so they don't keep sending notifications to a closed channel (and a
+    /// new presence subscription isn't refused as a duplicate). A slow or
+    /// unreachable Graph cannot hold up quitting for longer than
+    /// [`PUSH_CLEANUP`]; whatever is left is deleted at the next start.
     async fn stop_push(&mut self) {
-        if let Some(stop) = self.stop_push.take() {
+        if let Some((stop, task)) = self.stop_push.take() {
             let _ = stop.send(true);
-            // Give the loop a moment to delete its subscription.
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            if tokio::time::timeout(PUSH_CLEANUP, task).await.is_err() {
+                log::info!("push: cleanup took too long; the next start finishes it");
+            }
         }
     }
 
@@ -2079,11 +2090,17 @@ async fn push_loop(
                     }
                 }
             };
-            // Best effort: a subscription left behind expires within the hour.
-            for id in &subscriptions {
-                let _ = graph.delete_subscription(id).await;
-            }
-            record_subscriptions(&leftovers, &[]).await;
+            // Both at once, to keep quitting quick. A failure stays listed
+            // for the next start; anything left expires within the hour.
+            let deletes = subscriptions.iter().map(|id| graph.delete_subscription(id));
+            let results = futures_util::future::join_all(deletes).await;
+            let remaining: Vec<String> = subscriptions
+                .iter()
+                .zip(&results)
+                .filter(|(_, result)| result.is_err())
+                .map(|(id, _)| id.clone())
+                .collect();
+            record_subscriptions(&leftovers, &remaining).await;
             match reason {
                 Some(reason) => reason,
                 None => return,

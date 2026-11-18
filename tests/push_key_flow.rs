@@ -63,7 +63,8 @@ async fn a_keyed_relay_needs_the_stored_key() {
         .await;
     Mock::given(method("DELETE"))
         .and(path("/v1.0/subscriptions/sub-1"))
-        .respond_with(ResponseTemplate::new(204))
+        // Slower than a quick quit, as Graph often is.
+        .respond_with(ResponseTemplate::new(204).set_delay(Duration::from_millis(400)))
         .mount(&server)
         .await;
     Mock::given(method("GET"))
@@ -173,8 +174,31 @@ async fn a_keyed_relay_needs_the_stored_key() {
         .then_some(())
     });
     assert_eq!(store.read(chaat::secrets::RELAY_KEY).unwrap(), None);
-    backend.send(Command::Relay(None));
-    wait_for(&backend, 5, |e| {
-        matches!(e, Event::Push(PushStatus::Off)).then_some(())
-    });
+
+    // Quitting while push is live deletes the subscriptions before the
+    // backend ends, even when Graph takes its time.
+    let before = deletes(&server).await;
+    let leftovers = AppDirs::under(dir.path())
+        .account(ACCOUNT)
+        .join(chaat::realtime::LEFTOVERS_FILE);
+    assert!(leftovers.exists(), "live subscriptions are recorded");
+    drop(backend);
+    assert!(
+        !leftovers.exists(),
+        "the deletes finished before the backend ended"
+    );
+    assert!(
+        deletes(&server).await >= before + 2,
+        "chat and presence subscriptions deleted at shutdown"
+    );
+}
+
+async fn deletes(server: &MockServer) -> usize {
+    server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.method.as_str() == "DELETE" && r.url.path() == "/v1.0/subscriptions/sub-1")
+        .count()
 }

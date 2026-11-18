@@ -78,10 +78,11 @@ How it works:
    notifications. A burst of changes within a second is one fetch.
 6. Chaat renews the subscription every 40 minutes, reauthorizes it when Graph
    asks, recreates it when Graph removes it or the relay drops, and deletes
-   it when push is turned off or Chaat exits.
+   it when push is turned off or Chaat exits, waiting up to 3 seconds for
+   Graph to confirm (all accounts at once) so quitting stays quick.
 7. Chaat records its subscription ids in the account folder
    (`push-subscriptions.json`). A run that ends without deleting them (a
-   crash, a killed process, a quit faster than the delete) leaves them in
+   crash, a killed process, Graph slower than 3 seconds) leaves them in
    Graph for up to an hour, still sending notifications to a channel nobody
    listens on, and Graph may then refuse a new presence subscription as a
    duplicate (`409`). The next run deletes them before subscribing again. It
