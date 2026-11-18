@@ -696,6 +696,10 @@ impl Worker {
                 .account(&account.record.id)
                 .join(realtime::LEFTOVERS_FILE),
             contacts: self.contacts.subscribe(),
+            refused: self
+                .dirs
+                .account(&account.record.id)
+                .join(realtime::REFUSED_FILE),
         };
         let task = tokio::spawn(push_loop(graph, target, out, internal, stopped));
         self.stop_push = Some((stop, task));
@@ -1548,7 +1552,10 @@ fn people_to_follow(chats: &[crate::model::Chat], me: &str, tenant: &str) -> Peo
     let mut people = People::default();
     let mut add = |member: &Member| {
         let user = member.user_id.as_str();
-        if user == me || user.is_empty() || people.all.iter().any(|p| p == user) {
+        // A deleted account stays in old chats with its name and email
+        // blanked; it has no presence, and Graph refuses to follow it.
+        let deleted = member.display_name.trim().is_empty() && member.email.is_none();
+        if user == me || user.is_empty() || deleted || people.all.iter().any(|p| p == user) {
             return;
         }
         people.all.push(user.to_owned());
@@ -1893,6 +1900,33 @@ struct PushTarget {
     leftovers: std::path::PathBuf,
     /// The people of one-on-one chats, as the chat list last showed them.
     contacts: watch::Receiver<Vec<String>>,
+    /// Where people Graph refused to follow are remembered.
+    refused: std::path::PathBuf,
+}
+
+/// People Graph refused to follow in the last week (see
+/// [`realtime::REFUSED_FILE`]).
+async fn load_refused(path: &std::path::Path) -> HashMap<String, i64> {
+    let path = path.to_owned();
+    let now = crate::time::now();
+    tokio::task::spawn_blocking(move || realtime::read_refused(&path, now))
+        .await
+        .unwrap_or_default()
+}
+
+/// Saves newly refused people, so later sessions leave them out at once.
+async fn save_refused(path: &std::path::Path, limits: &mut PresenceLimits) {
+    if !limits.refused_changed {
+        return;
+    }
+    limits.refused_changed = false;
+    let path = path.to_owned();
+    let refused = limits.refused.clone();
+    let written =
+        tokio::task::spawn_blocking(move || realtime::write_refused(&path, &refused)).await;
+    if !matches!(written, Ok(Ok(()))) {
+        log::warn!("push: could not remember refused presence users");
+    }
 }
 
 /// Where Graph sends a session's notifications.
@@ -1926,15 +1960,19 @@ fn next_presence_size(lo: usize, hi: usize) -> Option<usize> {
 struct PresenceLimits {
     /// The most people to ask for (0: don't try again this session).
     cap: usize,
-    /// People Graph said it cannot follow (lower-case ids).
-    refused: std::collections::HashSet<String>,
+    /// People Graph said it cannot follow (lower-case id → when), from
+    /// earlier sessions too ([`realtime::REFUSED_FILE`]).
+    refused: HashMap<String, i64>,
+    /// Whether `refused` gained someone since it was last saved.
+    refused_changed: bool,
 }
 
 impl PresenceLimits {
     fn new() -> Self {
         Self {
             cap: realtime::PRESENCE_LIMIT,
-            refused: std::collections::HashSet::new(),
+            refused: HashMap::new(),
+            refused_changed: false,
         }
     }
 
@@ -1942,7 +1980,7 @@ impl PresenceLimits {
     fn wanted(&self, people: &[String]) -> Vec<String> {
         people
             .iter()
-            .filter(|id| !self.refused.contains(&id.to_ascii_lowercase()))
+            .filter(|id| !self.refused.contains_key(&id.to_ascii_lowercase()))
             .take(self.cap)
             .cloned()
             .collect()
@@ -1988,9 +2026,11 @@ async fn follow_presence(
                     "push: Graph cannot follow {} people; leaving them out",
                     ids.len()
                 );
+                let now = crate::time::now();
                 limits
                     .refused
-                    .extend(ids.iter().map(|id| id.to_ascii_lowercase()));
+                    .extend(ids.iter().map(|id| (id.to_ascii_lowercase(), now)));
+                limits.refused_changed = true;
                 list = limits.wanted(people);
             }
             Err(GraphError::UsersRefused(_) | GraphError::Http { status: 400, .. }) => {
@@ -2156,6 +2196,7 @@ async fn push_loop(
         key,
         leftovers,
         mut contacts,
+        refused,
     } = target;
     let mut pause = Duration::from_secs(5);
     while !*stop.borrow() {
@@ -2207,7 +2248,9 @@ async fn push_loop(
             };
             let wanted = realtime::presence_watch(&me, &contacts.borrow_and_update());
             let mut limits = PresenceLimits::new();
+            limits.refused = load_refused(&refused).await;
             let mut presence = follow_presence(&graph, &wanted, &endpoints, &mut limits).await;
+            save_refused(&refused, &mut limits).await;
             let mut subscriptions = held(&subscription.id, presence.as_ref());
             record_subscriptions(&leftovers, &subscriptions).await;
             let mut contacts_open = true;
@@ -2242,6 +2285,7 @@ async fn push_loop(
                                 let _ = graph.delete_subscription(&old.id).await;
                             }
                             presence = follow_presence(&graph, &wanted, &endpoints, &mut limits).await;
+                            save_refused(&refused, &mut limits).await;
                             subscriptions = held(&subscription.id, presence.as_ref());
                             record_subscriptions(&leftovers, &subscriptions).await;
                         }
@@ -2467,6 +2511,15 @@ mod tests {
         let people = people_to_follow(&chats, "me", "t-1");
         assert_eq!(people.all, ["bo", "ada", "grace", "hedy"]);
         assert_eq!(people.followable, people.all);
+    }
+
+    #[test]
+    fn deleted_accounts_are_neither_fetched_nor_followed() {
+        let mut gone = chat(ChatKind::Group, &["me", "ada", "gone"]);
+        gone.members[2].display_name.clear();
+        let people = people_to_follow(&[gone], "me", "t-1");
+        assert_eq!(people.all, ["ada"]);
+        assert_eq!(people.followable, ["ada"]);
     }
 
     #[test]

@@ -362,7 +362,7 @@ async fn users_graph_names_are_left_out_and_stay_out() {
         .with_priority(1)
         .mount(&server)
         .await;
-    let (backend, relay_url, _dir) = start(&server).await;
+    let (backend, relay_url, dir) = start(&server).await;
     backend.send(Command::Fetch {
         resource: Resource::Chats,
         trigger: Trigger::Start,
@@ -371,7 +371,7 @@ async fn users_graph_names_are_left_out_and_stay_out() {
         Event::Presence(list) => Some(list),
         _ => None,
     });
-    backend.send(Command::Relay(Some(relay_url)));
+    backend.send(Command::Relay(Some(relay_url.clone())));
     wait_for(&backend, 10, |e| match e {
         Event::Push(PushStatus::Live) => Some(()),
         Event::Push(PushStatus::Failed(reason)) => panic!("push failed: {reason}"),
@@ -402,6 +402,27 @@ async fn users_graph_names_are_left_out_and_stay_out() {
         tokio::time::sleep(Duration::from_millis(2100)).await;
     }
     assert_eq!(presence_subscriptions(&server).await, [four, without_grace]);
+    backend.send(Command::Relay(None));
+    wait_for(&backend, 5, |e| {
+        matches!(e, Event::Push(PushStatus::Off)).then_some(())
+    });
+
+    // The refusal is remembered: the next session leaves Grace out at once.
+    let refused = AppDirs::under(dir.path())
+        .account(ACCOUNT)
+        .join(chaat::realtime::REFUSED_FILE);
+    assert!(chaat::realtime::read_refused(&refused, chaat::time::now()).contains_key("u-grace"));
+    backend.send(Command::Relay(Some(relay_url)));
+    wait_for(&backend, 10, |e| match e {
+        Event::Push(PushStatus::Live) => Some(()),
+        Event::Push(PushStatus::Failed(reason)) => panic!("push failed: {reason}"),
+        _ => None,
+    });
+    assert_eq!(
+        presence_subscriptions(&server).await,
+        [four, without_grace, without_grace],
+        "no refused request in the new session"
+    );
     backend.send(Command::Relay(None));
     wait_for(&backend, 5, |e| {
         matches!(e, Event::Push(PushStatus::Off)).then_some(())

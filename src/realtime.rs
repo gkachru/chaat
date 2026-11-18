@@ -124,6 +124,56 @@ pub fn write_leftovers(path: &Path, ids: &[String]) -> std::io::Result<()> {
     crate::paths::write_atomically(path, &bytes)
 }
 
+/// The file, in each account's folder, listing people Graph refused to follow
+/// in a presence subscription, so the next sessions leave them out from the
+/// first request.
+pub const REFUSED_FILE: &str = "presence-refused.json";
+
+/// How long a refusal is remembered. Graph refuses departed accounts, which
+/// stay refused; anyone else (a licence fixed later) is tried again after
+/// this.
+pub const REFUSAL_MEMORY_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+struct Refusals {
+    /// Lower-case user id → when Graph refused them (Unix milliseconds).
+    refused: std::collections::BTreeMap<String, i64>,
+}
+
+/// The people Graph refused within [`REFUSAL_MEMORY_MS`] of `now`; none if
+/// the file is missing or unreadable.
+pub fn read_refused(path: &Path, now: i64) -> std::collections::HashMap<String, i64> {
+    std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Refusals>(&bytes).ok())
+        .map(|file| {
+            file.refused
+                .into_iter()
+                .filter(|(id, at)| is_user_id(id) && now.saturating_sub(*at) < REFUSAL_MEMORY_MS)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Records `refused`, or removes the file when there are none.
+pub fn write_refused(
+    path: &Path,
+    refused: &std::collections::HashMap<String, i64>,
+) -> std::io::Result<()> {
+    if refused.is_empty() {
+        return match std::fs::remove_file(path) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
+            _ => Ok(()),
+        };
+    }
+    let file = Refusals {
+        refused: refused.iter().map(|(id, at)| (id.clone(), *at)).collect(),
+    };
+    let bytes = serde_json::to_vec_pretty(&file).map_err(std::io::Error::other)?;
+    crate::paths::write_atomically(path, &bytes)
+}
+
 /// A relay access key on its way to the credential store. Its `Debug` output
 /// hides the key, so a logged command cannot leak it.
 #[derive(Clone, PartialEq, Eq)]
@@ -312,6 +362,25 @@ mod tests {
         assert!(read_leftovers(&path).is_empty());
         std::fs::write(&path, br#"{"subscriptions":["a"],"later":1}"#).unwrap();
         assert_eq!(read_leftovers(&path), ["a"]);
+    }
+
+    #[test]
+    fn refusals_are_remembered_for_a_week() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(REFUSED_FILE);
+        let now = 1_000_000_000_000;
+        assert!(read_refused(&path, now).is_empty());
+        let mut refused = std::collections::HashMap::new();
+        refused.insert("u-gone".to_owned(), now - 1000);
+        refused.insert("u-old".to_owned(), now - REFUSAL_MEMORY_MS - 1);
+        write_refused(&path, &refused).unwrap();
+        let read = read_refused(&path, now);
+        assert_eq!(read.len(), 1);
+        assert!(read.contains_key("u-gone"));
+        write_refused(&path, &Default::default()).unwrap();
+        assert!(!path.exists());
+        std::fs::write(&path, b"{").unwrap();
+        assert!(read_refused(&path, now).is_empty());
     }
 
     #[test]

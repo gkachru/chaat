@@ -73,7 +73,11 @@ How it works:
    so Chaat replaces it when someone new appears, and a second device on the
    same account goes without. Graph refuses (400) a list that contains users
    it cannot follow and names them ("Remove the failing users and retry");
-   Chaat leaves those people out for the session and asks again. A 400 that
+   Chaat leaves those people out and asks again, and remembers them for a
+   week in the account folder (`presence-refused.json`, ids only) so later
+   sessions leave them out from the first request. In practice these are
+   people who left the organisation (disabled or deleted accounts); deleted
+   ones, shown in chats without a name or email, are skipped up front. A 400 that
    names nobody makes Chaat search for the longest list Graph accepts. A
    conflict (409, an earlier subscription Graph hasn't forgotten) is retried
    once after 3 seconds; other refusals leave presence to fetches on look

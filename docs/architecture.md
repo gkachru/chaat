@@ -85,6 +85,7 @@ account already open is retired.
 | Cache: chats, messages, teams, channels, meetings, photos | data folder, `accounts/<account>/chaat.db` (0600) |
 | Account record (name, granted scopes; no tokens) | `accounts/<account>/account.json` |
 | Push subscriptions this installation made and has not deleted yet (ids only) | `accounts/<account>/push-subscriptions.json` |
+| People Graph refused to follow for presence, for a week (user ids and times) | `accounts/<account>/presence-refused.json` |
 | Signed-in accounts, in order | `settings.json`, `accounts` |
 | Refresh token | OS credential store, service `app.chaat.Chaat` (on Windows, split across entries when longer than one holds) |
 | Push relay access key (shared by all accounts; kept on sign-out) | OS credential store, `relay-key`; `settings.json` records only `relay_key_set` |
