@@ -1209,6 +1209,29 @@ fn kind_chips_filter_the_chat_list_and_stack_with_unread() {
 }
 
 #[test]
+fn the_rail_shows_icons_without_labels() {
+    for width in [720.0, 1280.0] {
+        for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+            let mut h = Harness::new();
+            h.size.x = width;
+            h.app.settings.theme = theme;
+            h.frames(3);
+            let rail_texts: Vec<String> = painted_shapes(&h)
+                .iter()
+                .filter_map(|shape| match shape {
+                    egui::epaint::Shape::Text(text) if text.pos.x < 64.0 => {
+                        Some(text.galley.job.text.clone())
+                    }
+                    _ => None,
+                })
+                .filter(|text| ["Chaat", "Teams", "Calendar", "Calls"].contains(&text.as_str()))
+                .collect();
+            assert!(rail_texts.is_empty(), "rail labels painted: {rail_texts:?}");
+        }
+    }
+}
+
+#[test]
 fn every_screen_draws() {
     let mut h = Harness::new();
     assert!(h.frames(3) > 50, "the chat view draws");

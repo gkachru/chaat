@@ -34,7 +34,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 8.0
             });
             ui.vertical_centered(|ui| {
-                ui.spacing_mut().item_spacing.y = 4.0;
+                // A clear gap between items, so a hovered item never looks
+                // joined to the highlighted one.
+                ui.spacing_mut().item_spacing.y = 12.0;
                 for section in Section::ALL {
                     let badge = match section {
                         Section::Chats => app.unread_chats(),
@@ -76,15 +78,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 }
                 account_menu(app, &avatar);
                 ui.add_space(6.0);
-                let settings = widgets::icon_button_sized(
-                    ui,
-                    &palette,
-                    Icon::Settings,
-                    "Settings (⌘,)",
-                    36.0,
-                    20.0,
-                    palette.secondary,
-                );
+                let settings = settings_button(ui, &palette);
                 widgets::on_click(&settings, &mut app.actions, Action::OpenSettings);
                 if app.demo {
                     ui.add_space(4.0);
@@ -101,44 +95,27 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
 
 fn item(ui: &mut egui::Ui, app: &App, section: Section, badge: usize) -> egui::Response {
     let palette = &app.palette;
-    let (rect, response) = ui.allocate_exact_size(vec2(56.0, 52.0), Sense::click());
+    // Icon only: the name shows in the tooltip.
+    let (rect, response) = ui.allocate_exact_size(vec2(48.0, 44.0), Sense::click());
     let active = app.section == section;
     if ui.is_rect_visible(rect) {
-        if active || response.hovered() {
-            ui.painter().rect_filled(
-                rect.shrink2(vec2(2.0, 0.0)),
-                CornerRadius::same(10),
-                if active {
-                    palette.surface_active
-                } else {
-                    palette.surface_hover
-                },
-            );
-        }
         if active {
-            let bar = egui::Rect::from_min_size(
-                egui::pos2(rect.left() - 4.0, rect.top() + 14.0),
-                vec2(3.0, 24.0),
-            );
-            ui.painter()
-                .rect_filled(bar, CornerRadius::same(2), palette.accent);
+            glass_tile(ui.painter(), palette, rect, true);
+        } else if response.hovered() {
+            glass_tile(ui.painter(), palette, rect, false);
         }
         let tint = if active {
             palette.accent
         } else {
             palette.secondary
         };
-        let icon_rect = egui::Rect::from_center_size(
-            rect.center_top() + vec2(0.0, 19.0),
-            egui::Vec2::splat(21.0),
-        );
-        // Chats sits first and wears the app's own logo and name.
-        let label = match section {
+        let icon_rect = egui::Rect::from_center_size(rect.center(), egui::Vec2::splat(21.0));
+        // Chats sits first and wears the app's own logo.
+        match section {
             Section::Chats => {
                 egui::Image::new(APP_ICON)
                     .fit_to_exact_size(egui::Vec2::splat(26.0))
                     .paint_at(ui, icon_rect.expand(2.5));
-                "Chaat"
             }
             other => {
                 let icon = match other {
@@ -147,20 +124,8 @@ fn item(ui: &mut egui::Ui, app: &App, section: Section, badge: usize) -> egui::R
                     _ => Icon::Phone,
                 };
                 icon.image(tint, 21.0).paint_at(ui, icon_rect);
-                other.label()
             }
-        };
-        ui.painter().text(
-            rect.center_bottom() - vec2(0.0, 9.0),
-            egui::Align2::CENTER_CENTER,
-            label,
-            theme::medium(11.0),
-            if active {
-                palette.text
-            } else {
-                palette.secondary
-            },
-        );
+        }
         if badge > 0 {
             widgets::badge(ui, palette, icon_rect.right_top() + vec2(3.0, 1.0), badge);
         }
@@ -174,6 +139,92 @@ fn item(ui: &mut egui::Ui, app: &App, section: Section, badge: usize) -> egui::R
     response
         .on_hover_text(format!("{} ({shortcut})", section.label()))
         .on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// The Settings button, with the same hover tile as the section items.
+fn settings_button(ui: &mut egui::Ui, palette: &theme::Palette) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(vec2(48.0, 44.0), Sense::click());
+    if ui.is_rect_visible(rect) {
+        let hovered = response.hovered() || response.has_focus();
+        if hovered {
+            glass_tile(ui.painter(), palette, rect, false);
+        }
+        let tint = if hovered {
+            palette.text
+        } else {
+            palette.secondary
+        };
+        Icon::Settings.image(tint, 20.0).paint_at(
+            ui,
+            egui::Rect::from_center_size(rect.center(), egui::Vec2::splat(20.0)),
+        );
+    }
+    response
+        .on_hover_text("Settings (⌘,)")
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// A rail item's glassy tile: a fill that is lighter at the top, a thin
+/// light edge, and for the selected item a faint shadow. Colors derive from
+/// the palette, so shared palettes get the same look; hover is quieter.
+fn glass_tile(painter: &egui::Painter, palette: &theme::Palette, rect: egui::Rect, active: bool) {
+    const RADIUS: u8 = 12;
+    let base = if active {
+        palette.surface_active
+    } else {
+        palette.surface_hover
+    };
+    // Light toward the top: the text color on dark themes, white on light.
+    let (top, edge) = if palette.dark {
+        (
+            base.lerp_to_gamma(palette.text, if active { 0.10 } else { 0.06 }),
+            palette
+                .text
+                .gamma_multiply(if active { 0.16 } else { 0.09 }),
+        )
+    } else {
+        (
+            base.lerp_to_gamma(egui::Color32::WHITE, if active { 0.65 } else { 0.5 }),
+            egui::Color32::BLACK.gamma_multiply(if active { 0.10 } else { 0.06 }),
+        )
+    };
+    if active {
+        painter.add(
+            egui::epaint::Shadow {
+                offset: [0, 2],
+                blur: 8,
+                spread: 0,
+                color: palette.shadow.gamma_multiply(0.6),
+            }
+            .as_shape(rect, CornerRadius::same(RADIUS)),
+        );
+    }
+    // The gradient: a fan over the rounded outline, each point colored by
+    // its height. The edge stroke on top hides the unfeathered outline.
+    let mut outline = Vec::new();
+    egui::epaint::tessellator::path::rounded_rectangle(
+        &mut outline,
+        rect,
+        CornerRadius::same(RADIUS).into(),
+    );
+    let shade =
+        |y: f32| top.lerp_to_gamma(base, ((y - rect.top()) / rect.height()).clamp(0.0, 1.0));
+    let mut mesh = egui::epaint::Mesh::default();
+    mesh.colored_vertex(rect.center(), shade(rect.center().y));
+    for point in &outline {
+        mesh.colored_vertex(*point, shade(point.y));
+    }
+    let count = outline.len() as u32;
+    for i in 0..count {
+        mesh.add_triangle(0, 1 + i, 1 + (i + 1) % count);
+    }
+    painter.add(mesh);
+    painter.rect_stroke(
+        rect,
+        CornerRadius::same(RADIUS),
+        egui::Stroke::new(1.0, edge),
+        egui::StrokeKind::Inside,
+    );
 }
 
 /// The avatar's menu: accounts, availability and status message. Settings
