@@ -241,6 +241,8 @@ async fn notification(
         Some(sender) => {
             if sender.try_send(body).is_err() {
                 log::warn!("a client is not keeping up; dropped a notification");
+            } else {
+                log::debug!("forwarded a notification");
             }
         }
         None => log::info!("notification for a channel with no client; dropped"),

@@ -847,6 +847,11 @@ impl App {
             if events.is_empty() {
                 continue;
             }
+            log::debug!(
+                "account {index}: applying {} backend events (window focused: {})",
+                events.len(),
+                ctx.input(|i| i.focused)
+            );
             self.active = index;
             self.hidden = index != shown;
             for event in events {

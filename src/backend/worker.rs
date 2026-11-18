@@ -686,7 +686,16 @@ impl Worker {
             .freshness
             .claim(resource.clone(), trigger, Instant::now())
         {
+            if trigger == Trigger::Push {
+                log::debug!(
+                    "push: {} skipped, fetched under a second ago",
+                    describe(&resource)
+                );
+            }
             return;
+        }
+        if trigger == Trigger::Push {
+            log::debug!("push: fetching {}", describe(&resource));
         }
         let graph = Arc::clone(&account.graph);
         let store = Arc::clone(&account.store);
@@ -699,6 +708,13 @@ impl Worker {
             use std::sync::atomic::Ordering;
             out.send(Event::Loading(resource.clone(), true));
             let result = fetch_resource(&graph, &store, &out, &resource, &record, &links).await;
+            if trigger == Trigger::Push {
+                log::debug!(
+                    "push: {} done (ok: {})",
+                    describe(&resource),
+                    result.is_ok()
+                );
+            }
             out.send(Event::Loading(resource.clone(), false));
             let lost = result.as_ref().err().is_some_and(is_unreachable);
             if lost == reachable.swap(!lost, Ordering::Relaxed) {
@@ -1808,6 +1824,7 @@ async fn push_loop(
                         for notice in realtime::parse(&text, &client_state) {
                             match notice {
                                 Notice::Chat(chat) => {
+                                    log::debug!("push: chat change notice");
                                     let _ = internal.send(Internal::Pushed(chat));
                                 }
                                 Notice::Presence => {
