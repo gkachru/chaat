@@ -269,6 +269,11 @@ pub struct Account {
     pub expanded_teams: HashSet<String>,
     pub selected_meeting: Option<String>,
     pub chat_filter: String,
+    /// The chat list shows only unread chats (and the open one).
+    pub unread_only: bool,
+    /// The open chat, when it was unread as it opened: it stays in the
+    /// Unread list while it is read.
+    pub unread_kept: Option<String>,
     pub drafts: HashMap<ConversationId, Draft>,
     pub push: crate::realtime::PushStatus,
 
@@ -308,6 +313,8 @@ impl Account {
             expanded_teams: HashSet::new(),
             selected_meeting: None,
             chat_filter: String::new(),
+            unread_only: false,
+            unread_kept: None,
             drafts: HashMap::new(),
             push: crate::realtime::PushStatus::Off,
             browser_profile: format!("Wren {}", crate::auth::random_token(4)),
@@ -2031,6 +2038,13 @@ impl App {
     }
 
     fn open_conversation(&mut self, conversation: ConversationId) {
+        let me = self.me().to_owned();
+        self.unread_kept = match &conversation {
+            ConversationId::Chat(id) if self.chat(id).is_some_and(|c| c.is_unread(&me)) => {
+                Some(id.clone())
+            }
+            _ => None,
+        };
         let needs_cache = !self.conversations.contains_key(&conversation);
         self.recent_conversations.retain(|id| id != &conversation);
         self.recent_conversations.push_back(conversation.clone());
@@ -2116,8 +2130,7 @@ impl App {
             Section::Chats => self
                 .chats
                 .iter()
-                .filter(|c| !c.hidden)
-                .filter(|c| crate::ui::chat_list::matches_filter(c, &self.chat_filter, &me))
+                .filter(|c| crate::ui::chat_list::listed(self, c, &me))
                 .map(|c| ConversationId::Chat(c.id.clone()))
                 .collect(),
             Section::Teams => self
@@ -3129,6 +3142,54 @@ mod tests {
         app.apply_actions(&ctx);
         assert_eq!(app.accounts.len(), 1);
         assert_eq!(app.active, 0);
+    }
+
+    #[test]
+    fn unread_only_lists_unread_chats_and_keeps_one_read_while_open() {
+        let (mut app, _commands) = app();
+        let chat = |id: &str, last_read: i64| Chat {
+            id: id.into(),
+            preview: Some(crate::model::Preview {
+                message_id: "1".into(),
+                author_id: Some("u-ada".into()),
+                at: 10,
+                ..Default::default()
+            }),
+            last_read: Some(last_read),
+            ..Default::default()
+        };
+        app.chats = vec![chat("19:unread", 1), chat("19:read", 10)];
+        let me = app.me().to_owned();
+        let shown = |app: &App| -> Vec<String> {
+            app.chats
+                .iter()
+                .filter(|c| crate::ui::chat_list::listed(app, c, &me))
+                .map(|c| c.id.clone())
+                .collect()
+        };
+        assert_eq!(shown(&app).len(), 2);
+        app.unread_only = true;
+        assert_eq!(shown(&app), vec!["19:unread".to_owned()]);
+        let ctx = egui::Context::default();
+        // An open chat that was already read does not show.
+        app.apply(
+            Action::OpenConversation(ConversationId::Chat("19:read".into())),
+            &ctx,
+        );
+        assert_eq!(shown(&app), vec!["19:unread".to_owned()]);
+        // Opening an unread chat reads it, and it stays while open.
+        app.apply(
+            Action::OpenConversation(ConversationId::Chat("19:unread".into())),
+            &ctx,
+        );
+        assert!(!app.chats[0].is_unread(&me));
+        assert_eq!(shown(&app), vec!["19:unread".to_owned()]);
+        // Once another chat opens, it goes.
+        app.apply(
+            Action::OpenConversation(ConversationId::Chat("19:read".into())),
+            &ctx,
+        );
+        assert!(shown(&app).is_empty());
     }
 
     #[test]

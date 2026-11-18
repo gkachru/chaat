@@ -21,6 +21,16 @@ pub fn matches_filter(chat: &Chat, filter: &str, me: &str) -> bool {
             .any(|m| m.display_name.to_lowercase().contains(&filter))
 }
 
+/// Whether a chat shows in the list. With Unread on, a chat opened while
+/// unread stays too, so it does not vanish the moment it is read.
+pub fn listed(app: &App, chat: &Chat, me: &str) -> bool {
+    let kept = app.unread_kept.as_deref() == Some(chat.id.as_str())
+        && app.open.as_ref() == Some(&ConversationId::Chat(chat.id.clone()));
+    !chat.hidden
+        && matches_filter(chat, &app.chat_filter, me)
+        && (!app.unread_only || chat.is_unread(me) || kept)
+}
+
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let palette = app.palette;
     egui::Frame::new()
@@ -32,6 +42,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             if response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                 app.chat_filter.clear();
             }
+            ui.add_space(8.0);
+            if widgets::chip(ui, &palette, "Unread", app.unread_only)
+                .on_hover_text("Show only chats with unread messages")
+                .clicked()
+            {
+                app.unread_only = !app.unread_only;
+            }
         });
     ui.add_space(8.0);
 
@@ -40,22 +57,25 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         .chats
         .iter()
         .enumerate()
-        .filter(|(_, chat)| !chat.hidden && matches_filter(chat, &app.chat_filter, &me))
+        .filter(|(_, chat)| listed(app, chat, &me))
         .map(|(index, _)| index)
         .collect();
     if visible.is_empty() {
-        let (title, text) = if app.chats.is_empty() {
-            if app.loading.contains(&crate::sync::Resource::Chats) {
-                (
-                    "Loading chats…",
-                    "Your chats appear here as soon as Microsoft answers.",
-                )
+        let (title, text) =
+            if !app.chats.is_empty() && app.unread_only && app.chat_filter.trim().is_empty() {
+                ("All caught up", "No chats have unread messages.")
+            } else if app.chats.is_empty() {
+                if app.loading.contains(&crate::sync::Resource::Chats) {
+                    (
+                        "Loading chats…",
+                        "Your chats appear here as soon as Microsoft answers.",
+                    )
+                } else {
+                    ("No chats yet", "Chats you start in Teams show up here.")
+                }
             } else {
-                ("No chats yet", "Chats you start in Teams show up here.")
-            }
-        } else {
-            ("No matches", "No chat or person matches the filter.")
-        };
+                ("No matches", "No chat or person matches the filter.")
+            };
         widgets::empty_state(ui, &palette, Icon::Chat, title, text);
         return;
     }

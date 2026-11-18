@@ -160,6 +160,48 @@ pub fn secondary_button(ui: &mut Ui, palette: &Palette, text: &str) -> Response 
         .on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
+/// An outlined toggle chip (list filters such as Unread). Filled with the
+/// accent while on.
+pub fn chip(ui: &mut Ui, palette: &Palette, text: &str, on: bool) -> Response {
+    let fg = if on { palette.on_accent } else { palette.text };
+    let galley = ui
+        .ctx()
+        .fonts_mut(|f| f.layout_no_wrap(text.to_owned(), theme::medium(13.0), fg));
+    let size = vec2(galley.size().x + 24.0, 28.0);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    if ui.is_rect_visible(rect) {
+        let radius = CornerRadius::same(14);
+        if on {
+            let fill = if response.hovered() {
+                palette.accent_hover
+            } else {
+                palette.accent
+            };
+            ui.painter().rect_filled(rect, radius, fill);
+        } else {
+            if response.hovered() {
+                ui.painter()
+                    .rect_filled(rect, radius, palette.surface_hover);
+            }
+            ui.painter().rect_stroke(
+                rect,
+                radius,
+                egui::Stroke::new(1.0, palette.outline),
+                egui::StrokeKind::Inside,
+            );
+        }
+        ui.painter().galley(
+            egui::pos2(
+                rect.center().x - galley.size().x / 2.0,
+                rect.center().y - galley.size().y / 2.0,
+            ),
+            galley,
+            fg,
+        );
+    }
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
 /// A small pill button with an icon and a label (Join, Call, ...).
 pub fn pill(ui: &mut Ui, palette: &Palette, icon: Icon, text: &str, accent: bool) -> Response {
     let (fill, fg) = if accent {
