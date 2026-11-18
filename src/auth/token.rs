@@ -127,8 +127,10 @@ async fn post_form(
 }
 
 /// A transport failure in words, without the URL (which may carry query
-/// parameters).
+/// parameters). The underlying cause goes to the log, so a failure shown
+/// only as "a network error" can still be told apart.
 pub fn transport_reason(error: &reqwest::Error) -> String {
+    log::warn!("network failure: {}", transport_detail(error));
     if error.is_timeout() {
         "the request timed out".into()
     } else if error.is_connect() {
@@ -138,6 +140,34 @@ pub fn transport_reason(error: &reqwest::Error) -> String {
     } else {
         "a network error".into()
     }
+}
+
+/// The kind of failure and its causes, for the log. reqwest's own text
+/// carries the URL, so only the errors beneath it are quoted: the HTTP
+/// client's, the TLS layer's and the operating system's, none of which
+/// name the request.
+pub fn transport_detail(error: &reqwest::Error) -> String {
+    let kind = if error.is_timeout() {
+        "timeout"
+    } else if error.is_connect() {
+        "connect"
+    } else if error.is_body() {
+        "body"
+    } else if error.is_decode() {
+        "decode"
+    } else if error.is_request() {
+        "request"
+    } else {
+        "other"
+    };
+    let mut detail = kind.to_owned();
+    let mut source = std::error::Error::source(error);
+    while let Some(cause) = source {
+        detail.push_str(": ");
+        detail.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    detail
 }
 
 async fn token_request(
@@ -291,6 +321,21 @@ mod tests {
     use super::*;
     use wiremock::matchers::{body_string_contains, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn transport_detail_names_the_cause_but_not_the_request() {
+        // Nothing listens on port 1.
+        let error = reqwest::Client::new()
+            .get("http://127.0.0.1:1/chats?secret=abc")
+            .send()
+            .await
+            .unwrap_err();
+        let detail = transport_detail(&error);
+        assert!(detail.starts_with("connect: "), "{detail}");
+        assert!(!detail.contains("secret"), "{detail}");
+        assert!(!detail.contains("/chats"), "{detail}");
+        assert_eq!(transport_reason(&error), "no connection");
+    }
 
     fn config(server: &MockServer) -> AuthConfig {
         AuthConfig {

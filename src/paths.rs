@@ -4,7 +4,7 @@
 //! | --- | --- |
 //! | `settings.json` | the config folder |
 //! | `accounts/<id>/wren.db` (cache of chats, messages, teams) | the data folder |
-//! | `wren.log`, `panic.log` | the state folder |
+//! | `wren.log`, `wren.log.1` (the previous run), `panic.log` | the state folder |
 //!
 //! Every folder is created private to the user (0700 on Unix). Each account
 //! has its own database; nothing is shared between accounts.
@@ -55,6 +55,19 @@ impl AppDirs {
 
     pub fn log_file(&self) -> PathBuf {
         self.state.join("wren.log")
+    }
+
+    /// The last run's log, kept so a problem seen before a restart can still
+    /// be read.
+    pub fn previous_log_file(&self) -> PathBuf {
+        self.state.join("wren.log.1")
+    }
+
+    /// Moves the last run's log aside before this run starts a new one.
+    /// Fails harmlessly when there is none, or when another running Wren
+    /// still has it open.
+    pub fn keep_previous_log(&self) {
+        let _ = std::fs::rename(self.log_file(), self.previous_log_file());
     }
 
     pub fn panic_log(&self) -> PathBuf {
@@ -144,5 +157,23 @@ mod tests {
         write_atomically(&path, b"two").unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"two");
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn the_previous_log_is_kept_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = AppDirs::under(dir.path());
+        dirs.ensure().unwrap();
+        dirs.keep_previous_log();
+        assert!(!dirs.previous_log_file().exists());
+        std::fs::write(dirs.log_file(), b"first run").unwrap();
+        dirs.keep_previous_log();
+        std::fs::write(dirs.log_file(), b"second run").unwrap();
+        dirs.keep_previous_log();
+        assert_eq!(
+            std::fs::read(dirs.previous_log_file()).unwrap(),
+            b"second run"
+        );
+        assert!(!dirs.log_file().exists());
     }
 }

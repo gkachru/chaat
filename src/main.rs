@@ -91,6 +91,7 @@ fn main() -> eframe::Result<()> {
     let logging = if demo {
         logging
     } else {
+        dirs.keep_previous_log();
         logging.file(dirs.log_file())
     };
     logging
