@@ -4,7 +4,7 @@
 
 use chaat::app::{App, Overlay};
 use chaat::backend::{AuthStatus, Waker};
-use chaat::model::{Action, ConversationId, Section};
+use chaat::model::{Action, ConversationId, Section, SettingsPage};
 use chaat::model::{Availability, MentionRef};
 use chaat::paths::AppDirs;
 use chaat::settings::{Settings, ThemeChoice};
@@ -287,7 +287,7 @@ fn the_relay_access_key_is_masked_and_never_shown_once_saved() {
         h.app.settings.theme = theme;
         h.app.demo = false;
         h.app.form_relay_key = "office-relay-key-0123".into();
-        h.act(Action::OpenSettings);
+        h.act(Action::ShowSettingsPage(SettingsPage::Push));
         scrolled(&mut h);
         let painted = texts(&h);
         assert!(
@@ -318,72 +318,178 @@ fn the_relay_access_key_is_masked_and_never_shown_once_saved() {
 
 #[test]
 fn settings_fields_have_padding_in_both_themes_and_widths() {
-    for width in [720.0, 1280.0] {
-        for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
-            let mut h = Harness::new();
-            h.size.x = width;
-            h.app.settings.theme = theme;
-            // Show account-only settings while keeping the offline demo backend.
-            h.app.demo = false;
-            h.app.form_client_id = "00000000-0000-0000-0000-000000000001".into();
-            h.app.form_tenant = "organizations".into();
-            h.act(Action::OpenSettings);
-            h.frame_with(vec![
-                egui::Event::PointerMoved(egui::pos2(width / 2.0, 400.0)),
-                egui::Event::MouseWheel {
-                    phase: egui::TouchPhase::Move,
-                    unit: egui::MouseWheelUnit::Point,
-                    delta: egui::vec2(0.0, -2000.0),
-                    modifiers: egui::Modifiers::NONE,
-                },
-            ]);
-            h.frames(30);
-            let shapes = painted_shapes(&h);
-            let background = if h.app.palette.dark {
-                h.app.palette.window
-            } else {
-                h.app.palette.panel
-            };
-            for value in [
+    let pages = [
+        (
+            SettingsPage::Push,
+            &[
                 "https://relay.example.com",
                 "Access key, if the relay needs one",
-                &h.app.form_client_id,
-                &h.app.form_tenant,
-            ] {
-                let text = shapes
-                    .iter()
-                    .find_map(|shape| match shape {
-                        egui::epaint::Shape::Text(text) if text.galley.job.text == value => {
-                            Some(text)
-                        }
-                        _ => None,
-                    })
-                    .unwrap_or_else(|| panic!("settings field {value:?} is painted"));
-                let text_rect = egui::Rect::from_min_size(text.pos, text.galley.size());
-                let frame = shapes
-                    .iter()
-                    .filter_map(|shape| match shape {
-                        egui::epaint::Shape::Rect(rect)
-                            if rect.fill == background
-                                && rect.rect.contains(text_rect.center()) =>
-                        {
-                            Some(rect.rect)
-                        }
-                        _ => None,
-                    })
-                    .min_by(|a, b| a.area().total_cmp(&b.area()))
-                    .expect("settings field has a background");
-                assert!(
-                    text_rect.left() - frame.left() >= 6.0,
-                    "left padding: {frame:?}, {text_rect:?}"
-                );
-                assert!(
-                    frame.height() - text_rect.height() >= 10.0,
-                    "vertical padding: {frame:?}, {text_rect:?}"
-                );
+            ][..],
+        ),
+        (
+            SettingsPage::Advanced,
+            &["00000000-0000-0000-0000-000000000001", "organizations"][..],
+        ),
+    ];
+    for (page, values) in pages {
+        for width in [720.0, 1280.0] {
+            for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+                let mut h = Harness::new();
+                h.size.x = width;
+                h.app.settings.theme = theme;
+                // Show account-only settings while keeping the offline demo backend.
+                h.app.demo = false;
+                h.app.form_client_id = "00000000-0000-0000-0000-000000000001".into();
+                h.app.form_tenant = "organizations".into();
+                h.act(Action::ShowSettingsPage(page));
+                h.frame_with(vec![
+                    egui::Event::PointerMoved(egui::pos2(width / 2.0, 400.0)),
+                    egui::Event::MouseWheel {
+                        phase: egui::TouchPhase::Move,
+                        unit: egui::MouseWheelUnit::Point,
+                        delta: egui::vec2(0.0, -2000.0),
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ]);
+                h.frames(30);
+                let shapes = painted_shapes(&h);
+                let background = if h.app.palette.dark {
+                    h.app.palette.window
+                } else {
+                    h.app.palette.panel
+                };
+                for &value in values {
+                    let text = shapes
+                        .iter()
+                        .find_map(|shape| match shape {
+                            egui::epaint::Shape::Text(text) if text.galley.job.text == value => {
+                                Some(text)
+                            }
+                            _ => None,
+                        })
+                        .unwrap_or_else(|| panic!("settings field {value:?} is painted"));
+                    let text_rect = egui::Rect::from_min_size(text.pos, text.galley.size());
+                    let frame = shapes
+                        .iter()
+                        .filter_map(|shape| match shape {
+                            egui::epaint::Shape::Rect(rect)
+                                if rect.fill == background
+                                    && rect.rect.contains(text_rect.center()) =>
+                            {
+                                Some(rect.rect)
+                            }
+                            _ => None,
+                        })
+                        .min_by(|a, b| a.area().total_cmp(&b.area()))
+                        .expect("settings field has a background");
+                    assert!(
+                        text_rect.left() - frame.left() >= 6.0,
+                        "left padding: {frame:?}, {text_rect:?}"
+                    );
+                    assert!(
+                        frame.height() - text_rect.height() >= 10.0,
+                        "vertical padding: {frame:?}, {text_rect:?}"
+                    );
+                }
             }
         }
     }
+}
+
+fn painted_texts(h: &Harness) -> Vec<String> {
+    painted_shapes(h)
+        .into_iter()
+        .filter_map(|shape| match shape {
+            egui::epaint::Shape::Text(text) => Some(text.galley.job.text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn every_settings_page_draws_in_both_themes_and_widths() {
+    for demo in [true, false] {
+        for width in [480.0, 720.0, 1280.0] {
+            for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+                let mut h = Harness::new();
+                h.size.x = width;
+                h.app.settings.theme = theme;
+                h.app.demo = demo;
+                for page in SettingsPage::ALL {
+                    h.act(Action::ShowSettingsPage(page));
+                    assert_eq!(h.app.settings_page, Some(page));
+                    assert!(h.frames(2) > 20, "{page:?} draws at {width}");
+                    let painted = painted_texts(&h);
+                    assert!(
+                        painted.iter().any(|text| text == page.label()),
+                        "{page:?} shows its title at {width}"
+                    );
+                    // The sidebar names every page, except in the narrow
+                    // icon-only list.
+                    let named = painted.iter().any(|text| text == "Appearance");
+                    assert_eq!(
+                        named,
+                        width > 600.0 || page == SettingsPage::Appearance,
+                        "page names at {width}"
+                    );
+                    // The demo has no relay to set up.
+                    if demo {
+                        assert!(
+                            !painted.iter().any(|text| text == "Push updates")
+                                || page == SettingsPage::Push
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn settings_replace_the_content_and_close_like_a_page() {
+    let mut h = Harness::new();
+    h.act(Action::OpenSettings);
+    assert_eq!(h.app.settings_page, Some(SettingsPage::Account));
+    assert_eq!(h.app.overlay, None);
+    assert!(
+        !painted_texts(&h).iter().any(|text| text == "Chaat"),
+        "the chat list's header gives way to settings"
+    );
+
+    // ⌘, opens the page shown last; ⌘/ opens the shortcuts page.
+    h.act(Action::ShowSettingsPage(SettingsPage::Calls));
+    h.act(Action::CloseSettings);
+    assert_eq!(h.app.settings_page, None);
+    h.act(Action::OpenSettings);
+    assert_eq!(h.app.settings_page, Some(SettingsPage::Calls));
+    h.act(Action::OpenShortcuts);
+    assert_eq!(h.app.settings_page, Some(SettingsPage::Shortcuts));
+    let painted = painted_texts(&h);
+    for group in ["NAVIGATION", "COMPOSER", "VIEW"] {
+        assert!(painted.iter().any(|text| text == group), "{group} group");
+    }
+
+    // Esc closes settings.
+    h.frame_with(vec![egui::Event::Key {
+        key: egui::Key::Escape,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    }]);
+    h.frames(2);
+    assert_eq!(h.app.settings_page, None);
+
+    // Going to a section, or opening a conversation, leaves settings.
+    h.act(Action::OpenSettings);
+    h.act(Action::Navigate(Section::Calendar));
+    assert_eq!(h.app.settings_page, None);
+    assert_eq!(h.app.section, Section::Calendar);
+    h.act(Action::OpenSettings);
+    h.act(Action::OpenConversation(ConversationId::Chat(
+        "19:demo-grace@unq.gbl.spaces".into(),
+    )));
+    assert_eq!(h.app.settings_page, None);
 }
 
 #[test]
@@ -1361,14 +1467,13 @@ fn every_screen_draws() {
         h.act(Action::Navigate(section));
         assert!(h.frames(2) > 20, "{section:?} draws");
     }
-    for overlay in [
-        Action::OpenSwitcher,
-        Action::OpenSettings,
-        Action::OpenShortcuts,
-    ] {
-        h.act(overlay);
-        assert!(h.app.overlay.is_some());
-        h.act(Action::CloseOverlay);
+    h.act(Action::OpenSwitcher);
+    assert!(h.app.overlay.is_some());
+    h.act(Action::CloseOverlay);
+    for open in [Action::OpenSettings, Action::OpenShortcuts] {
+        h.act(open);
+        assert!(h.app.settings_page.is_some());
+        h.act(Action::CloseSettings);
     }
     for theme in [
         ThemeChoice::Light,
@@ -1776,7 +1881,7 @@ fn joining_a_meeting_follows_it_beside_its_chat() {
 #[test]
 fn call_settings_draw_and_apply() {
     let mut h = Harness::new();
-    h.act(Action::OpenSettings);
+    h.act(Action::ShowSettingsPage(SettingsPage::Calls));
     assert!(h.frames(2) > 50);
     let mut calls = h.app.settings.calls.clone();
     assert_eq!(calls.open_in, chaat::calling::CallsOpenIn::AppWindow);
@@ -1789,7 +1894,7 @@ fn call_settings_draw_and_apply() {
     );
     assert_eq!(h.app.opener(), chaat::calling::Opener::Browser);
     // A call from the Calls page, with the bar along the bottom.
-    h.act(Action::CloseOverlay);
+    h.act(Action::CloseSettings);
     h.app.section = Section::Calls;
     h.act(Action::StartCall {
         users: vec!["ada@contoso.com".into()],
@@ -1867,4 +1972,59 @@ fn an_evicted_draft_image_reopens_at_original_resolution_without_losing_the_draf
             .any(|(_, meta)| meta.name == image.uri() && meta.size == [1200, 800])
     );
     assert_eq!(h.app.drafts[&chat].images.len(), 1);
+}
+
+#[test]
+fn settings_pages_fit_the_smallest_window() {
+    // main.rs: with_min_inner_size([720.0, 480.0]).
+    for demo in [true, false] {
+        for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+            let mut h = Harness::new();
+            h.size = egui::vec2(720.0, 480.0);
+            h.app.settings.theme = theme;
+            h.app.demo = demo;
+            h.app.settings.client_id = "00000000-0000-0000-0000-000000000001".into();
+            h.app.form_client_id = h.app.settings.client_id.clone();
+            for page in SettingsPage::ALL {
+                h.act(Action::ShowSettingsPage(page));
+                let mut clipped = Vec::new();
+                for shape in &h.shapes {
+                    let clip = shape.clip_rect;
+                    let mut flat = Vec::new();
+                    fn collect<'a>(
+                        shape: &'a egui::epaint::Shape,
+                        output: &mut Vec<&'a egui::epaint::Shape>,
+                    ) {
+                        if let egui::epaint::Shape::Vec(shapes) = shape {
+                            for shape in shapes {
+                                collect(shape, output);
+                            }
+                        } else {
+                            output.push(shape);
+                        }
+                    }
+                    collect(&shape.shape, &mut flat);
+                    for part in flat {
+                        let bounds = part.visual_bounding_rect();
+                        // Backgrounds span the clip; content starts inside it.
+                        if bounds.is_finite()
+                            && bounds.left() > clip.left()
+                            && bounds.left() < clip.right()
+                            && bounds.right() > clip.right() + 1.0
+                        {
+                            let what = match part {
+                                egui::epaint::Shape::Text(text) => text.galley.job.text.clone(),
+                                other => format!("{:?}", std::mem::discriminant(other)),
+                            };
+                            clipped.push(format!("{what:?} to {:.0}", bounds.right()));
+                        }
+                    }
+                }
+                assert!(
+                    clipped.is_empty(),
+                    "{page:?} (demo {demo}) clips at 720 × 480: {clipped:#?}"
+                );
+            }
+        }
+    }
 }

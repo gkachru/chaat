@@ -10,6 +10,7 @@ pub mod keys;
 pub mod overlays;
 pub mod rail;
 pub mod rich;
+pub mod settings;
 pub mod signin;
 pub mod teams;
 pub mod widgets;
@@ -46,11 +47,20 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         docked(app, ui);
     } else if app.shows_workspace() {
         rail::show(app, ui);
-        sidebar(app, ui);
+        // Settings take the place of the sidebar and the content.
+        if app.settings_page.is_some() {
+            settings::nav(app, ui);
+        } else {
+            sidebar(app, ui);
+        }
         if app.call.is_some() {
             callbar::panel(app, ui, false);
         }
-        main(app, ui);
+        if app.settings_page.is_some() {
+            settings::page(app, ui);
+        } else {
+            main(app, ui);
+        }
     } else {
         signin::show(app, ui);
     }

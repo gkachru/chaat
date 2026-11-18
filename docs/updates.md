@@ -1,7 +1,7 @@
 # App updates
 
 Official portable downloads and macOS app bundles can update themselves.
-In Settings, **App updates** controls automatic checks and downloads and
+In Settings, the **Updates** section of **About** controls automatic checks and downloads and
 provides **Check for updates**, **Download update**, and **Restart to update**.
 A ready update also shows a persistent restart button below the workspace.
 

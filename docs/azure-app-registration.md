@@ -75,7 +75,7 @@ approve everything at once.
 
 Then select **Grant admin consent for <your organisation>** if you are an
 administrator. Otherwise send your administrator the link Chaat shows under
-**Settings → App registration** (`…/adminconsent?client_id=…`).
+**Settings → Advanced → App registration** (`…/adminconsent?client_id=…`).
 
 [permissions.md](permissions.md) explains each permission and the
 endpoints that use it.

@@ -20,8 +20,8 @@ use crate::backend::{AuthStatus, Backend, Command, Event, Merge, Waker};
 use crate::html;
 use crate::model::{
     Access, Action, Availability, Channel, Chat, ChatKind, ConversationId, Delivery, Meeting,
-    Member, MentionRef, Message, Presence, Profile, Reaction, SearchHit, Section, Team, Toast,
-    ToastKind,
+    Member, MentionRef, Message, Presence, Profile, Reaction, SearchHit, Section, SettingsPage,
+    Team, Toast, ToastKind,
 };
 use crate::paths::AppDirs;
 use crate::settings::Settings;
@@ -161,8 +161,6 @@ pub struct Draft {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Overlay {
     Switcher,
-    Settings,
-    Shortcuts,
     NewChat,
     StatusMessage,
     /// A feature needs a permission the account has not granted yet.
@@ -487,6 +485,10 @@ pub struct App {
     retire: Vec<usize>,
 
     pub section: Section,
+    /// The settings page in place of the sidebar and content, if open.
+    pub settings_page: Option<SettingsPage>,
+    /// The settings page shown last, to open again with ⌘,.
+    last_settings_page: SettingsPage,
     pub overlay: Option<Overlay>,
     pub switcher: Switcher,
     pub new_chat: NewChat,
@@ -616,6 +618,8 @@ impl App {
             adding_from: None,
             retire: Vec::new(),
             section: Section::Chats,
+            settings_page: None,
+            last_settings_page: SettingsPage::default(),
             overlay: None,
             switcher: Switcher::default(),
             new_chat: NewChat::default(),
@@ -1545,6 +1549,7 @@ impl App {
                 }
             }
             Action::Navigate(section) => {
+                self.settings_page = None;
                 if self.section != section {
                     self.section = section;
                     self.open = match (section, &self.open) {
@@ -2032,8 +2037,19 @@ impl App {
                     self.backend.send(Command::Search(query));
                 }
             }
-            Action::OpenSettings => self.overlay = Some(Overlay::Settings),
-            Action::OpenShortcuts => self.overlay = Some(Overlay::Shortcuts),
+            Action::OpenSettings => {
+                let page = self.last_settings_page;
+                self.apply(Action::ShowSettingsPage(page), ctx);
+            }
+            Action::OpenShortcuts => {
+                self.apply(Action::ShowSettingsPage(SettingsPage::Shortcuts), ctx)
+            }
+            Action::ShowSettingsPage(page) => {
+                self.settings_page = Some(page);
+                self.last_settings_page = page;
+                self.overlay = None;
+            }
+            Action::CloseSettings => self.settings_page = None,
             Action::SetTheme(choice) => {
                 self.settings.theme = choice;
                 self.mark_settings_dirty();
@@ -2109,6 +2125,7 @@ impl App {
     }
 
     fn open_conversation(&mut self, conversation: ConversationId) {
+        self.settings_page = None;
         let me = self.me().to_owned();
         self.unread_kept = match &conversation {
             ConversationId::Chat(id) if self.chat(id).is_some_and(|c| c.is_unread(&me)) => {

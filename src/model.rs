@@ -445,6 +445,47 @@ pub struct SearchHit {
     pub at: Millis,
 }
 
+/// A page of the settings view, which takes the place of the sidebar and
+/// the open conversation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum SettingsPage {
+    #[default]
+    Account,
+    General,
+    Appearance,
+    Calls,
+    Push,
+    Shortcuts,
+    Advanced,
+    About,
+}
+
+impl SettingsPage {
+    pub const ALL: [Self; 8] = [
+        Self::Account,
+        Self::General,
+        Self::Appearance,
+        Self::Calls,
+        Self::Push,
+        Self::Shortcuts,
+        Self::Advanced,
+        Self::About,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Account => "Account",
+            Self::General => "General",
+            Self::Appearance => "Appearance",
+            Self::Calls => "Calls and meetings",
+            Self::Push => "Push updates",
+            Self::Shortcuts => "Keyboard shortcuts",
+            Self::Advanced => "Advanced",
+            Self::About => "About",
+        }
+    }
+}
+
 /// The rail's destinations.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Section {
@@ -601,8 +642,12 @@ pub enum Action {
     OpenSwitcher,
     CloseOverlay,
     SearchMessages(String),
+    /// Settings, on the page last shown.
     OpenSettings,
+    /// Settings, on the keyboard shortcuts page.
     OpenShortcuts,
+    ShowSettingsPage(SettingsPage),
+    CloseSettings,
     SetTheme(crate::settings::ThemeChoice),
     SetNotifications(bool),
     SetKeepRunning(bool),

@@ -15,7 +15,7 @@ link in the Calls page. By default, Chaat opens an Edge or Chrome app window
 without browser tabs. If neither browser is installed, it uses the default
 browser. The Teams desktop app is an explicit choice in Settings.
 
-Settings → Calls and meetings controls:
+The **Calls and meetings** page in Settings controls:
 
 | Setting | Behavior |
 |---|---|

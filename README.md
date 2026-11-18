@@ -83,7 +83,7 @@ tenants, and most tenants block unverified multi-tenant apps.
 3. In most tenants an administrator must approve `Chat.ReadWrite` and
    `Calendars.Read`, which the default consent policy excludes, and
    `ChannelMessage.Read.All` for channel posts. Chaat shows an admin-consent
-   link under **Settings**. Starting a chat, sending a file and setting
+   link under **Settings → Advanced**. Starting a chat, sending a file and setting
    your status each ask for one more permission the first time. Each
    permission is explained in [docs/permissions.md](docs/permissions.md).
 

@@ -78,8 +78,17 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 }
                 account_menu(app, &avatar);
                 ui.add_space(6.0);
-                let settings = settings_button(ui, &palette);
-                widgets::on_click(&settings, &mut app.actions, Action::OpenSettings);
+                let open = app.settings_page.is_some();
+                let settings = settings_button(ui, &palette, open);
+                widgets::on_click(
+                    &settings,
+                    &mut app.actions,
+                    if open {
+                        Action::CloseSettings
+                    } else {
+                        Action::OpenSettings
+                    },
+                );
                 if app.demo {
                     ui.add_space(4.0);
                     ui.label(
@@ -97,7 +106,7 @@ fn item(ui: &mut egui::Ui, app: &App, section: Section, badge: usize) -> egui::R
     let palette = &app.palette;
     // Icon only: the name shows in the tooltip.
     let (rect, response) = ui.allocate_exact_size(vec2(48.0, 44.0), Sense::click());
-    let active = app.section == section;
+    let active = app.section == section && app.settings_page.is_none();
     if ui.is_rect_visible(rect) {
         if active {
             glass_tile(ui.painter(), palette, rect, true);
@@ -141,15 +150,20 @@ fn item(ui: &mut egui::Ui, app: &App, section: Section, badge: usize) -> egui::R
         .on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-/// The Settings button, with the same hover tile as the section items.
-fn settings_button(ui: &mut egui::Ui, palette: &theme::Palette) -> egui::Response {
+/// The Settings button, with the same tiles as the section items: raised
+/// while settings are open.
+fn settings_button(ui: &mut egui::Ui, palette: &theme::Palette, open: bool) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(vec2(48.0, 44.0), Sense::click());
     if ui.is_rect_visible(rect) {
         let hovered = response.hovered() || response.has_focus();
-        if hovered {
+        if open {
+            glass_tile(ui.painter(), palette, rect, true);
+        } else if hovered {
             glass_tile(ui.painter(), palette, rect, false);
         }
-        let tint = if hovered {
+        let tint = if open {
+            palette.accent
+        } else if hovered {
             palette.text
         } else {
             palette.secondary
@@ -160,7 +174,11 @@ fn settings_button(ui: &mut egui::Ui, palette: &theme::Palette) -> egui::Respons
         );
     }
     response
-        .on_hover_text("Settings (⌘,)")
+        .on_hover_text(if open {
+            "Close settings (Esc)"
+        } else {
+            "Settings (⌘,)"
+        })
         .on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 

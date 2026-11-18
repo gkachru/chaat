@@ -40,7 +40,7 @@ It does not request `Files.ReadWrite` or create a OneDrive sharing link.
 
 ## Revoking access
 
-Sign out in Chaat (**Settings → Sign out**) to delete the refresh token from
+Sign out in Chaat (**Settings → Account → Sign out**) to delete the refresh token from
 the OS credential store and remove the account's local cache. To revoke the
 grant at Microsoft, open [My Apps](https://myapps.microsoft.com) or ask an
 administrator to remove the app's consent in Entra ID.

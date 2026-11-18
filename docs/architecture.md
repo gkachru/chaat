@@ -61,7 +61,7 @@ account already open is retired.
 | `main.rs` | CLI, logging, single instance, tray, the eframe window and the window shell (`fastframe-shell`) |
 | `app.rs` | `App` state, event handling, the action reducer, optimistic sends, message merging |
 | `model.rs` | Chaat's own types (`Chat`, `Message`, `Team`, `Channel`, `Meeting`, `Presence`, `Action`, …) |
-| `ui/` | Views: rail, chat list, teams tree, conversation (virtualized history, composer, threads), calendar, calls, welcome/sign-in, overlays (⌘K switcher, settings, shortcuts), widgets, rich text |
+| `ui/` | Views: rail, chat list, teams tree, conversation (virtualized history, composer, threads), calendar, calls, welcome/sign-in, settings (pages in place of the sidebar and content), overlays (⌘K switcher, new chat, dialogs), widgets, rich text |
 | `html.rs` | Teams HTML → `RichText` (a tolerant tokenizer, no browser engine) and composer markdown → HTML |
 | `backend.rs`, `backend/worker.rs` | The runtime thread, `Command`/`Event`, and the worker's tasks |
 | `auth/` | Entra ID: PKCE authorize URL, loopback listener, token endpoint (code, refresh, device code), `Session` with refresh-token rotation |

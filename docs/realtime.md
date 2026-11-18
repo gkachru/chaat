@@ -120,7 +120,7 @@ or `communications/presences/{id}`.
 **No message content and no tokens.** It keeps nothing on disk. Anyone who
 could forge a notification could only make Chaat re-fetch from Graph.
 
-With push on, keeping Chaat running in the tray (**Settings → Behaviour**)
+With push on, keeping Chaat running in the tray (**Settings → General**)
 gives background notifications for new messages.
 
 ### Running the relay
