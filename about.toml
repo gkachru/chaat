@@ -454,9 +454,9 @@ path = "license-mit"
 license = "MIT"
 checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
 
-[wren-relay.clarify]
+[chaat-relay.clarify]
 license = "MIT"
-[[wren-relay.clarify.files]]
+[[chaat-relay.clarify.files]]
 path = "../LICENSE"
 license = "MIT"
 checksum = "b0c24710b28e67c1d63da67c673f8166ab3fda0a70d8bb383976db27e6b38bc9"

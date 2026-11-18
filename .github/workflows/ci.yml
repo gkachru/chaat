@@ -121,7 +121,7 @@ jobs:
       - name: Build the relay (Linux)
         if: runner.os == 'Linux'
         run: |
-          cargo build --locked --release -p wren-relay
+          cargo build --locked --release -p chaat-relay
           target/release/chaat-relay --licenses > "$RUNNER_TEMP/relay-licenses.txt"
           cmp "$RUNNER_TEMP/chaat-licenses.txt" "$RUNNER_TEMP/relay-licenses.txt"
           mkdir -p dist/relay

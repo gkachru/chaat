@@ -1,4 +1,4 @@
-//! Push updates end to end: a real wren-relay on the loopback interface, the
+//! Push updates end to end: a real chaat-relay on the loopback interface, the
 //! real backend, and a local stand-in for Graph. Graph's part (validating the
 //! URL, posting a change notification) is played by the test.
 
@@ -251,6 +251,6 @@ async fn a_change_notification_fetches_the_chat() {
 }
 
 async fn axum_serve(listener: tokio::net::TcpListener) {
-    let app = wren_relay::router(wren_relay::Relay::default());
-    wren_relay::serve(listener, app).await;
+    let app = chaat_relay::router(chaat_relay::Relay::default());
+    chaat_relay::serve(listener, app).await;
 }

@@ -788,6 +788,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "chaat-relay"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "env_logger",
+ "futures-util",
+ "log",
+ "reqwest",
+ "serde",
+ "tokio",
+ "tokio-tungstenite 0.30.0",
+]
+
+[[package]]
 name = "chacha20"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6327,6 +6341,7 @@ dependencies = [
  "apple-native-keyring-store",
  "arboard",
  "base64 0.22.1",
+ "chaat-relay",
  "clap",
  "directories",
  "eframe",
@@ -6369,22 +6384,7 @@ dependencies = [
  "windows-native-keyring-store",
  "winresource",
  "wiremock",
- "wren-relay",
  "zbus-secret-service-keyring-store",
-]
-
-[[package]]
-name = "wren-relay"
-version = "0.1.0"
-dependencies = [
- "axum",
- "env_logger",
- "futures-util",
- "log",
- "reqwest",
- "serde",
- "tokio",
- "tokio-tungstenite 0.30.0",
 ]
 
 [[package]]

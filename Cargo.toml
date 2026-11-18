@@ -130,7 +130,7 @@ winresource = "0.1"
 [dev-dependencies]
 tempfile = "3"
 # The relay itself, for the end-to-end push test.
-wren-relay = { path = "relay" }
+chaat-relay = { path = "relay" }
 # A local HTTP server standing in for Graph and the token endpoint, so the
 # client's paging, throttling and refresh behaviour is tested without the
 # network.

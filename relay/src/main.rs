@@ -50,7 +50,7 @@ async fn main() {
         }
     };
     log::info!("chaat-relay listening on {listen}");
-    let app = wren_relay::router(wren_relay::Relay::default());
+    let app = chaat_relay::router(chaat_relay::Relay::default());
     let shutdown = async {
         let _ = tokio::signal::ctrl_c().await;
     };

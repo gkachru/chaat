@@ -1,20 +1,20 @@
-//! wren-relay: forwards Microsoft Graph change notifications to Wren.
+//! chaat-relay: forwards Microsoft Graph change notifications to Chaat.
 //!
 //! Graph can only push change notifications to a public HTTPS endpoint, and a
 //! desktop app has none. This relay is that endpoint, small enough for
 //! anyone to run behind their own TLS proxy:
 //!
-//! - Wren opens a WebSocket at `/ws/{channel}`. The channel is a random token
-//!   Wren makes for each run.
-//! - Wren creates a Graph subscription whose `notificationUrl` is
+//! - Chaat opens a WebSocket at `/ws/{channel}`. The channel is a random token
+//!   Chaat makes for each run.
+//! - Chaat creates a Graph subscription whose `notificationUrl` is
 //!   `/graph/{channel}` and whose `lifecycleNotificationUrl` is
 //!   `/lifecycle/{channel}`.
 //! - Graph validates each URL with a `validationToken`, which the relay echoes
 //!   back. Graph then posts notifications there, and the relay hands each body
 //!   to the channel's WebSocket and answers `202 Accepted` at once.
 //!
-//! Wren subscribes without resource data, so notifications carry only IDs
-//! (chat and message), never message content. Wren fetches the content
+//! Chaat subscribes without resource data, so notifications carry only IDs
+//! (chat and message), never message content. Chaat fetches the content
 //! itself from Graph. The relay keeps nothing on disk and forgets a channel
 //! when its WebSocket closes.
 
@@ -60,7 +60,7 @@ pub fn router(relay: Relay) -> Router {
         .with_state(relay)
 }
 
-/// Channels are Wren's random tokens: long, URL-safe, nothing else.
+/// Channels are Chaat's random tokens: long, URL-safe, nothing else.
 fn valid_channel(channel: &str) -> bool {
     (32..=128).contains(&channel.len())
         && channel

@@ -1,4 +1,4 @@
-//! Push updates through a wren-relay (experimental).
+//! Push updates through a chaat-relay (experimental).
 //!
 //! When a relay is configured, Wren:
 //!

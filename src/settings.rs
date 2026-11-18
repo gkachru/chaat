@@ -48,7 +48,7 @@ pub struct Settings {
     /// instead of the system's window frame.
     pub custom_titlebar: bool,
     pub window: Option<WindowGeometry>,
-    /// A wren-relay for push updates (experimental), `https://…`.
+    /// A chaat-relay for push updates (experimental), `https://…`.
     pub relay_url: Option<String>,
     pub calls: CallSettings,
     /// Check GitHub once a day and download verified app updates.

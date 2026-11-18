@@ -87,7 +87,7 @@ gives background notifications for new messages.
 ### Running the relay
 
 ```sh
-cargo build --release -p wren-relay
+cargo build --release -p chaat-relay
 ./target/release/chaat-relay --listen 127.0.0.1:8787
 ```
 
