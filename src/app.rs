@@ -504,6 +504,10 @@ pub struct App {
 
     /// The call or meeting the call bar follows.
     pub call: Option<crate::calling::session::CallSession>,
+    /// The account whose call bar the person closed while presence still
+    /// said they were in a call. No new bar shows for it until presence
+    /// says the call is over.
+    call_dismissed: Option<Option<String>>,
     /// Wren's window before it moved beside a call window.
     pub docked: Option<Docked>,
     /// Edge and Chrome, found on first use.
@@ -612,6 +616,7 @@ impl App {
             last_input: None,
             open_account_menu: false,
             call: None,
+            call_dismissed: None,
             docked: None,
             browsers: None,
         }

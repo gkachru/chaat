@@ -301,13 +301,19 @@ impl App {
 
     /// Follows the call from a reading of the person's own presence. A call
     /// Wren did not open shows too, but not a calendar entry alone.
+    /// A bar the person closed stays closed for the rest of that call.
     pub(super) fn observe_call(&mut self, activity: Option<&str>) {
         let now = crate::time::now();
         let id = self.id.clone();
+        let in_a_call = in_call(activity, true);
+        let dismissed = self.call_dismissed.as_ref() == Some(&id);
+        if dismissed && !in_a_call {
+            self.call_dismissed = None;
+        }
         match &mut self.call {
             Some(call) if call.account == id => call.observe(activity, now),
             Some(_) => {}
-            None if !self.hidden && !self.demo && in_call(activity, true) => {
+            None if !self.hidden && !self.demo && in_a_call && !dismissed => {
                 self.call = Some(CallSession::elsewhere(now, id));
             }
             None => {}
@@ -333,7 +339,9 @@ impl App {
     }
 
     pub(super) fn end_call(&mut self, ctx: &egui::Context) {
-        self.call = None;
+        if let Some(call) = self.call.take() {
+            self.call_dismissed = Some(call.account);
+        }
         self.undock(ctx);
     }
 
@@ -574,6 +582,24 @@ mod tests {
         assert!(app.call.is_none());
         app.observe_call(Some("InACall"));
         assert_eq!(app.call.as_ref().unwrap().target, CallTarget::Elsewhere);
+    }
+
+    #[test]
+    fn a_dismissed_call_bar_stays_closed_until_the_call_ends() {
+        let (mut app, _dir) = demo();
+        app.demo = false;
+        let ctx = egui::Context::default();
+        app.observe_call(Some("InACall"));
+        assert!(app.call.is_some());
+        app.apply(Action::CallDone, &ctx);
+        assert!(app.call.is_none());
+        // Presence still says the call goes on: the bar stays closed.
+        app.observe_call(Some("InACall"));
+        assert!(app.call.is_none());
+        // The call ended; the next one shows again.
+        app.observe_call(Some("Available"));
+        app.observe_call(Some("InACall"));
+        assert!(app.call.is_some());
     }
 
     #[test]
