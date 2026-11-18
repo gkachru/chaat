@@ -23,9 +23,6 @@ push notifications, on 17 October 2026. The completed checks are listed in
 - Lazy per-script fallback fonts (upstream in fastframe-fonts), about 29 MB
   less memory.
 - Unread divider and "jump to latest", pinned chats, chat muting.
-- Live presence for group-chat members who are not one-on-one contacts
-  (today they update when the chat opens). Graph allows one presence
-  subscription per person and app, up to 650 people.
 - Translations (fastframe-i18n).
 - Signed and notarized macOS builds, a Windows installer, Flatpak and AUR.
 

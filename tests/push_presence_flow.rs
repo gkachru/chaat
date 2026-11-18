@@ -1,7 +1,7 @@
-//! Presence dots: the chat list's one-on-one contacts get their presence
-//! fetched when the list is looked at, the push session follows them in one
-//! bulk presence subscription (with the person's own presence), and a
-//! contact's presence notification fetches that contact, batched.
+//! Presence dots: the chat list's one-on-one contacts and group members get
+//! their presence fetched when the list is looked at, the push session
+//! follows them in one bulk presence subscription (with the person's own
+//! presence), and presence notifications fetch those people, batched.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -161,8 +161,8 @@ async fn contacts_presence_is_fetched_on_look_and_followed_by_push() {
         matches!(e, Event::Auth(AuthStatus::SignedIn { .. })).then_some(())
     });
 
-    // Looking at the chat list (start) fetches the one-on-one contact's
-    // presence; group members are left to the chat when it opens.
+    // Looking at the chat list (start) fetches presence for the one-on-one
+    // contact, then the group's members, in one request.
     backend.send(Command::Fetch {
         resource: Resource::Chats,
         trigger: Trigger::Start,
@@ -174,10 +174,14 @@ async fn contacts_presence_is_fetched_on_look_and_followed_by_push() {
     assert_eq!(presence[0].0, "u-ada");
     assert_eq!(
         presence_requests(&server).await,
-        vec![vec!["u-ada".to_owned()]]
+        vec![vec![
+            "u-ada".to_owned(),
+            "u-grace".to_owned(),
+            "u-bo".to_owned()
+        ]]
     );
 
-    // Push: one presence subscription, the person first, then the contact.
+    // Push: one presence subscription: the person, the contact, the group.
     backend.send(Command::Relay(Some(relay_url.clone())));
     wait_for(&backend, 10, |e| match e {
         Event::Push(PushStatus::Live) => Some(()),
@@ -185,7 +189,7 @@ async fn contacts_presence_is_fetched_on_look_and_followed_by_push() {
         _ => None,
     });
     let deadline = Instant::now() + Duration::from_secs(5);
-    let bulk = "communications/presences?$filter=id in ('u-me','u-ada')";
+    let bulk = "communications/presences?$filter=id in ('u-me','u-ada','u-grace','u-bo')";
     while !presence_subscriptions(&server)
         .await
         .iter()
@@ -215,13 +219,14 @@ async fn contacts_presence_is_fetched_on_look_and_followed_by_push() {
     let notification_url = body["notificationUrl"].as_str().unwrap().to_owned();
     let client_state = body["clientState"].as_str().unwrap().to_owned();
 
-    // A burst of notices for the contact is one fetch for that contact.
+    // A burst of notices, for the contact and a group member, is one fetch
+    // for both.
     let fetches_before = presence_requests(&server).await.len();
     let notice = serde_json::json!({"value": [
         {"clientState": client_state, "changeType": "updated",
          "resource": "communications/presences/u-ada", "resourceData": {"id": "u-ada"}},
         {"clientState": client_state, "changeType": "updated",
-         "resource": "communications/presences/u-ada", "resourceData": {"id": "u-ada"}}
+         "resource": "communications/presences/u-grace", "resourceData": {"id": "u-grace"}}
     ]});
     let http = reqwest::Client::new();
     for _ in 0..2 {
@@ -241,7 +246,9 @@ async fn contacts_presence_is_fetched_on_look_and_followed_by_push() {
     assert_eq!(presence[0].0, "u-ada");
     let fetches = presence_requests(&server).await;
     assert_eq!(fetches.len(), fetches_before + 1, "one fetch for the burst");
-    assert_eq!(fetches.last().unwrap(), &vec!["u-ada".to_owned()]);
+    let mut last = fetches.last().unwrap().clone();
+    last.sort();
+    assert_eq!(last, ["u-ada", "u-grace"]);
 
     backend.send(Command::Relay(None));
     wait_for(&backend, 5, |e| {

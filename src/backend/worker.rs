@@ -1512,8 +1512,11 @@ fn describe(resource: &Resource) -> &'static str {
     }
 }
 
-/// The other people of one-on-one chats in the cached list, most recent
-/// chat first, without repeats.
+/// Whose presence the chat list shows, from the cached list: the people of
+/// one-on-one chats, then the members of group chats, each most recent chat
+/// first, without repeats. Meeting chats are left out: their attendee lists
+/// are long and short-lived. Graph expands at most 25 members per chat in
+/// the list, so larger groups are partly covered until the chat opens.
 async fn contacts_of(store: &Arc<Mutex<Store>>, me: String) -> Vec<String> {
     let store = Arc::clone(store);
     tokio::task::spawn_blocking(move || {
@@ -1522,18 +1525,31 @@ async fn contacts_of(store: &Arc<Mutex<Store>>, me: String) -> Vec<String> {
             .unwrap_or_else(|p| p.into_inner())
             .chats()
             .unwrap_or_default();
-        let mut people: Vec<String> = Vec::new();
-        for chat in &chats {
-            if let Some(peer) = chat.peer(&me)
-                && !people.contains(&peer.user_id)
-            {
-                people.push(peer.user_id.clone());
-            }
-        }
-        people
+        people_to_follow(&chats, &me)
     })
     .await
     .unwrap_or_default()
+}
+
+fn people_to_follow(chats: &[crate::model::Chat], me: &str) -> Vec<String> {
+    use crate::model::ChatKind;
+    let mut people: Vec<String> = Vec::new();
+    let mut add = |user: &str| {
+        if user != me && !user.is_empty() && !people.iter().any(|p| p == user) {
+            people.push(user.to_owned());
+        }
+    };
+    for chat in chats {
+        if let Some(peer) = chat.peer(me) {
+            add(&peer.user_id);
+        }
+    }
+    for chat in chats.iter().filter(|chat| chat.kind == ChatKind::Group) {
+        for member in &chat.members {
+            add(&member.user_id);
+        }
+    }
+    people
 }
 
 async fn emit_cache(store: &Arc<Mutex<Store>>, out: &Outbox) {
@@ -2192,4 +2208,40 @@ async fn device_code_sign_in(
         .map_err(|e| e.to_string())?;
     out.send(Event::Auth(AuthStatus::Finishing));
     Ok(response)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Chat, ChatKind, Member};
+
+    fn chat(kind: ChatKind, members: &[&str]) -> Chat {
+        Chat {
+            kind,
+            members: members
+                .iter()
+                .map(|id| Member {
+                    user_id: (*id).into(),
+                    display_name: id.to_uppercase(),
+                    email: None,
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn one_on_one_contacts_come_before_group_members_and_meetings_are_left_out() {
+        let chats = [
+            chat(ChatKind::Group, &["me", "grace", "ada"]),
+            chat(ChatKind::OneOnOne, &["me", "bo"]),
+            chat(ChatKind::Meeting, &["me", "visitor"]),
+            chat(ChatKind::OneOnOne, &["ada", "me"]),
+            chat(ChatKind::Group, &["me", "bo", "hedy"]),
+        ];
+        assert_eq!(
+            people_to_follow(&chats, "me"),
+            ["bo", "ada", "grace", "hedy"]
+        );
+    }
 }
