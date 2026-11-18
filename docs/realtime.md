@@ -135,7 +135,8 @@ export CHAAT_RELAY_KEY="$(openssl rand -base64 32)"
 ```
 
 - The key comes from the environment, not an argument, because arguments
-  show in process lists. It must be at least 16 visible ASCII characters.
+  show in process lists. It must be at least 16 visible ASCII characters;
+  surrounding whitespace, such as a newline from a key file, is trimmed.
   Without it, the relay logs a warning and lets anyone connect.
 - Each person enters the key under the relay URL in **Settings → Push
   updates**. Chaat keeps it in the OS credential store, never in the
@@ -148,6 +149,26 @@ export CHAAT_RELAY_KEY="$(openssl rand -base64 32)"
   and only if the sender knows that client's random channel.
 - To change the key, restart the relay with the new one and tell everyone;
   clients with the old key are refused until they update it.
+
+### Behind Cloudflare
+
+A named tunnel gives the relay a stable hostname:
+
+```sh
+cloudflared tunnel create chaat-relay
+cloudflared tunnel route dns chaat-relay relay.example.com
+cloudflared tunnel run --url http://127.0.0.1:8787 chaat-relay
+```
+
+Cloudflare's bot and WAF rules apply to the relay's routes. In testing,
+Cloudflare answered `403` to POSTs whose user agent was Python's
+`urllib`, before they reached the relay, while curl's went through. Whether
+a zone's rules ever challenge Microsoft Graph's own posts was not tested.
+If Graph subscriptions fail validation or notifications stop arriving, add
+a WAF custom rule that skips bot protection for `/graph/` and `/lifecycle/`
+paths, and check **Security → Events** in Cloudflare for blocked requests.
+The client WebSocket (`/ws/`) passes through tunnels; Chaat's 30-second
+pings keep it within Cloudflare's idle timeout.
 
 ### Limits
 

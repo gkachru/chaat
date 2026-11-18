@@ -58,21 +58,10 @@ Set CHAAT_RELAY_KEY to require an access key from clients."
             }
         }
     }
-    let listener = match tokio::net::TcpListener::bind(listen).await {
-        Ok(listener) => listener,
-        Err(error) => {
-            eprintln!("could not listen on {listen}: {error}");
-            std::process::exit(1);
-        }
-    };
-    log::info!(
-        "chaat-relay listening on {listen}, at most {} clients",
-        limits.max_clients
-    );
     let mut relay = chaat_relay::Relay::new(limits);
     // From the environment, not an argument: arguments show in process lists.
     match std::env::var("CHAAT_RELAY_KEY") {
-        Ok(key) if !key.is_empty() => match relay.with_key(&key) {
+        Ok(key) if !key.trim().is_empty() => match relay.with_key(&key) {
             Ok(keyed) => {
                 relay = keyed;
                 log::info!("clients must present the access key");
@@ -84,6 +73,17 @@ Set CHAAT_RELAY_KEY to require an access key from clients."
         },
         _ => log::warn!("no CHAAT_RELAY_KEY: anyone who can reach the relay may connect"),
     }
+    let listener = match tokio::net::TcpListener::bind(listen).await {
+        Ok(listener) => listener,
+        Err(error) => {
+            eprintln!("could not listen on {listen}: {error}");
+            std::process::exit(1);
+        }
+    };
+    log::info!(
+        "chaat-relay listening on {listen}, at most {} clients",
+        limits.max_clients
+    );
     let app = chaat_relay::router(relay);
     let shutdown = async {
         let _ = tokio::signal::ctrl_c().await;

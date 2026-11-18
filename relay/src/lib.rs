@@ -84,9 +84,11 @@ impl Relay {
         }
     }
 
-    /// Requires clients to present `key`. Keys shorter than [`MIN_KEY_LEN`]
-    /// are refused.
+    /// Requires clients to present `key`, without surrounding whitespace
+    /// (keys read from files usually end in a newline). Keys shorter than
+    /// [`MIN_KEY_LEN`] are refused.
     pub fn with_key(mut self, key: &str) -> Result<Self, &'static str> {
+        let key = key.trim();
         if key.len() < MIN_KEY_LEN {
             return Err("the access key must be at least 16 characters");
         }
@@ -499,6 +501,22 @@ mod tests {
                 .is_err()
         );
         assert!(Relay::default().with_key(KEY).is_ok());
+        // A key from a file, with a Windows line ending.
+        let from_file = Relay::default()
+            .with_key(&format!(
+                "{KEY}
+"
+            ))
+            .unwrap();
+        assert_eq!(from_file.key.as_deref(), Some(KEY));
+        assert!(
+            Relay::default()
+                .with_key(
+                    "   
+"
+                )
+                .is_err()
+        );
         assert!(same_secret(b"abc", b"abc"));
         assert!(!same_secret(b"abc", b"abd"));
         assert!(!same_secret(b"abc", b"abcd"));
