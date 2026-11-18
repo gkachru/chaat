@@ -21,6 +21,17 @@ pub fn matches_filter(chat: &Chat, filter: &str, me: &str) -> bool {
             .any(|m| m.display_name.to_lowercase().contains(&filter))
 }
 
+/// Whether a chat's kind passes the Groups and Meetings chips. With neither
+/// on, every kind passes; with one or both on, only the chosen kinds do.
+pub fn matches_kind(chat: &Chat, groups: bool, meetings: bool) -> bool {
+    match chat.kind {
+        _ if !groups && !meetings => true,
+        ChatKind::Group => groups,
+        ChatKind::Meeting => meetings,
+        ChatKind::OneOnOne => false,
+    }
+}
+
 /// Whether a chat shows in the list. With Unread on, a chat opened while
 /// unread stays too, so it does not vanish the moment it is read.
 pub fn listed(app: &App, chat: &Chat, me: &str) -> bool {
@@ -28,7 +39,17 @@ pub fn listed(app: &App, chat: &Chat, me: &str) -> bool {
         && app.open.as_ref() == Some(&ConversationId::Chat(chat.id.clone()));
     !chat.hidden
         && matches_filter(chat, &app.chat_filter, me)
+        && matches_kind(chat, app.groups_only, app.meetings_only)
         && (!app.unread_only || chat.is_unread(me) || kept)
+}
+
+/// What the empty list says when the kind chips leave nothing to show.
+fn kind_label(groups: bool, meetings: bool) -> &'static str {
+    match (groups, meetings) {
+        (true, true) => "group or meeting chats",
+        (true, false) => "group chats",
+        _ => "meeting chats",
+    }
 }
 
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
@@ -43,12 +64,27 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 app.chat_filter.clear();
             }
             ui.add_space(8.0);
-            if widgets::chip(ui, &palette, "Unread", app.unread_only)
-                .on_hover_text("Show only chats with unread messages")
-                .clicked()
-            {
-                app.unread_only = !app.unread_only;
-            }
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                if widgets::chip(ui, &palette, "Unread", app.unread_only)
+                    .on_hover_text("Show only chats with unread messages")
+                    .clicked()
+                {
+                    app.unread_only = !app.unread_only;
+                }
+                if widgets::chip(ui, &palette, "Groups", app.groups_only)
+                    .on_hover_text("Show group chats")
+                    .clicked()
+                {
+                    app.groups_only = !app.groups_only;
+                }
+                if widgets::chip(ui, &palette, "Meetings", app.meetings_only)
+                    .on_hover_text("Show meeting chats")
+                    .clicked()
+                {
+                    app.meetings_only = !app.meetings_only;
+                }
+            });
         });
     ui.add_space(8.0);
 
@@ -61,21 +97,33 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         .map(|(index, _)| index)
         .collect();
     if visible.is_empty() {
-        let (title, text) =
-            if !app.chats.is_empty() && app.unread_only && app.chat_filter.trim().is_empty() {
-                ("All caught up", "No chats have unread messages.")
-            } else if app.chats.is_empty() {
-                if app.loading.contains(&crate::sync::Resource::Chats) {
-                    (
-                        "Loading chats…",
-                        "Your chats appear here as soon as Microsoft answers.",
-                    )
-                } else {
-                    ("No chats yet", "Chats you start in Teams show up here.")
-                }
+        let by_kind = app.groups_only || app.meetings_only;
+        let kind = kind_label(app.groups_only, app.meetings_only);
+        let kind_text;
+        let (title, text) = if !app.chats.is_empty() && !app.chat_filter.trim().is_empty() {
+            ("No matches", "No chat or person matches the filter.")
+        } else if !app.chats.is_empty() && app.unread_only {
+            if by_kind {
+                kind_text = format!("No {kind} have unread messages.");
+                ("All caught up", kind_text.as_str())
             } else {
-                ("No matches", "No chat or person matches the filter.")
-            };
+                ("All caught up", "No chats have unread messages.")
+            }
+        } else if !app.chats.is_empty() && by_kind {
+            kind_text = format!("You have no {kind} yet.");
+            ("Nothing to show", kind_text.as_str())
+        } else if app.chats.is_empty() {
+            if app.loading.contains(&crate::sync::Resource::Chats) {
+                (
+                    "Loading chats…",
+                    "Your chats appear here as soon as Microsoft answers.",
+                )
+            } else {
+                ("No chats yet", "Chats you start in Teams show up here.")
+            }
+        } else {
+            ("No matches", "No chat or person matches the filter.")
+        };
         widgets::empty_state(ui, &palette, Icon::Chat, title, text);
         return;
     }
@@ -275,5 +323,24 @@ mod tests {
         assert!(matches_filter(&chat, "LAUNCH", "me"));
         assert!(matches_filter(&chat, "ada", "me"));
         assert!(!matches_filter(&chat, "grace", "me"));
+    }
+
+    #[test]
+    fn kind_chips_show_every_kind_when_off_and_the_chosen_kinds_when_on() {
+        let of = |kind| Chat {
+            kind,
+            ..Default::default()
+        };
+        let (one, group, meeting) = (
+            of(ChatKind::OneOnOne),
+            of(ChatKind::Group),
+            of(ChatKind::Meeting),
+        );
+        let shown =
+            |groups, meetings| [&one, &group, &meeting].map(|c| matches_kind(c, groups, meetings));
+        assert_eq!(shown(false, false), [true, true, true]);
+        assert_eq!(shown(true, false), [false, true, false]);
+        assert_eq!(shown(false, true), [false, false, true]);
+        assert_eq!(shown(true, true), [false, true, true]);
     }
 }

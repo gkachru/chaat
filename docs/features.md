@@ -13,7 +13,7 @@ Status as of Chaat 0.1 (unreleased).
 
 | Feature | Status | Notes |
 |---|---|---|
-| Chat list (1:1, group, meeting chats), unread state | Works | `GET /me/chats` with members and newest message |
+| Chat list (1:1, group, meeting chats), unread state, filters for unread, group and meeting chats | Works | `GET /me/chats` with members and newest message; filters use `chatType` locally |
 | Notes to yourself (the chat with yourself) | Works, relies on an undocumented chat id | Teams keeps it as chat `48:notes`, which `GET /me/chats` leaves out and `GET /chats/48:notes` refuses (400). Its messages list and send through the documented chat-message endpoints, so Chaat builds the list entry from the newest message and sorts it with the other chats by activity. Accounts that never wrote to themselves get 404 and no entry. Verified on one live account |
 | Message history with paging | Works | 50 per page; follows Graph paging links, with a timestamp cursor after reopening; cached older pages load first and preserve the visible row |
 | Send messages (rich text from light markdown) | Works | Optimistic, with retry on failure. Enter sends; Shift+Enter adds a line, including while editing or showing mention suggestions. Long drafts scroll inside a bounded editor, keeping history and composer controls visible |

@@ -271,6 +271,11 @@ pub struct Account {
     pub chat_filter: String,
     /// The chat list shows only unread chats (and the open one).
     pub unread_only: bool,
+    /// The chat list shows group chats. With `meetings_only` off too, every
+    /// kind shows; with both on, group and meeting chats show.
+    pub groups_only: bool,
+    /// The chat list shows meeting chats (see `groups_only`).
+    pub meetings_only: bool,
     /// The open chat, when it was unread as it opened: it stays in the
     /// Unread list while it is read.
     pub unread_kept: Option<String>,
@@ -317,6 +322,8 @@ impl Account {
             selected_meeting: None,
             chat_filter: String::new(),
             unread_only: false,
+            groups_only: false,
+            meetings_only: false,
             unread_kept: None,
             drafts: HashMap::new(),
             push: crate::realtime::PushStatus::Off,

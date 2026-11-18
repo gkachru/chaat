@@ -37,7 +37,7 @@ the rename, when the app still had a demo mode:
 
 | | Status |
 |---|---|
-| Chats: list, unread, history, send, quote replies, reactions, edit, delete, mark read | ✅ Implemented (Graph) |
+| Chats: list, unread, filter by unread, group or meeting chats, history, send, quote replies, reactions, edit, delete, mark read | ✅ Implemented (Graph) |
 | New chats, @mentions in the composer, sending files (OneDrive upload and sharing) | ✅ Implemented |
 | Rich text, mentions, emoji, links, code, inline images | ✅ Implemented (native rendering of Teams HTML) |
 | Images in chats and drafts | ✅ Cropped draft thumbnails; click either for the same full preview with fit and 100% views |

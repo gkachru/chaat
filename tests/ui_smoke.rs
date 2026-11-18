@@ -1110,6 +1110,105 @@ fn prepending_history_preserves_the_visible_row() {
 }
 
 #[test]
+fn kind_chips_filter_the_chat_list_and_stack_with_unread() {
+    use wren::model::ChatKind;
+
+    fn painted_texts(h: &Harness) -> Vec<String> {
+        painted_shapes(h)
+            .iter()
+            .filter_map(|shape| match shape {
+                egui::epaint::Shape::Text(text) => Some(text.galley.job.text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+    fn chip(h: &Harness, label: &str) -> egui::Pos2 {
+        painted_shapes(h)
+            .iter()
+            .find_map(|shape| match shape {
+                egui::epaint::Shape::Text(text) if text.galley.job.text == label => {
+                    Some(text.pos + text.galley.size() / 2.0)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("the {label} chip is painted"))
+    }
+
+    for width in [720.0, 1280.0] {
+        for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+            let mut h = Harness::new();
+            h.size.x = width;
+            h.app.settings.theme = theme.clone();
+            h.frames(3);
+            let me = h.app.me().to_owned();
+            let titles = |kind: ChatKind| -> Vec<String> {
+                h.app
+                    .chats
+                    .iter()
+                    .filter(|c| c.kind == kind && !c.hidden)
+                    .map(|c| c.title(&me))
+                    .collect()
+            };
+            let (ones, groups, meetings) = (
+                titles(ChatKind::OneOnOne),
+                titles(ChatKind::Group),
+                titles(ChatKind::Meeting),
+            );
+            assert!(!ones.is_empty() && !groups.is_empty() && !meetings.is_empty());
+            // Painted titles show a row is drawn; the open conversation also
+            // paints names, so what hides is checked through `listed`.
+            let painted = |h: &Harness, title: &String| painted_texts(h).contains(title);
+            let kinds = |h: &Harness| -> Vec<ChatKind> {
+                let mut kinds: Vec<ChatKind> = h
+                    .app
+                    .chats
+                    .iter()
+                    .filter(|c| wren::ui::chat_list::listed(&h.app, c, &me))
+                    .map(|c| c.kind)
+                    .collect();
+                kinds.sort_by_key(|k| *k as u8);
+                kinds.dedup();
+                kinds
+            };
+
+            let at = chip(&h, "Groups");
+            h.click(at);
+            assert!(h.app.groups_only, "Groups turns on, width {width}");
+            assert!(groups.iter().any(|t| painted(&h, t)));
+            assert_eq!(kinds(&h), vec![ChatKind::Group]);
+
+            let at = chip(&h, "Meetings");
+            h.click(at);
+            assert!(
+                h.app.groups_only && h.app.meetings_only,
+                "both chips stay on"
+            );
+            assert!(groups.iter().any(|t| painted(&h, t)));
+            assert!(meetings.iter().any(|t| painted(&h, t)));
+            assert_eq!(kinds(&h), vec![ChatKind::Group, ChatKind::Meeting]);
+
+            // Unread stacks: only unread chats of the chosen kinds remain.
+            let at = chip(&h, "Unread");
+            h.click(at);
+            for chat in &h.app.chats {
+                if wren::ui::chat_list::listed(&h.app, chat, &me) {
+                    assert!(chat.kind != ChatKind::OneOnOne && chat.is_unread(&me));
+                }
+            }
+
+            // Turning both kind chips off shows every kind again.
+            for label in ["Groups", "Meetings", "Unread"] {
+                let at = chip(&h, label);
+                h.click(at);
+            }
+            assert!(!h.app.groups_only && !h.app.meetings_only && !h.app.unread_only);
+            assert!(ones.iter().any(|t| painted(&h, t)));
+            assert_eq!(kinds(&h).len(), 3);
+        }
+    }
+}
+
+#[test]
 fn every_screen_draws() {
     let mut h = Harness::new();
     assert!(h.frames(3) > 50, "the chat view draws");
