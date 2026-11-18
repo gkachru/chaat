@@ -1299,6 +1299,40 @@ fn the_rail_shows_icons_without_labels() {
 }
 
 #[test]
+fn message_authors_show_presence_dots_in_both_themes() {
+    for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+        let mut h = Harness::new();
+        h.size.x = 1280.0;
+        h.app.settings.theme = theme.clone();
+        h.act(Action::OpenConversation(ConversationId::Chat(
+            "19:demo-launch@thread.v2".into(),
+        )));
+        h.frames(5);
+        // The conversation pane starts to the right of the chat list.
+        let pane = h.app.settings.sidebar_width + 80.0;
+        let katherine = h
+            .app
+            .palette
+            .presence(h.app.presence["u-katherine"].availability);
+        let dots: Vec<egui::Pos2> = painted_shapes(&h)
+            .into_iter()
+            .filter_map(|shape| match shape {
+                egui::epaint::Shape::Circle(circle)
+                    if circle.fill == katherine && circle.center.x > pane =>
+                {
+                    Some(circle.center)
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !dots.is_empty(),
+            "a group chat author's avatar shows a presence dot ({theme:?})"
+        );
+    }
+}
+
+#[test]
 fn every_screen_draws() {
     let mut h = Harness::new();
     assert!(h.frames(3) > 50, "the chat view draws");

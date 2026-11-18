@@ -64,9 +64,13 @@ How it works:
    messages: `POST /subscriptions` on `/users/{id}/chats/getAllMessages`,
    delegated `Chat.Read` (covered by `Chat.ReadWrite`), delivered to
    `{relay}/graph/{channel}`, **without resource data**. A second
-   subscription, on your own presence (`communications/presences/{id}`,
-   `Presence.Read.All`), lets the call bar follow calls; if Graph refuses
-   it, chat updates still work.
+   subscription, on presence (`Presence.Read.All`), follows you and your
+   one-on-one contacts (`communications/presences?$filter=id in (…)`, up to
+   650 people): your own lets the call bar follow calls, the others keep
+   presence dots current. Graph allows one presence subscription per person
+   and app, so Chaat replaces it when a new contact appears, and a second
+   device on the same account goes without. If Graph refuses it, chat
+   updates still work.
 4. Graph validates the URL (the relay echoes the `validationToken`), then
    posts each change. The relay forwards it over the WebSocket.
 5. Chaat checks the `clientState` secret and fetches the changed chat with the

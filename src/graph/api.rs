@@ -614,11 +614,15 @@ impl Graph {
         .await
     }
 
-    /// `POST /subscriptions` for the person's own presence, without resource
-    /// data (Presence.Read.All). Graph allows at most an hour.
+    /// `POST /subscriptions` for the presence of `people` (the person first,
+    /// then contacts), without resource data (Presence.Read.All). One person
+    /// uses `communications/presences/{id}`; more use Graph's bulk form,
+    /// `communications/presences?$filter=id in (…)`, at most 650. Graph
+    /// allows one presence subscription per person and app, for at most an
+    /// hour. Ids must pass [`crate::realtime::is_user_id`].
     pub async fn subscribe_presence(
         &self,
-        me: &str,
+        people: &[String],
         notification_url: &str,
         lifecycle_url: &str,
         client_state: &str,
@@ -632,7 +636,7 @@ impl Graph {
                 "changeType": "updated",
                 "notificationUrl": notification_url,
                 "lifecycleNotificationUrl": lifecycle_url,
-                "resource": format!("communications/presences/{}", segment(me)),
+                "resource": presence_resource(people),
                 "expirationDateTime": expiration,
                 "clientState": client_state,
                 "includeResourceData": false,
@@ -664,6 +668,18 @@ impl Graph {
 
     pub async fn delete_subscription(&self, id: &str) -> Result<(), GraphError> {
         self.delete(&format!("subscriptions/{}", segment(id))).await
+    }
+}
+
+/// The subscription resource for these people's presence.
+fn presence_resource(people: &[String]) -> String {
+    debug_assert!(people.iter().all(|id| crate::realtime::is_user_id(id)));
+    match people {
+        [one] => format!("communications/presences/{}", segment(one)),
+        many => {
+            let ids: Vec<String> = many.iter().map(|id| format!("'{id}'")).collect();
+            format!("communications/presences?$filter=id in ({})", ids.join(","))
+        }
     }
 }
 
@@ -722,6 +738,18 @@ mod tests {
     use super::*;
     use wiremock::matchers::{body_json, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[test]
+    fn presence_subscriptions_use_the_bulk_form_for_more_than_one_person() {
+        assert_eq!(
+            presence_resource(&["u-me".into()]),
+            "communications/presences/u-me"
+        );
+        assert_eq!(
+            presence_resource(&["u-me".into(), "u-ada".into(), "u-bo".into()]),
+            "communications/presences?$filter=id in ('u-me','u-ada','u-bo')"
+        );
+    }
 
     async fn graph(server: &MockServer) -> Graph {
         Graph::with_base(

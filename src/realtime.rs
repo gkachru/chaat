@@ -161,8 +161,9 @@ pub fn websocket_request(
 pub enum Notice {
     /// A message in this chat was created, edited or deleted.
     Chat(String),
-    /// The person's own presence changed.
-    Presence,
+    /// Someone's presence changed: the person's own, or a contact's in the
+    /// bulk presence subscription. `None` when Graph did not say whose.
+    Presence(Option<String>),
     /// Graph wants the subscription reauthorized (the token behind it is
     /// about to lapse).
     Reauthorize,
@@ -187,6 +188,14 @@ struct Item {
     resource: Option<String>,
     #[serde(default)]
     lifecycle_event: Option<String>,
+    #[serde(default)]
+    resource_data: Option<ResourceData>,
+}
+
+#[derive(Deserialize)]
+struct ResourceData {
+    #[serde(default)]
+    id: Option<String>,
 }
 
 /// Reads a notification batch. Items whose `clientState` is not ours are
@@ -208,7 +217,12 @@ pub fn parse(body: &str, client_state: &str) -> Vec<Notice> {
             Some(_) => None,
             None => item.resource.as_deref().and_then(|resource| {
                 if is_presence(resource) {
-                    Some(Notice::Presence)
+                    let user = item
+                        .resource_data
+                        .and_then(|data| data.id)
+                        .or_else(|| presence_user(resource))
+                        .filter(|user| is_user_id(user));
+                    Some(Notice::Presence(user))
                 } else {
                     chat_of(resource).map(Notice::Chat)
                 }
@@ -228,6 +242,42 @@ fn is_presence(resource: &str) -> bool {
         .trim_start_matches('/')
         .to_ascii_lowercase()
         .starts_with("communications/presences")
+}
+
+/// The user in `communications/presences/{id}` or `…/presences('{id}')`.
+fn presence_user(resource: &str) -> Option<String> {
+    let rest = resource.trim_start_matches('/');
+    let rest = rest.get("communications/presences".len()..)?;
+    let id = rest
+        .strip_prefix("('")
+        .and_then(|quoted| quoted.split("')").next())
+        .or_else(|| rest.strip_prefix('/'))?;
+    (!id.is_empty()).then(|| id.to_owned())
+}
+
+/// Entra user ids are GUIDs. Only letters, digits and hyphens are accepted,
+/// so an id can never break out of the quotes in a presence `$filter`.
+pub fn is_user_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+}
+
+/// The most people one presence subscription may follow (Graph's limit).
+pub const PRESENCE_LIMIT: usize = 650;
+
+/// Who the presence subscription follows: the person first, then contacts
+/// in the order given (most recent chats first), without repeats or ids
+/// that are not user ids, up to [`PRESENCE_LIMIT`].
+pub fn presence_watch(me: &str, contacts: &[String]) -> Vec<String> {
+    let mut watch: Vec<String> = Vec::new();
+    for id in std::iter::once(me).chain(contacts.iter().map(String::as_str)) {
+        if watch.len() == PRESENCE_LIMIT {
+            break;
+        }
+        if is_user_id(id) && !watch.iter().any(|seen| seen.eq_ignore_ascii_case(id)) {
+            watch.push(id.to_owned());
+        }
+    }
+    watch
 }
 
 /// The chat id in a notification's resource path, in either of Graph's
@@ -332,7 +382,47 @@ mod tests {
             {"subscriptionId":"s2","clientState":"ours","changeType":"updated","resource":"/communications/presences/u-me"},
             {"subscriptionId":"s2","clientState":"theirs","changeType":"updated","resource":"communications/presences/u-me"}
         ]}"#;
-        assert_eq!(parse(body, "ours"), vec![Notice::Presence]);
+        assert_eq!(
+            parse(body, "ours"),
+            vec![Notice::Presence(Some("u-me".into()))]
+        );
+    }
+
+    #[test]
+    fn presence_notices_name_the_person() {
+        let me = "3f1b0c2e-0000-4000-8000-000000000001";
+        let ada = "3f1b0c2e-0000-4000-8000-0000000000ad";
+        let body = format!(
+            r#"{{"value":[
+            {{"clientState":"ours","resource":"communications/presences/{me}","resourceData":{{"id":"{me}"}}}},
+            {{"clientState":"ours","resource":"communications/presences('{ada}')"}},
+            {{"clientState":"ours","resource":"communications/presences/{ada}","resourceData":{{"id":"{ada}"}}}},
+            {{"clientState":"ours","resource":"communications/presences/not-a'guid"}}
+        ]}}"#
+        );
+        assert_eq!(
+            parse(&body, "ours"),
+            vec![
+                Notice::Presence(Some(me.into())),
+                Notice::Presence(Some(ada.into())),
+                Notice::Presence(None),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_presence_watch_starts_with_the_person_and_stops_at_the_limit() {
+        let me = "aaaaaaaa-0000-4000-8000-000000000000".to_owned();
+        let contacts: Vec<String> = (0..700)
+            .map(|i| format!("bbbbbbbb-0000-4000-8000-{i:012x}"))
+            .chain(["not a guid".into(), me.to_uppercase()])
+            .collect();
+        let watch = presence_watch(&me, &contacts);
+        assert_eq!(watch.len(), PRESENCE_LIMIT);
+        assert_eq!(watch[0], me);
+        assert_eq!(watch[1], contacts[0]);
+        assert!(watch.iter().all(|id| is_user_id(id)));
+        assert_eq!(presence_watch(&me, std::slice::from_ref(&me)), [me]);
     }
 
     #[test]

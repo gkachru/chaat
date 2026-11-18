@@ -31,7 +31,7 @@ Status as of Chaat 0.1 (unreleased).
 | Local message search | Works | SQLite FTS5 over everything cached, instant |
 | Microsoft Search (server-side) | Works | Merged into ⌘K results for queries of 3+ characters |
 | Start a new chat | Works | ⌘N or the compose button: search your organisation's directory (User.ReadBasic.All), pick one or more people, optionally name a group. `POST /chats` with Chat.Create, requested on first use. An existing 1:1 chat opens instead of a new one |
-| Real-time updates | Works by default on intent; push is experimental | Fetch on open, focus and refresh (Microsoft forbids background polling). With a self-hosted `chaat-relay`, Graph change notifications push new messages. See [realtime.md](realtime.md). When Microsoft can't be reached, a dim offline marker in the sidebar header replaces error pop-ups until a fetch gets through; reads are retried once after a reset connection |
+| Real-time updates | Works by default on intent; push is experimental | Fetch on open, focus and refresh (Microsoft forbids background polling). With a self-hosted `chaat-relay`, Graph change notifications push new messages and presence changes. See [realtime.md](realtime.md). When Microsoft can't be reached, a dim offline marker in the sidebar header replaces error pop-ups until a fetch gets through; reads are retried once after a reset connection |
 | New-message notifications | Partial | Whenever a fetch finds new messages in other chats. With the relay, also while Chaat runs in the background |
 
 ## Teams and channels
@@ -62,7 +62,7 @@ Status as of Chaat 0.1 (unreleased).
 
 | Feature | Status | Notes |
 |---|---|---|
-| Presence of people in chats | Works | Presence.Read.All, fetched when a chat opens, at most once a minute per person |
+| Presence of people in chats | Works | Presence.Read.All. Dots on one-on-one chats in the list and on message authors. Fetched when you look: when a chat opens, and for one-on-one contacts when the chat list loads (start, foreground, refresh), at most once a minute per person. With the relay, one presence subscription follows you and up to 649 one-on-one contacts (most recent chats first), so dots change as people's status does; a burst of changes is one fetch after 1.5 seconds. Group members who are not one-on-one contacts update only on look |
 | Setting your own availability and status message | Works | From the account menu (your picture in the rail): Available, Busy, Do not disturb, Be right back, Appear away, Appear offline, or Reset. `setUserPreferredPresence` with Graph's default expiry, `setStatusMessage`. Presence.ReadWrite, requested on first use. Clearing a message sends empty content, which Microsoft does not document (unverified) |
 | Showing you as available while you use Chaat | Works | A Graph presence session (`setPresence`), refreshed at most every 4 minutes and only on input, so stepping away shows you inactive after 5 minutes and Away after 10. Ended at sign-out and exit, expires after an hour otherwise. Starts once Presence.ReadWrite is granted; can be turned off in Settings |
 | Profile photos | Works | Lazy, cached 7 days |

@@ -590,7 +590,7 @@ fn message_row(
                     message.author_id.as_deref(),
                     &message.author,
                     36.0,
-                    false,
+                    true,
                 );
             } else if ui
                 .rect_contains_pointer(egui::Rect::from_min_size(gutter.min, vec2(width, 22.0)))
@@ -1020,14 +1020,7 @@ fn thread_card(
             let inner_width = width - 26.0;
             ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing.x = 10.0;
-                widgets::avatar(
-                    ui,
-                    app,
-                    root.author_id.as_deref(),
-                    &root.author,
-                    34.0,
-                    false,
-                );
+                widgets::avatar(ui, app, root.author_id.as_deref(), &root.author, 34.0, true);
                 ui.vertical(|ui| {
                     let content = inner_width - 44.0;
                     ui.set_max_width(content);
@@ -1107,7 +1100,7 @@ fn thread_card(
                             reply.author_id.as_deref(),
                             &reply.author,
                             26.0,
-                            false,
+                            true,
                         );
                         ui.vertical(|ui| {
                             let content = inner_width - 52.0;

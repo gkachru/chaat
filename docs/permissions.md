@@ -22,7 +22,7 @@ It does not request `Files.ReadWrite` or create a OneDrive sharing link.
 | `Team.ReadBasic.All` | At sign-in | `GET /me/joinedTeams` | No |
 | `Channel.ReadBasic.All` | At sign-in | `GET /teams/{id}/allChannels` | No |
 | `ChannelMessage.Send` | At sign-in | `POST /teams/{id}/channels/{id}/messages`, `…/replies`, reactions | No |
-| `Presence.Read.All` | At sign-in | `POST /communications/getPresencesByUserId`, `GET /me/presence`, `POST /subscriptions` on `communications/presences/{id}` (your own presence, push relay only) | No |
+| `Presence.Read.All` | At sign-in | `POST /communications/getPresencesByUserId`, `GET /me/presence`, `POST /subscriptions` on `communications/presences/{id}` or `communications/presences?$filter=id in (…)` (your own presence and your one-on-one contacts', push relay only) | No |
 | `Calendars.Read` | At sign-in | `GET /me/calendarView` | Excluded from the default user-consent policy |
 | `Chat.Create` | First new chat | `POST /chats`, then `GET /chats/{id}?$expand=members` | No |
 | `Files.ReadWrite` | First file sent | `PUT /me/drive/root:/Microsoft Teams Chat Files/{name}:/content`, `POST …:/createUploadSession` (above 4 MiB), `GET /me/drive/items/{id}`, `POST /me/drive/items/{id}/invite` (chats), `POST …/createLink` (channels) | No |

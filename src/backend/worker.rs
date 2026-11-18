@@ -78,9 +78,21 @@ enum Internal {
     Pushed(String),
     /// Graph lost notifications: refresh the chat list.
     PushMissed,
-    /// Graph said the person's own presence changed.
-    PresencePushed,
+    /// Graph said someone's presence changed: the person's own (or unnamed),
+    /// or a contact's.
+    PresencePushed(Option<String>),
+    /// Fetch the contacts whose presence changed since the last flush.
+    FlushPresence,
+    /// A chat list arrived: the people of one-on-one chats, most recent
+    /// first, and what caused the fetch.
+    Contacts {
+        people: Vec<String>,
+        trigger: Trigger,
+    },
 }
+
+/// How long presence notices gather before one fetch for all of them.
+const PRESENCE_BATCH: Duration = Duration::from_millis(1500);
 
 struct Worker {
     dirs: AppDirs,
@@ -96,6 +108,11 @@ struct Worker {
     cancel_sign_in: Option<watch::Sender<bool>>,
     freshness: Freshness,
     presence_seen: HashMap<String, Instant>,
+    /// Contacts whose presence Graph said changed, waiting for one fetch.
+    presence_pushed: std::collections::HashSet<String>,
+    /// The people of one-on-one chats, for the push loop's presence
+    /// subscription.
+    contacts: watch::Sender<Vec<String>>,
     photos_asked: HashMap<String, Instant>,
     /// Channel paging links, by conversation.
     older_links: Arc<Mutex<HashMap<ConversationId, String>>>,
@@ -147,6 +164,8 @@ pub(super) async fn run(
         cancel_sign_in: None,
         freshness: Freshness::default(),
         presence_seen: HashMap::new(),
+        presence_pushed: std::collections::HashSet::new(),
+        contacts: watch::channel(Vec::new()).0,
         photos_asked: HashMap::new(),
         older_links: Arc::default(),
         reachable: Arc::new(std::sync::atomic::AtomicBool::new(true)),
@@ -384,7 +403,36 @@ impl Worker {
                 self.fetch(Resource::Chats, Trigger::Push);
             }
             Internal::PushMissed => self.fetch(Resource::Chats, Trigger::Push),
-            Internal::PresencePushed => self.fetch(Resource::MyPresence, Trigger::Push),
+            Internal::PresencePushed(user) => {
+                let me = self.me_id();
+                match user {
+                    Some(user) if Some(&user) != me.as_ref() => {
+                        // A burst of changes is one fetch, a moment later.
+                        if self.presence_pushed.is_empty() {
+                            let internal = self.internal.clone();
+                            tokio::spawn(async move {
+                                tokio::time::sleep(PRESENCE_BATCH).await;
+                                let _ = internal.send(Internal::FlushPresence);
+                            });
+                        }
+                        self.presence_pushed.insert(user);
+                    }
+                    _ => self.fetch(Resource::MyPresence, Trigger::Push),
+                }
+            }
+            Internal::FlushPresence => {
+                let users: Vec<String> = self.presence_pushed.drain().collect();
+                self.presence_changed(users);
+            }
+            Internal::Contacts { people, trigger } => {
+                // Looking at the chat list shows who is around. A list
+                // fetched because of a push leaves presence to its own
+                // notifications.
+                if trigger != Trigger::Push {
+                    self.presence(people.clone());
+                }
+                self.contacts.send_replace(people);
+            }
         }
     }
 
@@ -643,6 +691,7 @@ impl Worker {
                 .dirs
                 .account(&account.record.id)
                 .join(realtime::LEFTOVERS_FILE),
+            contacts: self.contacts.subscribe(),
         };
         tokio::spawn(push_loop(graph, target, out, internal, stopped));
     }
@@ -728,6 +777,11 @@ impl Worker {
             let lost = result.as_ref().err().is_some_and(is_unreachable);
             if lost == reachable.swap(!lost, Ordering::Relaxed) {
                 out.send(Event::Reachable(!lost));
+            }
+            if result.is_ok() && resource == Resource::Chats {
+                let me = record.id.split('.').next().unwrap_or_default().to_owned();
+                let people = contacts_of(&store, me).await;
+                let _ = internal.send(Internal::Contacts { people, trigger });
             }
             if lost {
                 // Brief outages fix themselves on the next look: the app
@@ -1229,6 +1283,41 @@ impl Worker {
         });
     }
 
+    /// Fetches people whose presence Graph said changed. Unlike a look, a
+    /// change notice is always worth one fetch.
+    fn presence_changed(&mut self, users: Vec<String>) {
+        let Some(account) = &self.account else { return };
+        if users.is_empty() || !account.graph.session().has_scope("Presence.Read.All") {
+            return;
+        }
+        let now = Instant::now();
+        for user in &users {
+            self.presence_seen.insert(user.clone(), now);
+        }
+        log::debug!("push: fetching presence for {} people", users.len());
+        let graph = Arc::clone(&account.graph);
+        let out = self.out.clone();
+        tokio::spawn(async move {
+            match graph.presences(&users).await {
+                Ok(presence) => out.send(Event::Presence(presence)),
+                Err(error) => log::info!("presence unavailable: {error}"),
+            }
+        });
+    }
+
+    /// The signed-in person's user id.
+    fn me_id(&self) -> Option<String> {
+        self.account.as_ref().map(|account| {
+            account
+                .record
+                .id
+                .split('.')
+                .next()
+                .unwrap_or_default()
+                .to_owned()
+        })
+    }
+
     fn photo(&mut self, user: String) {
         let Some(account) = &self.account else { return };
         let now = Instant::now();
@@ -1410,6 +1499,30 @@ fn describe(resource: &Resource) -> &'static str {
         Resource::Presence => "Loading presence",
         Resource::MyPresence => "Loading your status",
     }
+}
+
+/// The other people of one-on-one chats in the cached list, most recent
+/// chat first, without repeats.
+async fn contacts_of(store: &Arc<Mutex<Store>>, me: String) -> Vec<String> {
+    let store = Arc::clone(store);
+    tokio::task::spawn_blocking(move || {
+        let chats = store
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .chats()
+            .unwrap_or_default();
+        let mut people: Vec<String> = Vec::new();
+        for chat in &chats {
+            if let Some(peer) = chat.peer(&me)
+                && !people.contains(&peer.user_id)
+            {
+                people.push(peer.user_id.clone());
+            }
+        }
+        people
+    })
+    .await
+    .unwrap_or_default()
 }
 
 async fn emit_cache(store: &Arc<Mutex<Store>>, out: &Outbox) {
@@ -1729,6 +1842,54 @@ struct PushTarget {
     relay: String,
     key: Option<String>,
     leftovers: std::path::PathBuf,
+    /// The people of one-on-one chats, as the chat list last showed them.
+    contacts: watch::Receiver<Vec<String>>,
+}
+
+/// Where Graph sends a session's notifications.
+struct Endpoints {
+    notification: String,
+    lifecycle: String,
+    client_state: String,
+}
+
+/// The presence subscription and whom it follows.
+struct Followed {
+    id: String,
+    people: Vec<String>,
+}
+
+/// Subscribes to the presence of `people`, or logs why not.
+async fn follow_presence(graph: &Graph, people: &[String], to: &Endpoints) -> Option<Followed> {
+    match graph
+        .subscribe_presence(
+            people,
+            &to.notification,
+            &to.lifecycle,
+            &to.client_state,
+            realtime::LIFETIME,
+        )
+        .await
+    {
+        Ok(subscription) => {
+            log::debug!("push: following presence of {} people", people.len());
+            Some(Followed {
+                id: subscription.id,
+                people: people.to_vec(),
+            })
+        }
+        Err(error) => {
+            log::info!("push: no presence subscription ({error})");
+            None
+        }
+    }
+}
+
+/// The ids of the subscriptions a session holds.
+fn held(chat: &str, presence: Option<&Followed>) -> Vec<String> {
+    std::iter::once(chat.to_owned())
+        .chain(presence.map(|p| p.id.clone()))
+        .collect()
 }
 
 /// Records the subscriptions a session holds, so a run that ends without
@@ -1778,6 +1939,7 @@ async fn push_loop(
         relay,
         key,
         leftovers,
+        mut contacts,
     } = target;
     let mut pause = Duration::from_secs(5);
     while !*stop.borrow() {
@@ -1819,28 +1981,19 @@ async fn push_loop(
                     break 'session format!("Microsoft Graph refused the subscription ({error})");
                 }
             };
-            // The person's presence, so the call bar follows calls. Optional:
-            // chat updates still work without it.
-            let presence = match graph
-                .subscribe_presence(
-                    &me,
-                    &realtime::notification_url(&relay, &channel),
-                    &realtime::lifecycle_url(&relay, &channel),
-                    &client_state,
-                    realtime::LIFETIME,
-                )
-                .await
-            {
-                Ok(subscription) => Some(subscription),
-                Err(error) => {
-                    log::info!("push: no presence subscription ({error})");
-                    None
-                }
+            // Presence: the person's own, so the call bar follows calls, and
+            // their one-on-one contacts', for the dots. Optional: chat updates
+            // still work without it.
+            let endpoints = Endpoints {
+                notification: realtime::notification_url(&relay, &channel),
+                lifecycle: realtime::lifecycle_url(&relay, &channel),
+                client_state: client_state.clone(),
             };
-            let subscriptions: Vec<String> = std::iter::once(subscription.id.clone())
-                .chain(presence.map(|p| p.id))
-                .collect();
+            let wanted = realtime::presence_watch(&me, &contacts.borrow_and_update());
+            let mut presence = follow_presence(&graph, &wanted, &endpoints).await;
+            let mut subscriptions = held(&subscription.id, presence.as_ref());
             record_subscriptions(&leftovers, &subscriptions).await;
+            let mut contacts_open = true;
             out.send(Event::Push(PushStatus::Live));
             // A change may have happened while connecting.
             let _ = internal.send(Internal::PushMissed);
@@ -1854,6 +2007,25 @@ async fn push_loop(
                     changed = stop.changed() => {
                         if changed.is_err() || *stop.borrow() {
                             break None;
+                        }
+                    }
+                    changed = contacts.changed(), if contacts_open => {
+                        if changed.is_err() {
+                            contacts_open = false;
+                            continue;
+                        }
+                        let wanted = realtime::presence_watch(&me, &contacts.borrow_and_update());
+                        let followed = presence.as_ref().map_or(&[][..], |p| p.people.as_slice());
+                        // Graph cannot change whom a subscription follows,
+                        // and allows one presence subscription per person
+                        // and app: a new contact means replacing it.
+                        if wanted.iter().any(|id| !followed.contains(id)) {
+                            if let Some(old) = presence.take() {
+                                let _ = graph.delete_subscription(&old.id).await;
+                            }
+                            presence = follow_presence(&graph, &wanted, &endpoints).await;
+                            subscriptions = held(&subscription.id, presence.as_ref());
+                            record_subscriptions(&leftovers, &subscriptions).await;
                         }
                     }
                     _ = renew.tick() => {
@@ -1885,8 +2057,8 @@ async fn push_loop(
                                     log::debug!("push: chat change notice");
                                     let _ = internal.send(Internal::Pushed(chat));
                                 }
-                                Notice::Presence => {
-                                    let _ = internal.send(Internal::PresencePushed);
+                                Notice::Presence(user) => {
+                                    let _ = internal.send(Internal::PresencePushed(user));
                                 }
                                 Notice::Missed => {
                                     let _ = internal.send(Internal::PushMissed);
