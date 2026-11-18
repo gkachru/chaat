@@ -1370,7 +1370,11 @@ impl App {
                 self.notify_message(&title, Some(author), text);
             }
         }
+        // A message that arrives while Wren is behind another window stays
+        // unread, so Teams keeps it unread on other devices too. Coming back
+        // to the window marks it read.
         if open
+            && focused
             && !cached
             && let ConversationId::Chat(chat) = &conversation
         {
@@ -2968,6 +2972,64 @@ mod tests {
                 .any(|c| c
                     .starts_with("Fetch { resource: Messages(Chat(\"19:a\")), trigger: Opened"))
         );
+        assert!(seen.iter().any(|c| c == "MarkRead(\"19:a\")"));
+        assert!(!app.chats[0].is_unread("u-me"));
+    }
+
+    #[test]
+    fn messages_arriving_in_the_background_stay_unread() {
+        let (mut app, mut commands) = app();
+        let chat = ConversationId::Chat("19:a".into());
+        app.chats = vec![Chat {
+            id: "19:a".into(),
+            preview: Some(crate::model::Preview {
+                message_id: "1".into(),
+                author_id: Some("u-ada".into()),
+                at: 10,
+                ..Default::default()
+            }),
+            last_read: Some(20),
+            ..Default::default()
+        }];
+        app.open = Some(chat.clone());
+        app.window_focused = false;
+        let ctx = egui::Context::default();
+        let incoming = |id: &str, at| Message {
+            author_id: Some("u-ada".into()),
+            ..message(id, at)
+        };
+        app.handle(
+            Event::Messages {
+                conversation: chat.clone(),
+                messages: vec![incoming("2", 300)],
+                merge: Merge::Latest,
+                more: None,
+                cached: false,
+            },
+            &ctx,
+        );
+        let mut seen = Vec::new();
+        while let Ok(command) = commands.try_recv() {
+            seen.push(format!("{command:?}"));
+        }
+        assert!(!seen.iter().any(|c| c.starts_with("MarkRead")));
+        assert!(app.chats[0].is_unread("u-me"));
+
+        app.window_focused = true;
+        app.handle(
+            Event::Messages {
+                conversation: chat,
+                messages: vec![incoming("3", 400)],
+                merge: Merge::Latest,
+                more: None,
+                cached: false,
+            },
+            &ctx,
+        );
+        let mut seen = Vec::new();
+        while let Ok(command) = commands.try_recv() {
+            seen.push(format!("{command:?}"));
+        }
         assert!(seen.iter().any(|c| c == "MarkRead(\"19:a\")"));
         assert!(!app.chats[0].is_unread("u-me"));
     }

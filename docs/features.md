@@ -22,7 +22,7 @@ Status as of Wren 0.1 (unreleased).
 | Quote replies in chats | Works | `replyWithQuote` |
 | Reactions (any emoji) | Works | `setReaction` / `unsetReaction`; legacy names mapped to emoji |
 | Edit and delete your messages | Works | Chats: Chat.ReadWrite. Channels: needs ChannelMessage.ReadWrite (admin), hidden otherwise |
-| Mark read | Works | `markChatReadForUser` when a chat is opened |
+| Mark read | Works | `markChatReadForUser` when a chat is opened. Messages that arrive in the open chat while Wren is behind another window stay unread until you return to it |
 | Rich text: bold, italic, underline, strike, code, quotes, lists, links, mentions, emoji | Works | Native rendering of Teams HTML |
 | Inline images (hosted content) | Works | Lazy, Graph-hosted only; other hosts are never fetched (privacy). Downloads have a bounded local cache. Thumbnails use reduced-resolution textures; originals are released after closing the viewer. Click an image to open the same fit/100% viewer as draft images, using the original decoded dimensions |
 | File attachments: view | Works | Shown as file chips that open in the browser |
