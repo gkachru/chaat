@@ -207,6 +207,7 @@ async fn chats_mentions_files_and_status() {
             secrets,
             open_browser: false,
             push_renew_every: chaat::realtime::RENEW_EVERY,
+            relay_connect_timeout: std::time::Duration::from_secs(20),
         },
     );
     backend.send(Command::Start {

@@ -134,6 +134,7 @@ async fn a_change_notification_fetches_the_chat() {
             secrets,
             open_browser: false,
             push_renew_every: chaat::realtime::RENEW_EVERY,
+            relay_connect_timeout: std::time::Duration::from_secs(20),
         },
     );
     backend.send(Command::Start {

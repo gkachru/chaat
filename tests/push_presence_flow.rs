@@ -69,11 +69,20 @@ async fn presence_subscriptions(server: &MockServer) -> Vec<String> {
 /// A relay, Graph with a one-on-one chat (Ada) and a group (Grace, Bo), and
 /// a signed-in backend. Callers may mount higher-priority mocks first.
 async fn start(server: &MockServer) -> (Backend, String, tempfile::TempDir) {
-    start_with(server, chaat::realtime::RENEW_EVERY).await
+    start_with(
+        server,
+        chaat::realtime::RENEW_EVERY,
+        Duration::from_secs(20),
+    )
+    .await
 }
 
 /// [`start`], renewing push subscriptions every `renew`.
-async fn start_with(server: &MockServer, renew: Duration) -> (Backend, String, tempfile::TempDir) {
+async fn start_with(
+    server: &MockServer,
+    renew: Duration,
+    connect: Duration,
+) -> (Backend, String, tempfile::TempDir) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let relay_url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
     tokio::spawn(chaat_relay::serve(
@@ -156,6 +165,7 @@ async fn start_with(server: &MockServer, renew: Duration) -> (Backend, String, t
             secrets,
             open_browser: false,
             push_renew_every: renew,
+            relay_connect_timeout: connect,
         },
     );
     backend.send(Command::Start {
@@ -456,7 +466,8 @@ async fn a_presence_conflict_is_tried_again_at_the_next_renewal() {
         })))
         .mount(&server)
         .await;
-    let (backend, relay_url, _dir) = start_with(&server, Duration::from_secs(4)).await;
+    let (backend, relay_url, _dir) =
+        start_with(&server, Duration::from_secs(4), Duration::from_secs(20)).await;
     backend.send(Command::Relay(Some(relay_url)));
     wait_for(&backend, 15, |e| match e {
         Event::Push(PushStatus::Live) => Some(()),
@@ -534,6 +545,39 @@ async fn a_presence_subscription_in_the_way_is_found_and_deleted() {
         started.elapsed() < Duration::from_secs(3),
         "no pause when a blocker was deleted"
     );
+    backend.send(Command::Relay(None));
+    wait_for(&backend, 5, |e| {
+        matches!(e, Event::Push(PushStatus::Off)).then_some(())
+    });
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_relay_that_never_answers_counts_as_unreachable() {
+    let server = MockServer::start().await;
+    let (backend, _relay_url, _dir) = start_with(
+        &server,
+        chaat::realtime::RENEW_EVERY,
+        Duration::from_secs(1),
+    )
+    .await;
+    // A "relay" that takes the connection and never says a word.
+    let silent = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let silent_url = format!("http://127.0.0.1:{}", silent.local_addr().unwrap().port());
+    tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok((socket, _)) = silent.accept().await {
+            held.push(socket);
+        }
+    });
+    let started = Instant::now();
+    backend.send(Command::Relay(Some(silent_url)));
+    let reason = wait_for(&backend, 10, |e| match e {
+        Event::Push(PushStatus::Failed(reason)) => Some(reason),
+        Event::Push(PushStatus::Live) => panic!("a silent relay cannot be live"),
+        _ => None,
+    });
+    assert_eq!(reason, "the relay did not answer in time");
+    assert!(started.elapsed() < Duration::from_secs(5));
     backend.send(Command::Relay(None));
     wait_for(&backend, 5, |e| {
         matches!(e, Event::Push(PushStatus::Off)).then_some(())

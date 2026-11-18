@@ -295,6 +295,9 @@ pub struct BackendOptions {
     /// How often push renews its subscriptions ([`crate::realtime::RENEW_EVERY`];
     /// shorter in tests).
     pub push_renew_every: std::time::Duration,
+    /// How long the WebSocket to the relay may take to open before the
+    /// attempt counts as failed and is retried (20 seconds; shorter in tests).
+    pub relay_connect_timeout: std::time::Duration,
 }
 
 impl Default for BackendOptions {
@@ -305,6 +308,7 @@ impl Default for BackendOptions {
             secrets: crate::secrets::native(),
             open_browser: true,
             push_renew_every: crate::realtime::RENEW_EVERY,
+            relay_connect_timeout: std::time::Duration::from_secs(20),
         }
     }
 }

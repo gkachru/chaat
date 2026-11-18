@@ -91,6 +91,29 @@ enum Internal {
     },
 }
 
+tokio::task_local! {
+    /// The account a push loop serves, for its log lines (see `push_log!`).
+    static PUSH_ACCOUNT: String;
+}
+
+/// Logs a push line tagged with the account the current push loop serves,
+/// so two accounts' lines can be told apart.
+macro_rules! push_log {
+    ($level:ident, $($arg:tt)+) => {
+        log::$level!(
+            "push[{}]: {}",
+            PUSH_ACCOUNT.try_with(String::clone).unwrap_or_default(),
+            format_args!($($arg)+)
+        )
+    };
+}
+
+/// A short tag for an account in log lines: the start of its object id. No
+/// names or addresses.
+fn account_tag(account: &str) -> String {
+    account.chars().take(8).collect()
+}
+
 /// How long stopping push may wait for its subscriptions to be deleted.
 const PUSH_CLEANUP: Duration = Duration::from_secs(3);
 
@@ -701,8 +724,11 @@ impl Worker {
                 .account(&account.record.id)
                 .join(realtime::REFUSED_FILE),
             renew_every: self.options.push_renew_every,
+            connect_within: self.options.relay_connect_timeout,
         };
-        let task = tokio::spawn(push_loop(graph, target, out, internal, stopped));
+        let tag = account_tag(&account.record.id);
+        let task =
+            tokio::spawn(PUSH_ACCOUNT.scope(tag, push_loop(graph, target, out, internal, stopped)));
         self.stop_push = Some((stop, task));
     }
 
@@ -715,7 +741,10 @@ impl Worker {
         if let Some((stop, task)) = self.stop_push.take() {
             let _ = stop.send(true);
             if tokio::time::timeout(PUSH_CLEANUP, task).await.is_err() {
-                log::info!("push: cleanup took too long; the next start finishes it");
+                log::info!(
+                    "push[{}]: cleanup took too long; the next start finishes it",
+                    self.me_id().as_deref().map(account_tag).unwrap_or_default()
+                );
             }
         }
     }
@@ -762,15 +791,21 @@ impl Worker {
         {
             if trigger == Trigger::Push {
                 log::debug!(
-                    "push: {} skipped, fetched under a second ago",
+                    "push[{}]: {} skipped, fetched under a second ago",
+                    account_tag(&account.record.id),
                     describe(&resource)
                 );
             }
             return;
         }
         if trigger == Trigger::Push {
-            log::debug!("push: fetching {}", describe(&resource));
+            log::debug!(
+                "push[{}]: fetching {}",
+                account_tag(&account.record.id),
+                describe(&resource)
+            );
         }
+        let tag = account_tag(&account.record.id);
         let graph = Arc::clone(&account.graph);
         let store = Arc::clone(&account.store);
         let out = self.out.clone();
@@ -784,7 +819,7 @@ impl Worker {
             let result = fetch_resource(&graph, &store, &out, &resource, &record, &links).await;
             if trigger == Trigger::Push {
                 log::debug!(
-                    "push: {} done (ok: {})",
+                    "push[{tag}]: {} done (ok: {})",
                     describe(&resource),
                     result.is_ok()
                 );
@@ -1310,7 +1345,11 @@ impl Worker {
         for user in &users {
             self.presence_seen.insert(user.clone(), now);
         }
-        log::debug!("push: fetching presence for {} people", users.len());
+        log::debug!(
+            "push[{}]: fetching presence for {} people",
+            account_tag(&account.record.id),
+            users.len()
+        );
         let graph = Arc::clone(&account.graph);
         let out = self.out.clone();
         tokio::spawn(async move {
@@ -1905,6 +1944,8 @@ struct PushTarget {
     refused: std::path::PathBuf,
     /// How often the session renews its subscriptions.
     renew_every: Duration,
+    /// How long the WebSocket to the relay may take to open.
+    connect_within: Duration,
 }
 
 /// People Graph refused to follow in the last week (see
@@ -1928,7 +1969,7 @@ async fn save_refused(path: &std::path::Path, limits: &mut PresenceLimits) {
     let written =
         tokio::task::spawn_blocking(move || realtime::write_refused(&path, &refused)).await;
     if !matches!(written, Ok(Ok(()))) {
-        log::warn!("push: could not remember refused presence users");
+        push_log!(warn, "could not remember refused presence users");
     }
 }
 
@@ -2020,8 +2061,9 @@ async fn follow_presence(
         }
         match subscribe_presence_of(graph, &list, to).await {
             Ok(id) => {
-                log::info!(
-                    "push: following presence of {} of {} people",
+                push_log!(
+                    info,
+                    "following presence of {} of {} people",
                     list.len(),
                     people.len()
                 );
@@ -2029,8 +2071,9 @@ async fn follow_presence(
             }
             Err(GraphError::UsersRefused(ids)) if rounds < REFUSAL_ROUNDS => {
                 rounds += 1;
-                log::info!(
-                    "push: Graph cannot follow {} people; leaving them out",
+                push_log!(
+                    info,
+                    "Graph cannot follow {} people; leaving them out",
                     ids.len()
                 );
                 let now = crate::time::now();
@@ -2046,8 +2089,9 @@ async fn follow_presence(
             Err(GraphError::Http { status: 409, .. }) if !conflict_retried => {
                 conflict_retried = true;
                 let cleared = clear_presence_blockers(graph).await;
-                log::info!(
-                    "push: presence subscription conflict (409); deleted {cleared} in the way, retrying"
+                push_log!(
+                    info,
+                    "presence subscription conflict (409); deleted {cleared} in the way, retrying"
                 );
                 if cleared == 0 {
                     // Graph may still be forgetting one just deleted.
@@ -2055,16 +2099,18 @@ async fn follow_presence(
                 }
             }
             Err(GraphError::Http { status: 409, .. }) => {
-                log::info!(
-                    "push: presence subscription conflict (409); trying again at the next renewal"
+                push_log!(
+                    info,
+                    "presence subscription conflict (409); trying again at the next renewal"
                 );
                 limits.cap = 0;
                 limits.blocked = true;
                 return None;
             }
             Err(error) => {
-                log::info!(
-                    "push: no presence subscription for {} people ({error})",
+                push_log!(
+                    info,
+                    "no presence subscription for {} people ({error})",
                     list.len()
                 );
                 limits.cap = 0;
@@ -2145,11 +2191,17 @@ async fn search_presence(
                 });
             }
             Err(GraphError::UsersRefused(_) | GraphError::Http { status: 400, .. }) => {
-                log::info!("push: presence subscription for {size} people refused (400)");
+                push_log!(
+                    info,
+                    "presence subscription for {size} people refused (400)"
+                );
                 hi = size;
             }
             Err(error) => {
-                log::info!("push: presence subscription for {size} people failed ({error})");
+                push_log!(
+                    info,
+                    "presence subscription for {size} people failed ({error})"
+                );
                 hi = size;
                 if lo == 0 {
                     break;
@@ -2175,13 +2227,13 @@ async fn search_presence(
                 })
             }
             Err(error) => {
-                log::info!("push: no presence subscription for {lo} people ({error})");
+                push_log!(info, "no presence subscription for {lo} people ({error})");
                 limits.cap = 0;
                 return None;
             }
         }
     }
-    log::info!("push: following presence of {lo} of {asked} people");
+    push_log!(info, "following presence of {lo} of {asked} people");
     limits.cap = lo;
     held
 }
@@ -2200,7 +2252,7 @@ async fn record_subscriptions(path: &std::path::Path, ids: &[String]) {
     let ids = ids.to_vec();
     let written = tokio::task::spawn_blocking(move || realtime::write_leftovers(&path, &ids)).await;
     if !matches!(written, Ok(Ok(()))) {
-        log::warn!("push: could not record the subscriptions");
+        push_log!(warn, "could not record the subscriptions");
     }
 }
 
@@ -2220,8 +2272,9 @@ async fn delete_leftovers(graph: &Graph, path: &std::path::Path) {
             deleted += 1;
         }
     }
-    log::info!(
-        "push: deleted {deleted} of {} subscriptions left by an earlier run",
+    push_log!(
+        info,
+        "deleted {deleted} of {} subscriptions left by an earlier run",
         ids.len()
     );
     record_subscriptions(path, &[]).await;
@@ -2243,6 +2296,7 @@ async fn push_loop(
         mut contacts,
         refused,
         renew_every,
+        connect_within,
     } = target;
     let mut pause = Duration::from_secs(5);
     while !*stop.borrow() {
@@ -2254,7 +2308,13 @@ async fn push_loop(
             else {
                 break 'session "the relay address or access key is not valid".to_owned();
             };
-            let socket = match tokio_tungstenite::connect_async(request).await {
+            let connecting =
+                tokio::time::timeout(connect_within, tokio_tungstenite::connect_async(request))
+                    .await;
+            let Ok(connected) = connecting else {
+                break 'session "the relay did not answer in time".to_owned();
+            };
+            let socket = match connected {
                 Ok((socket, _)) => socket,
                 Err(tokio_tungstenite::tungstenite::Error::Http(response))
                     if response.status() == 401 =>
@@ -2374,7 +2434,7 @@ async fn push_loop(
                         for notice in realtime::parse(&text, &client_state) {
                             match notice {
                                 Notice::Chat(chat) => {
-                                    log::debug!("push: chat change notice");
+                                    push_log!(debug,"chat change notice");
                                     let _ = internal.send(Internal::Pushed(chat));
                                 }
                                 Notice::Presence(user) => {
@@ -2418,7 +2478,7 @@ async fn push_loop(
         if *stop.borrow() {
             return;
         }
-        log::info!("push: {failure}; retrying in {pause:?}");
+        push_log!(info, "{failure}; retrying in {pause:?}");
         out.send(Event::Push(PushStatus::Failed(failure)));
         tokio::select! {
             _ = tokio::time::sleep(pause) => {}

@@ -102,6 +102,7 @@ async fn a_keyed_relay_needs_the_stored_key() {
             secrets,
             open_browser: false,
             push_renew_every: chaat::realtime::RENEW_EVERY,
+            relay_connect_timeout: std::time::Duration::from_secs(20),
         },
     );
     backend.send(Command::Start {
