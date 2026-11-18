@@ -66,8 +66,9 @@ async fn presence_subscriptions(server: &MockServer) -> Vec<String> {
         .collect()
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn contacts_presence_is_fetched_on_look_and_followed_by_push() {
+/// A relay, Graph with a one-on-one chat (Ada) and a group (Grace, Bo), and
+/// a signed-in backend. Callers may mount higher-priority mocks first.
+async fn start(server: &MockServer) -> (Backend, String, tempfile::TempDir) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let relay_url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
     tokio::spawn(chaat_relay::serve(
@@ -75,14 +76,13 @@ async fn contacts_presence_is_fetched_on_look_and_followed_by_push() {
         chaat_relay::router(chaat_relay::Relay::default()),
     ));
 
-    let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/organizations/oauth2/v2.0/token"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "access_token": "access", "refresh_token": "refresh-2", "expires_in": 3600,
             "scope": SCOPES
         })))
-        .mount(&server)
+        .mount(server)
         .await;
     Mock::given(method("GET"))
         .and(path("/v1.0/me/chats"))
@@ -99,7 +99,7 @@ async fn contacts_presence_is_fetched_on_look_and_followed_by_push() {
                 {"userId": "u-me", "displayName": "Alex Rivera"}
              ]}
         ]})))
-        .mount(&server)
+        .mount(server)
         .await;
     Mock::given(method("POST"))
         .and(path("/v1.0/communications/getPresencesByUserId"))
@@ -108,19 +108,19 @@ async fn contacts_presence_is_fetched_on_look_and_followed_by_push() {
                 {"id": "u-ada", "availability": "Busy", "activity": "InACall"}
             ]})),
         )
-        .mount(&server)
+        .mount(server)
         .await;
     Mock::given(method("POST"))
         .and(path("/v1.0/subscriptions"))
         .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
             "id": "sub-1", "expirationDateTime": "2026-10-11T13:00:00Z"
         })))
-        .mount(&server)
+        .mount(server)
         .await;
     Mock::given(method("DELETE"))
         .and(path("/v1.0/subscriptions/sub-1"))
         .respond_with(ResponseTemplate::new(204))
-        .mount(&server)
+        .mount(server)
         .await;
 
     let dir = tempfile::tempdir().unwrap();
@@ -160,6 +160,13 @@ async fn contacts_presence_is_fetched_on_look_and_followed_by_push() {
     wait_for(&backend, 5, |e| {
         matches!(e, Event::Auth(AuthStatus::SignedIn { .. })).then_some(())
     });
+    (backend, relay_url, dir)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn contacts_presence_is_fetched_on_look_and_followed_by_push() {
+    let server = MockServer::start().await;
+    let (backend, relay_url, _dir) = start(&server).await;
 
     // Looking at the chat list (start) fetches presence for the one-on-one
     // contact, then the group's members, in one request.
@@ -250,6 +257,83 @@ async fn contacts_presence_is_fetched_on_look_and_followed_by_push() {
     last.sort();
     assert_eq!(last, ["u-ada", "u-grace"]);
 
+    backend.send(Command::Relay(None));
+    wait_for(&backend, 5, |e| {
+        matches!(e, Event::Push(PushStatus::Off)).then_some(())
+    });
+}
+
+/// Presence subscriptions for more than `max` people.
+struct MoreThan(usize);
+
+impl wiremock::Match for MoreThan {
+    fn matches(&self, request: &wiremock::Request) -> bool {
+        let Ok(body) = serde_json::from_slice::<serde_json::Value>(&request.body) else {
+            return false;
+        };
+        let resource = body["resource"].as_str().unwrap_or_default();
+        resource.contains("presences") && resource.matches('\'').count() / 2 > self.0
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refused_presence_list_shrinks_and_is_not_retried() {
+    let server = MockServer::start().await;
+    // Graph refuses presence subscriptions for more than two people.
+    Mock::given(method("POST"))
+        .and(path("/v1.0/subscriptions"))
+        .and(MoreThan(2))
+        .respond_with(ResponseTemplate::new(400).set_body_json(
+            serde_json::json!({"error": {"code": "ExtensionError", "message": "x"}}),
+        ))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    let (backend, relay_url, _dir) = start(&server).await;
+    backend.send(Command::Fetch {
+        resource: Resource::Chats,
+        trigger: Trigger::Start,
+    });
+    wait_for(&backend, 5, |e| match e {
+        Event::Presence(list) => Some(list),
+        _ => None,
+    });
+    backend.send(Command::Relay(Some(relay_url)));
+    wait_for(&backend, 10, |e| match e {
+        Event::Push(PushStatus::Live) => Some(()),
+        Event::Push(PushStatus::Failed(reason)) => panic!("push failed: {reason}"),
+        _ => None,
+    });
+    // Four people refused, then two: the person and the newest contact.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let two = "communications/presences?$filter=id in ('u-me','u-ada')";
+    while !presence_subscriptions(&server)
+        .await
+        .iter()
+        .any(|r| r == two)
+    {
+        assert!(
+            Instant::now() < deadline,
+            "no smaller presence subscription: {:?}",
+            presence_subscriptions(&server).await
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    // Later chat-list updates keep to the size that worked.
+    let settled = presence_subscriptions(&server).await.len();
+    for _ in 0..3 {
+        backend.send(Command::Fetch {
+            resource: Resource::Chats,
+            trigger: Trigger::Refresh,
+        });
+        tokio::time::sleep(Duration::from_millis(2100)).await;
+    }
+    assert_eq!(
+        presence_subscriptions(&server).await.len(),
+        settled,
+        "refused sizes are not retried: {:?}",
+        presence_subscriptions(&server).await
+    );
     backend.send(Command::Relay(None));
     wait_for(&backend, 5, |e| {
         matches!(e, Event::Push(PushStatus::Off)).then_some(())

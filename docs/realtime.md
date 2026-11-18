@@ -70,7 +70,10 @@ How it works:
    first): your own lets the call bar follow calls, the others keep presence
    dots current. Graph allows one presence subscription per person and app,
    so Chaat replaces it when someone new appears, and a second device on the
-   same account goes without. If Graph refuses it, chat
+   same account goes without. If Graph refuses the list as malformed (400),
+   Chaat halves it, down to you alone, and keeps that size for the session;
+   other refusals (such as 409 while an earlier subscription still exists)
+   leave presence to fetches on look until push reconnects. If Graph refuses it, chat
    updates still work.
 4. Graph validates the URL (the relay echoes the `validationToken`), then
    posts each change. The relay forwards it over the WebSocket.

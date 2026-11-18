@@ -1886,30 +1886,60 @@ struct Followed {
     people: Vec<String>,
 }
 
-/// Subscribes to the presence of `people`, or logs why not.
-async fn follow_presence(graph: &Graph, people: &[String], to: &Endpoints) -> Option<Followed> {
-    match graph
-        .subscribe_presence(
-            people,
-            &to.notification,
-            &to.lifecycle,
-            &to.client_state,
-            realtime::LIFETIME,
-        )
-        .await
-    {
-        Ok(subscription) => {
-            log::debug!("push: following presence of {} people", people.len());
-            Some(Followed {
-                id: subscription.id,
-                people: people.to_vec(),
-            })
-        }
-        Err(error) => {
-            log::info!("push: no presence subscription ({error})");
-            None
+/// Subscribes to the presence of `people` (the person first, then the most
+/// wanted contacts), at most `cap` of them. If Graph refuses the request as
+/// malformed (400), it tries again with the first half, down to the person
+/// alone, so the most useful dots stay live. `cap` keeps what worked for the
+/// rest of the session (0 after any other refusal, such as 409 while an
+/// earlier presence subscription still exists), so later chat-list updates
+/// don't repeat refused requests.
+async fn follow_presence(
+    graph: &Graph,
+    people: &[String],
+    to: &Endpoints,
+    cap: &mut usize,
+) -> Option<Followed> {
+    let mut count = people.len().min(*cap);
+    while count > 0 {
+        let asked = &people[..count];
+        match graph
+            .subscribe_presence(
+                asked,
+                &to.notification,
+                &to.lifecycle,
+                &to.client_state,
+                realtime::LIFETIME,
+            )
+            .await
+        {
+            Ok(subscription) => {
+                log::info!(
+                    "push: following presence of {count} of {} people",
+                    people.len()
+                );
+                if count < people.len() {
+                    *cap = count;
+                }
+                return Some(Followed {
+                    id: subscription.id,
+                    people: asked.to_vec(),
+                });
+            }
+            Err(GraphError::Http { status: 400, .. }) if count > 1 => {
+                log::info!(
+                    "push: presence subscription for {count} people refused (400); trying fewer"
+                );
+                count /= 2;
+            }
+            Err(error) => {
+                log::info!("push: no presence subscription for {count} people ({error})");
+                *cap = 0;
+                return None;
+            }
         }
     }
+    *cap = 0;
+    None
 }
 
 /// The ids of the subscriptions a session holds.
@@ -2017,7 +2047,9 @@ async fn push_loop(
                 client_state: client_state.clone(),
             };
             let wanted = realtime::presence_watch(&me, &contacts.borrow_and_update());
-            let mut presence = follow_presence(&graph, &wanted, &endpoints).await;
+            let mut presence_cap = realtime::PRESENCE_LIMIT;
+            let mut presence =
+                follow_presence(&graph, &wanted, &endpoints, &mut presence_cap).await;
             let mut subscriptions = held(&subscription.id, presence.as_ref());
             record_subscriptions(&leftovers, &subscriptions).await;
             let mut contacts_open = true;
@@ -2041,7 +2073,8 @@ async fn push_loop(
                             contacts_open = false;
                             continue;
                         }
-                        let wanted = realtime::presence_watch(&me, &contacts.borrow_and_update());
+                        let mut wanted = realtime::presence_watch(&me, &contacts.borrow_and_update());
+                        wanted.truncate(presence_cap);
                         let followed = presence.as_ref().map_or(&[][..], |p| p.people.as_slice());
                         // Graph cannot change whom a subscription follows,
                         // and allows one presence subscription per person
@@ -2050,7 +2083,7 @@ async fn push_loop(
                             if let Some(old) = presence.take() {
                                 let _ = graph.delete_subscription(&old.id).await;
                             }
-                            presence = follow_presence(&graph, &wanted, &endpoints).await;
+                            presence = follow_presence(&graph, &wanted, &endpoints, &mut presence_cap).await;
                             subscriptions = held(&subscription.id, presence.as_ref());
                             record_subscriptions(&leftovers, &subscriptions).await;
                         }

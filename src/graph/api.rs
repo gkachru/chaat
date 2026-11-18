@@ -666,8 +666,13 @@ impl Graph {
         self.chat(&thread).await.map(Some)
     }
 
+    /// `DELETE /subscriptions/{id}`. One that is already gone (expired, or
+    /// removed by Graph) counts as deleted.
     pub async fn delete_subscription(&self, id: &str) -> Result<(), GraphError> {
-        self.delete(&format!("subscriptions/{}", segment(id))).await
+        match self.delete(&format!("subscriptions/{}", segment(id))).await {
+            Err(GraphError::NotFound) => Ok(()),
+            other => other,
+        }
     }
 }
 
@@ -757,6 +762,30 @@ mod tests {
             testing::session("at", &server.uri()).await,
             &server.uri(),
         )
+    }
+
+    #[tokio::test]
+    async fn deleting_a_subscription_that_is_already_gone_succeeds() {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path("/subscriptions/gone"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(
+                serde_json::json!({"error": {"code": "ResourceNotFound", "message": "x"}}),
+            ))
+            .mount(&server)
+            .await;
+        Mock::given(method("DELETE"))
+            .and(path("/subscriptions/denied"))
+            .respond_with(
+                ResponseTemplate::new(403).set_body_json(
+                    serde_json::json!({"error": {"code": "Forbidden", "message": "x"}}),
+                ),
+            )
+            .mount(&server)
+            .await;
+        let graph = graph(&server).await;
+        assert!(graph.delete_subscription("gone").await.is_ok());
+        assert!(graph.delete_subscription("denied").await.is_err());
     }
 
     #[tokio::test]
