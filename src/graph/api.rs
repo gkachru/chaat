@@ -803,7 +803,7 @@ mod tests {
     }
 
     #[test]
-    fn notes_come_first_in_the_list() {
+    fn notes_sort_with_the_other_chats() {
         let chat = |id: &str, at: i64| Chat {
             id: id.into(),
             updated: at,
@@ -816,7 +816,7 @@ mod tests {
         ];
         chats.sort_by_key(Chat::list_order);
         let ids: Vec<&str> = chats.iter().map(|c| c.id.as_str()).collect();
-        assert_eq!(ids, ["48:notes", "19:a", "19:b"]);
+        assert_eq!(ids, ["19:a", "19:b", "48:notes"]);
     }
 
     #[tokio::test]

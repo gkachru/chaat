@@ -140,9 +140,9 @@ impl Chat {
         }
     }
 
-    /// Order in the list: notes first, as in Teams, then newest activity.
-    pub fn list_order(&self) -> (bool, std::cmp::Reverse<Millis>) {
-        (!self.is_notes(), std::cmp::Reverse(self.activity()))
+    /// Order in the list: newest activity first, notes included.
+    pub fn list_order(&self) -> std::cmp::Reverse<Millis> {
+        std::cmp::Reverse(self.activity())
     }
 
     /// What the list and the header call the chat: its topic, or the other
