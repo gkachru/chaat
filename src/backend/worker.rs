@@ -635,7 +635,16 @@ impl Worker {
             .ok()
             .and_then(Result::ok)
             .flatten();
-        tokio::spawn(push_loop(graph, me, relay, key, out, internal, stopped));
+        let target = PushTarget {
+            me,
+            relay,
+            key,
+            leftovers: self
+                .dirs
+                .account(&account.record.id)
+                .join(realtime::LEFTOVERS_FILE),
+        };
+        tokio::spawn(push_loop(graph, target, out, internal, stopped));
     }
 
     async fn stop_push(&mut self) {
@@ -1713,16 +1722,63 @@ async fn share_file(
 /// Keeps one subscription alive while `stop` stays false: connect to the
 /// relay, subscribe, forward notices, renew, and start over after failures
 /// with growing pauses.
-async fn push_loop(
-    graph: Arc<Graph>,
+/// Where a push loop connects, for whom, and where it records the
+/// subscriptions it makes.
+struct PushTarget {
     me: String,
     relay: String,
     key: Option<String>,
+    leftovers: std::path::PathBuf,
+}
+
+/// Records the subscriptions a session holds, so a run that ends without
+/// cleaning up can be cleaned up by the next one.
+async fn record_subscriptions(path: &std::path::Path, ids: &[String]) {
+    let path = path.to_owned();
+    let ids = ids.to_vec();
+    let written = tokio::task::spawn_blocking(move || realtime::write_leftovers(&path, &ids)).await;
+    if !matches!(written, Ok(Ok(()))) {
+        log::warn!("push: could not record the subscriptions");
+    }
+}
+
+/// Deletes subscriptions an earlier run made and never deleted. Best effort:
+/// any that remain expire within the hour.
+async fn delete_leftovers(graph: &Graph, path: &std::path::Path) {
+    let read = path.to_owned();
+    let ids = tokio::task::spawn_blocking(move || realtime::read_leftovers(&read))
+        .await
+        .unwrap_or_default();
+    if ids.is_empty() {
+        return;
+    }
+    let mut deleted = 0;
+    for id in &ids {
+        if graph.delete_subscription(id).await.is_ok() {
+            deleted += 1;
+        }
+    }
+    log::info!(
+        "push: deleted {deleted} of {} subscriptions left by an earlier run",
+        ids.len()
+    );
+    record_subscriptions(path, &[]).await;
+}
+
+async fn push_loop(
+    graph: Arc<Graph>,
+    target: PushTarget,
     out: Outbox,
     internal: mpsc::UnboundedSender<Internal>,
     mut stop: watch::Receiver<bool>,
 ) {
     use futures_util::{SinkExt, StreamExt};
+    let PushTarget {
+        me,
+        relay,
+        key,
+        leftovers,
+    } = target;
     let mut pause = Duration::from_secs(5);
     while !*stop.borrow() {
         out.send(Event::Push(PushStatus::Connecting));
@@ -1747,6 +1803,7 @@ async fn push_loop(
                 Err(_) => break 'session "the relay could not be reached".to_owned(),
             };
             let (mut sink, mut stream) = socket.split();
+            delete_leftovers(&graph, &leftovers).await;
             let subscription = match graph
                 .subscribe_chat_messages(
                     &me,
@@ -1783,6 +1840,7 @@ async fn push_loop(
             let subscriptions: Vec<String> = std::iter::once(subscription.id.clone())
                 .chain(presence.map(|p| p.id))
                 .collect();
+            record_subscriptions(&leftovers, &subscriptions).await;
             out.send(Event::Push(PushStatus::Live));
             // A change may have happened while connecting.
             let _ = internal.send(Internal::PushMissed);
@@ -1853,6 +1911,7 @@ async fn push_loop(
             for id in &subscriptions {
                 let _ = graph.delete_subscription(id).await;
             }
+            record_subscriptions(&leftovers, &[]).await;
             match reason {
                 Some(reason) => reason,
                 None => return,

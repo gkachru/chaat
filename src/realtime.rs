@@ -17,9 +17,10 @@
 //!
 //! See docs/realtime.md. Not yet exercised against a live tenant.
 
+use std::path::Path;
 use std::time::Duration;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// How long each subscription is asked to last. Renewed well before.
 pub const LIFETIME: Duration = Duration::from_secs(55 * 60);
@@ -83,6 +84,45 @@ pub fn lifecycle_url(relay: &str, channel: &str) -> String {
 
 /// The header a keyed relay expects the access key in (relay/src/lib.rs).
 pub const KEY_HEADER: &str = "x-chaat-relay-key";
+
+/// The file, in each account's folder, that lists the subscriptions this
+/// installation created and has not deleted yet.
+pub const LEFTOVERS_FILE: &str = "push-subscriptions.json";
+
+/// Subscriptions a run of Chaat made. A run that ends without cleaning up
+/// (a crash, a killed process) leaves them in Graph for up to an hour,
+/// still sending notifications to a channel nobody listens on; the next run
+/// deletes them first. Only this installation's own subscriptions are
+/// listed, so another device sharing the relay keeps its own.
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+struct Leftovers {
+    subscriptions: Vec<String>,
+}
+
+/// The subscription ids in `path`; none if the file is missing or unreadable.
+pub fn read_leftovers(path: &Path) -> Vec<String> {
+    std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Leftovers>(&bytes).ok())
+        .map(|leftovers| leftovers.subscriptions)
+        .unwrap_or_default()
+}
+
+/// Records `ids` in `path`, or removes the file when there are none.
+pub fn write_leftovers(path: &Path, ids: &[String]) -> std::io::Result<()> {
+    if ids.is_empty() {
+        return match std::fs::remove_file(path) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
+            _ => Ok(()),
+        };
+    }
+    let leftovers = Leftovers {
+        subscriptions: ids.to_vec(),
+    };
+    let bytes = serde_json::to_vec_pretty(&leftovers).map_err(std::io::Error::other)?;
+    crate::paths::write_atomically(path, &bytes)
+}
 
 /// A relay access key on its way to the credential store. Its `Debug` output
 /// hides the key, so a logged command cannot leak it.
@@ -207,6 +247,22 @@ fn chat_of(resource: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn leftover_subscriptions_round_trip_and_tolerate_bad_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(LEFTOVERS_FILE);
+        assert!(read_leftovers(&path).is_empty());
+        write_leftovers(&path, &["sub-1".into(), "sub-2".into()]).unwrap();
+        assert_eq!(read_leftovers(&path), ["sub-1", "sub-2"]);
+        write_leftovers(&path, &[]).unwrap();
+        assert!(!path.exists());
+        write_leftovers(&path, &[]).unwrap();
+        std::fs::write(&path, b"not json").unwrap();
+        assert!(read_leftovers(&path).is_empty());
+        std::fs::write(&path, br#"{"subscriptions":["a"],"later":1}"#).unwrap();
+        assert_eq!(read_leftovers(&path), ["a"]);
+    }
 
     #[test]
     fn relay_keys_travel_in_a_header() {

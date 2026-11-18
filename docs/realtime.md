@@ -75,6 +75,19 @@ How it works:
 6. Chaat renews the subscription every 40 minutes, reauthorizes it when Graph
    asks, recreates it when Graph removes it or the relay drops, and deletes
    it when push is turned off or Chaat exits.
+7. Chaat records its subscription ids in the account folder
+   (`push-subscriptions.json`). A run that ends without deleting them (a
+   crash, a killed process, a quit faster than the delete) leaves them in
+   Graph for up to an hour, still sending notifications to a channel nobody
+   listens on, and Graph may then refuse a new presence subscription as a
+   duplicate (`409`). The next run deletes them before subscribing again. It
+   only deletes its own, so another device sharing the relay is unaffected.
+
+The chat with yourself (notes, `48:notes`) is not documented by Microsoft.
+In testing on 18 November 2026, a message to yourself produced no change
+notification, while a one-on-one chat did. That chat updates when the chat
+list refreshes: when Chaat comes to the foreground, on ⌘R, or when another
+chat's notification refreshes the list.
 
 What the relay sees: notification envelopes with a subscription id, the
 `clientState`, and resource paths such as `chats('19:…')/messages('1702')`

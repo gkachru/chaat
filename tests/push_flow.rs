@@ -71,6 +71,14 @@ async fn a_change_notification_fetches_the_chat() {
         })))
         .mount(&server)
         .await;
+    // A subscription an earlier run left behind (it was killed): deleted
+    // before the new ones are made.
+    Mock::given(method("DELETE"))
+        .and(path("/v1.0/subscriptions/sub-old"))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
     Mock::given(method("DELETE"))
         .and(path("/v1.0/subscriptions/sub-1"))
         .respond_with(ResponseTemplate::new(204))
@@ -113,6 +121,8 @@ async fn a_change_notification_fetches_the_chat() {
     }
     .save(&dirs.account(ACCOUNT).join("account.json"))
     .unwrap();
+    let leftovers = dirs.account(ACCOUNT).join(chaat::realtime::LEFTOVERS_FILE);
+    chaat::realtime::write_leftovers(&leftovers, &["sub-old".into()]).unwrap();
 
     let backend = Backend::spawn_with(
         dirs,
@@ -139,8 +149,25 @@ async fn a_change_notification_fetches_the_chat() {
         _ => None,
     });
 
-    // What Chaat asked Graph for.
+    // The leftover went first, and the new subscriptions are recorded.
     let requests = server.received_requests().await.unwrap();
+    let old = requests
+        .iter()
+        .position(|r| {
+            r.method.as_str() == "DELETE" && r.url.path() == "/v1.0/subscriptions/sub-old"
+        })
+        .expect("the leftover subscription was deleted");
+    let first_new = requests
+        .iter()
+        .position(|r| r.method.as_str() == "POST" && r.url.path() == "/v1.0/subscriptions")
+        .unwrap();
+    assert!(old < first_new);
+    assert_eq!(
+        chaat::realtime::read_leftovers(&leftovers),
+        ["sub-1", "sub-1"]
+    );
+
+    // What Chaat asked Graph for.
     let subscribe = requests
         .iter()
         .find(|r| r.url.path() == "/v1.0/subscriptions")
@@ -239,7 +266,11 @@ async fn a_change_notification_fetches_the_chat() {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let requests = server.received_requests().await.unwrap();
-        if requests.iter().any(|r| r.method.as_str() == "DELETE") {
+        if requests
+            .iter()
+            .any(|r| r.method.as_str() == "DELETE" && r.url.path() == "/v1.0/subscriptions/sub-1")
+            && !leftovers.exists()
+        {
             break;
         }
         assert!(
