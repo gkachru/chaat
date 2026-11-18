@@ -700,6 +700,7 @@ impl Worker {
                 .dirs
                 .account(&account.record.id)
                 .join(realtime::REFUSED_FILE),
+            renew_every: self.options.push_renew_every,
         };
         let task = tokio::spawn(push_loop(graph, target, out, internal, stopped));
         self.stop_push = Some((stop, task));
@@ -1902,6 +1903,8 @@ struct PushTarget {
     contacts: watch::Receiver<Vec<String>>,
     /// Where people Graph refused to follow are remembered.
     refused: std::path::PathBuf,
+    /// How often the session renews its subscriptions.
+    renew_every: Duration,
 }
 
 /// People Graph refused to follow in the last week (see
@@ -1965,6 +1968,9 @@ struct PresenceLimits {
     refused: HashMap<String, i64>,
     /// Whether `refused` gained someone since it was last saved.
     refused_changed: bool,
+    /// Graph answered 409 (an earlier presence subscription still holds the
+    /// person's one place): try again when push next renews.
+    blocked: bool,
 }
 
 impl PresenceLimits {
@@ -1973,6 +1979,7 @@ impl PresenceLimits {
             cap: realtime::PRESENCE_LIMIT,
             refused: HashMap::new(),
             refused_changed: false,
+            blocked: false,
         }
     }
 
@@ -2038,8 +2045,22 @@ async fn follow_presence(
             }
             Err(GraphError::Http { status: 409, .. }) if !conflict_retried => {
                 conflict_retried = true;
-                log::info!("push: presence subscription conflict (409); retrying shortly");
-                tokio::time::sleep(Duration::from_secs(3)).await;
+                let cleared = clear_presence_blockers(graph).await;
+                log::info!(
+                    "push: presence subscription conflict (409); deleted {cleared} in the way, retrying"
+                );
+                if cleared == 0 {
+                    // Graph may still be forgetting one just deleted.
+                    tokio::time::sleep(Duration::from_secs(3)).await;
+                }
+            }
+            Err(GraphError::Http { status: 409, .. }) => {
+                log::info!(
+                    "push: presence subscription conflict (409); trying again at the next renewal"
+                );
+                limits.cap = 0;
+                limits.blocked = true;
+                return None;
             }
             Err(error) => {
                 log::info!(
@@ -2051,6 +2072,30 @@ async fn follow_presence(
             }
         }
     }
+}
+
+/// Deletes this app's presence subscriptions for the person, which hold the
+/// one place Graph allows (a run that crashed or was killed before cleaning
+/// up). Callers hold none of their own when they ask. Chaat runs on one
+/// device per person; a second one would lose its presence subscription
+/// here and fall back to fetching on look. Returns how many were deleted.
+async fn clear_presence_blockers(graph: &Graph) -> usize {
+    let Ok(subscriptions) = graph.subscriptions().await else {
+        return 0;
+    };
+    let mut deleted = 0;
+    for subscription in subscriptions.iter().filter(|s| {
+        s.resource.as_deref().is_some_and(|resource| {
+            resource
+                .to_ascii_lowercase()
+                .contains("communications/presences")
+        })
+    }) {
+        if graph.delete_subscription(&subscription.id).await.is_ok() {
+            deleted += 1;
+        }
+    }
+    deleted
 }
 
 async fn subscribe_presence_of(
@@ -2197,6 +2242,7 @@ async fn push_loop(
         leftovers,
         mut contacts,
         refused,
+        renew_every,
     } = target;
     let mut pause = Duration::from_secs(5);
     while !*stop.borrow() {
@@ -2258,7 +2304,7 @@ async fn push_loop(
             // A change may have happened while connecting.
             let _ = internal.send(Internal::PushMissed);
             pause = Duration::from_secs(5);
-            let mut renew = tokio::time::interval(realtime::RENEW_EVERY);
+            let mut renew = tokio::time::interval(renew_every);
             renew.tick().await;
             let mut keepalive = tokio::time::interval(Duration::from_secs(30));
             keepalive.tick().await;
@@ -2299,6 +2345,18 @@ async fn push_loop(
                         }
                         if failed.is_some() {
                             break failed;
+                        }
+                        // A presence subscription Graph refused as a
+                        // duplicate gets one more try now; the one in the
+                        // way, if abandoned, expires within the hour.
+                        if presence.is_none() && limits.blocked {
+                            limits.blocked = false;
+                            limits.cap = realtime::PRESENCE_LIMIT;
+                            let wanted = realtime::presence_watch(&me, &contacts.borrow());
+                            presence = follow_presence(&graph, &wanted, &endpoints, &mut limits).await;
+                            save_refused(&refused, &mut limits).await;
+                            subscriptions = held(&subscription.id, presence.as_ref());
+                            record_subscriptions(&leftovers, &subscriptions).await;
                         }
                     }
                     _ = keepalive.tick() => {

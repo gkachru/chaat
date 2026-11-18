@@ -34,6 +34,7 @@ undocumented Teams endpoints.
 | [Message export][export] | `GET /chats/getAllMessages` is application-only; it is not the delegated notification resource below |
 | [Channel messages][channels] | Chaat uses `ChannelMessage.Read.All` for reads, requested incrementally with admin consent |
 | [Presence change notifications][presence-push] | One presence subscription per person and app, for at most an hour; the bulk form `communications/presences?$filter=id in (…)` follows up to 650 people. Without resource data, each notification names the person, and Chaat fetches their presence. Graph cannot change whom a subscription follows, so Chaat replaces it when a new contact appears. By that rule a second device on the same account and app cannot hold its own presence subscription and falls back to fetching on look (not tested with two devices; Graph answered `409 ExtensionError` on 18 Nov 2026 while an earlier run's presence subscription still existed). Bulk subscriptions are refused with `400 ExtensionError` when the list includes users Graph cannot follow, even ones in the same organisation whose presence `getPresencesByUserId` returns; the message names them: "Subscription failed for some users. Remove the failing users and retry. (id, id)" (seen 18 Nov 2026, not in Microsoft's documentation). Both users named on 18 Nov 2026 had left the organisation (one disabled with name and email still listed, one deleted and listed without them). Chaat removes the named users, remembers them for a week, and retries; it searches for the longest accepted list only if a 400 names nobody |
+| [Listing subscriptions][subscription-list] | With delegated permissions, `GET /subscriptions` returns only the subscriptions this app created for the signed-in person, needing no permission beyond the ones that created them (`Presence.Read.All` for presence); paged with `@odata.nextLink`. Chaat uses it only to clear its own presence subscription after a 409 |
 | [Presence sessions][presence] | Sessions expire; Chaat updates its session only on input and clears it at sign-out or exit |
 | [Calendar events][calendar] | Use `onlineMeeting.joinUrl` for meeting links; Chaat requests `Calendars.Read` |
 | [Meeting lookup][meeting] | Lookup by `JoinWebUrl` can return the meeting chat; Chaat requests `OnlineMeetings.Read` on first use |
@@ -90,6 +91,7 @@ and works with Microsoft Teams; names and artwork must not imply endorsement.
 [channels]: https://learn.microsoft.com/en-us/graph/api/channel-list-messages?view=graph-rest-1.0
 [presence]: https://learn.microsoft.com/en-us/graph/api/presence-setpresence?view=graph-rest-1.0
 [presence-push]: https://learn.microsoft.com/en-us/graph/changenotifications-for-presence
+[subscription-list]: https://learn.microsoft.com/en-us/graph/api/subscription-list?view=graph-rest-1.0
 [calendar]: https://learn.microsoft.com/en-us/graph/api/resources/event?view=graph-rest-1.0
 [meeting]: https://learn.microsoft.com/en-us/graph/api/onlinemeeting-get?view=graph-rest-1.0
 [search]: https://learn.microsoft.com/en-us/graph/search-concept-chat-messages

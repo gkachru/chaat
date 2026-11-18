@@ -158,6 +158,7 @@ async fn sign_in_sync_send_restore_and_sign_out() {
         graph_base: format!("{}/v1.0", server.uri()),
         secrets: Arc::clone(&secrets),
         open_browser: false,
+        push_renew_every: chaat::realtime::RENEW_EVERY,
     };
 
     // First run: no account yet.

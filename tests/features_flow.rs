@@ -206,6 +206,7 @@ async fn chats_mentions_files_and_status() {
             graph_base: format!("{}/v1.0", server.uri()),
             secrets,
             open_browser: false,
+            push_renew_every: chaat::realtime::RENEW_EVERY,
         },
     );
     backend.send(Command::Start {

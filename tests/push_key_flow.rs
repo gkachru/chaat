@@ -101,6 +101,7 @@ async fn a_keyed_relay_needs_the_stored_key() {
             graph_base: format!("{}/v1.0", server.uri()),
             secrets,
             open_browser: false,
+            push_renew_every: chaat::realtime::RENEW_EVERY,
         },
     );
     backend.send(Command::Start {

@@ -292,6 +292,9 @@ pub struct BackendOptions {
     pub secrets: std::sync::Arc<dyn crate::secrets::SecretStore>,
     /// Open the system browser for sign-in (off in tests).
     pub open_browser: bool,
+    /// How often push renews its subscriptions ([`crate::realtime::RENEW_EVERY`];
+    /// shorter in tests).
+    pub push_renew_every: std::time::Duration,
 }
 
 impl Default for BackendOptions {
@@ -301,6 +304,7 @@ impl Default for BackendOptions {
             graph_base: crate::graph::GRAPH_BASE.to_owned(),
             secrets: crate::secrets::native(),
             open_browser: true,
+            push_renew_every: crate::realtime::RENEW_EVERY,
         }
     }
 }

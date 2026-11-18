@@ -69,6 +69,11 @@ async fn presence_subscriptions(server: &MockServer) -> Vec<String> {
 /// A relay, Graph with a one-on-one chat (Ada) and a group (Grace, Bo), and
 /// a signed-in backend. Callers may mount higher-priority mocks first.
 async fn start(server: &MockServer) -> (Backend, String, tempfile::TempDir) {
+    start_with(server, chaat::realtime::RENEW_EVERY).await
+}
+
+/// [`start`], renewing push subscriptions every `renew`.
+async fn start_with(server: &MockServer, renew: Duration) -> (Backend, String, tempfile::TempDir) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let relay_url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
     tokio::spawn(chaat_relay::serve(
@@ -150,6 +155,7 @@ async fn start(server: &MockServer) -> (Backend, String, tempfile::TempDir) {
             graph_base: format!("{}/v1.0", server.uri()),
             secrets,
             open_browser: false,
+            push_renew_every: renew,
         },
     );
     backend.send(Command::Start {
@@ -422,6 +428,111 @@ async fn users_graph_names_are_left_out_and_stay_out() {
         presence_subscriptions(&server).await,
         [four, without_grace, without_grace],
         "no refused request in the new session"
+    );
+    backend.send(Command::Relay(None));
+    wait_for(&backend, 5, |e| {
+        matches!(e, Event::Push(PushStatus::Off)).then_some(())
+    });
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_presence_conflict_is_tried_again_at_the_next_renewal() {
+    let server = MockServer::start().await;
+    // Another presence subscription holds the person's one place at first.
+    Mock::given(method("POST"))
+        .and(path("/v1.0/subscriptions"))
+        .and(wiremock::matchers::body_string_contains("presences"))
+        .respond_with(ResponseTemplate::new(409).set_body_json(
+            serde_json::json!({"error": {"code": "ExtensionError", "message": "x"}}),
+        ))
+        .up_to_n_times(2)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path("/v1.0/subscriptions/sub-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id": "sub-1", "expirationDateTime": "2026-10-11T14:00:00Z"
+        })))
+        .mount(&server)
+        .await;
+    let (backend, relay_url, _dir) = start_with(&server, Duration::from_secs(4)).await;
+    backend.send(Command::Relay(Some(relay_url)));
+    wait_for(&backend, 15, |e| match e {
+        Event::Push(PushStatus::Live) => Some(()),
+        Event::Push(PushStatus::Failed(reason)) => panic!("push failed: {reason}"),
+        _ => None,
+    });
+    // Refused twice (once, then after a pause): push is live without it.
+    assert_eq!(presence_subscriptions(&server).await.len(), 2);
+    // The renewal tries once more, and Graph now accepts.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while presence_subscriptions(&server).await.len() < 3 {
+        assert!(Instant::now() < deadline, "no retry at the renewal");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(
+        presence_subscriptions(&server).await.len(),
+        3,
+        "one retry, no more"
+    );
+    backend.send(Command::Relay(None));
+    wait_for(&backend, 5, |e| {
+        matches!(e, Event::Push(PushStatus::Off)).then_some(())
+    });
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_presence_subscription_in_the_way_is_found_and_deleted() {
+    let server = MockServer::start().await;
+    // A crashed run left a presence subscription holding the one place.
+    Mock::given(method("POST"))
+        .and(path("/v1.0/subscriptions"))
+        .and(wiremock::matchers::body_string_contains("presences"))
+        .respond_with(ResponseTemplate::new(409).set_body_json(
+            serde_json::json!({"error": {"code": "ExtensionError", "message": "x"}}),
+        ))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1.0/subscriptions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"value": [
+            {"id": "sub-old-presence", "resource": "communications/presences?$filter=id in ('u-me')"},
+            {"id": "sub-old-chats", "resource": "/users/u-me/chats/getAllMessages"}
+        ]})))
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path("/v1.0/subscriptions/sub-old-presence"))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path("/v1.0/subscriptions/sub-old-chats"))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let (backend, relay_url, _dir) = start(&server).await;
+    let started = Instant::now();
+    backend.send(Command::Relay(Some(relay_url)));
+    wait_for(&backend, 15, |e| match e {
+        Event::Push(PushStatus::Live) => Some(()),
+        Event::Push(PushStatus::Failed(reason)) => panic!("push failed: {reason}"),
+        _ => None,
+    });
+    // Refused once, then the same list accepted at once after the blocker
+    // went (the contacts' list may follow when the chat list arrives).
+    let attempts = presence_subscriptions(&server).await;
+    assert!(attempts.len() >= 2, "{attempts:?}");
+    assert_eq!(attempts[0], attempts[1]);
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "no pause when a blocker was deleted"
     );
     backend.send(Command::Relay(None));
     wait_for(&backend, 5, |e| {

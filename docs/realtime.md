@@ -79,9 +79,14 @@ How it works:
    people who left the organisation (disabled or deleted accounts); deleted
    ones, shown in chats without a name or email, are skipped up front. A 400 that
    names nobody makes Chaat search for the longest list Graph accepts. A
-   conflict (409, an earlier subscription Graph hasn't forgotten) is retried
-   once after 3 seconds; other refusals leave presence to fetches on look
-   until push reconnects. If Graph refuses it, chat
+   conflict (409: Graph allows one presence subscription per person and app,
+   and a crashed or killed run left one) makes Chaat list its own
+   subscriptions for that account (`GET /subscriptions`, which with
+   delegated permissions returns only this app's, for this person), delete
+   the presence ones, and ask again. If that still conflicts, it tries again
+   at the next 40-minute renewal; other refusals leave presence to fetches on
+   look until push reconnects. Chaat assumes one device per person: a second
+   device would lose its presence subscription to the first. If Graph refuses it, chat
    updates still work.
 4. Graph validates the URL (the relay echoes the `validationToken`), then
    posts each change. The relay forwards it over the WebSocket.

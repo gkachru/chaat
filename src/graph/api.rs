@@ -564,9 +564,29 @@ pub struct Subscription {
     pub id: String,
     #[serde(default)]
     pub expiration_date_time: Option<String>,
+    /// What it follows, as given when it was made.
+    #[serde(default)]
+    pub resource: Option<String>,
 }
 
 impl Graph {
+    /// `GET /subscriptions`: with delegated permissions, the subscriptions
+    /// this app made for the signed-in person (no extra permission beyond the
+    /// ones that made them). Follows paging links, at most 10 pages.
+    pub async fn subscriptions(&self) -> Result<Vec<Subscription>, GraphError> {
+        let mut url = "subscriptions".to_owned();
+        let mut all = Vec::new();
+        for _ in 0..10 {
+            let page: g::Page<Subscription> = self.get(&url).await?;
+            all.extend(page.value);
+            match page.next_link {
+                Some(next) => url = next,
+                None => break,
+            }
+        }
+        Ok(all)
+    }
+
     /// `POST /subscriptions` for all of the person's chat messages, without
     /// resource data (Chat.Read; Chat.ReadWrite includes it).
     pub async fn subscribe_chat_messages(
