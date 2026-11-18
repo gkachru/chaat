@@ -157,6 +157,38 @@ impl Graph {
         Ok(chats)
     }
 
+    /// The person's notes chat, built from its newest message, or `None`
+    /// while they have never written to themselves (Graph answers 404).
+    /// Graph refuses the chat itself, so `me` names and pictures it.
+    pub async fn notes_chat(&self, me: crate::model::Member) -> Result<Option<Chat>, GraphError> {
+        use crate::model::{NOTES_CHAT, Preview};
+        let url = format!(
+            "chats/{}/messages?$top=1&$orderby=createdDateTime%20desc",
+            segment(NOTES_CHAT)
+        );
+        let page = match self.chat_message_page(NOTES_CHAT, &url).await {
+            Ok(page) => page,
+            Err(GraphError::NotFound) => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let preview = page.messages.first().map(|last| Preview {
+            message_id: last.id.clone(),
+            author_id: last.author_id.clone(),
+            author: Some(last.author.clone()),
+            text: last.preview_text(),
+            at: last.created,
+            deleted: last.deleted,
+        });
+        Ok(Some(Chat {
+            id: NOTES_CHAT.to_owned(),
+            topic: Some(format!("{} (You)", me.display_name)),
+            updated: preview.as_ref().map_or(0, |p| p.at),
+            members: vec![me],
+            preview,
+            ..Default::default()
+        }))
+    }
+
     /// One chat, for a chat Wren has not listed yet (Chat.ReadWrite).
     pub async fn chat(&self, chat: &str) -> Result<Chat, GraphError> {
         let raw: g::Chat = self
@@ -722,6 +754,69 @@ mod tests {
         let chats = graph(&server).await.chats(3).await.unwrap();
         assert_eq!(chats.len(), 2);
         assert_eq!(chats[1].topic.as_deref(), Some("Launch"));
+    }
+
+    #[tokio::test]
+    async fn the_notes_chat_comes_from_its_newest_message() {
+        let me = || crate::model::Member {
+            user_id: "u-me".into(),
+            display_name: "Me".into(),
+            email: None,
+        };
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/chats/48:notes/messages"))
+            .and(query_param("$top", "1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "value": [{"id": "m1", "createdDateTime": "2026-11-18T07:00:00Z",
+                    "body": {"contentType": "text", "content": "buy milk"},
+                    "from": {"user": {"id": "u-me", "displayName": "Me"}}}]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let notes = graph(&server)
+            .await
+            .notes_chat(me())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(notes.is_notes());
+        assert_eq!(notes.title("u-me"), "Me (You)");
+        assert_eq!(notes.face("u-me").map(|m| m.user_id.as_str()), Some("u-me"));
+        assert_eq!(notes.peer("u-me"), None, "no calling yourself");
+        assert!(!notes.is_unread("u-me"));
+        let preview = notes.preview.as_ref().unwrap();
+        assert_eq!(preview.text, "buy milk");
+        assert!(preview.at > 0);
+
+        // Someone who never wrote to themselves has no notes chat.
+        let empty = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/chats/48:notes/messages"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+                "error": {"code": "NotFound", "message": "not found"}
+            })))
+            .mount(&empty)
+            .await;
+        assert_eq!(graph(&empty).await.notes_chat(me()).await.unwrap(), None);
+    }
+
+    #[test]
+    fn notes_come_first_in_the_list() {
+        let chat = |id: &str, at: i64| Chat {
+            id: id.into(),
+            updated: at,
+            ..Default::default()
+        };
+        let mut chats = [
+            chat("19:a", 30),
+            chat(crate::model::NOTES_CHAT, 10),
+            chat("19:b", 20),
+        ];
+        chats.sort_by_key(Chat::list_order);
+        let ids: Vec<&str> = chats.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, ["48:notes", "19:a", "19:b"]);
     }
 
     #[tokio::test]

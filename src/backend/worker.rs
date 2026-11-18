@@ -665,11 +665,11 @@ impl Worker {
         let store = Arc::clone(&account.store);
         let out = self.out.clone();
         let internal = self.internal.clone();
-        let tenant = account.record.tenant_id.clone();
+        let record = account.record.clone();
         let links = Arc::clone(&self.older_links);
         tokio::spawn(async move {
             out.send(Event::Loading(resource.clone(), true));
-            let result = fetch_resource(&graph, &store, &out, &resource, tenant, &links).await;
+            let result = fetch_resource(&graph, &store, &out, &resource, &record, &links).await;
             out.send(Event::Loading(resource.clone(), false));
             if let Err(error) = result {
                 let _ = internal.send(Internal::FetchFailed(resource.clone()));
@@ -1437,16 +1437,28 @@ async fn fetch_resource(
     store: &Arc<Mutex<Store>>,
     out: &Outbox,
     resource: &Resource,
-    tenant: String,
+    record: &AccountRecord,
     links: &Arc<Mutex<HashMap<ConversationId, String>>>,
 ) -> Result<(), GraphError> {
     match resource {
         Resource::Profile => {
-            let profile = graph.me(Some(tenant)).await?;
+            let profile = graph.me(Some(record.tenant_id.clone())).await?;
             out.send(Event::Profile(Box::new(profile)));
         }
         Resource::Chats => {
-            let chats = graph.chats(2).await?;
+            let mut chats = graph.chats(2).await?;
+            // The notes chat is not in the listing; a failure to find it
+            // leaves the rest of the list as it is.
+            let me = crate::model::Member {
+                user_id: record.id.split('.').next().unwrap_or_default().to_owned(),
+                display_name: record.display_name.clone(),
+                email: Some(record.username.clone()).filter(|u| !u.is_empty()),
+            };
+            match graph.notes_chat(me).await {
+                Ok(Some(notes)) => chats.insert(0, notes),
+                Ok(None) => {}
+                Err(error) => log::info!("notes chat unavailable: {error}"),
+            }
             {
                 let mut store = store.lock().unwrap_or_else(|p| p.into_inner());
                 if let Err(error) = store.save_chats(&chats) {

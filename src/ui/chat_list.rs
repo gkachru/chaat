@@ -125,7 +125,7 @@ fn row(ui: &mut egui::Ui, app: &App, chat: &Chat, me: &str, now: i64) -> egui::R
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(avatar_rect));
     match chat.kind {
         ChatKind::OneOnOne => {
-            let peer = chat.peer(me);
+            let peer = chat.face(me);
             widgets::avatar(
                 &mut child,
                 app,

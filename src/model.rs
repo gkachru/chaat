@@ -120,7 +120,31 @@ pub struct Chat {
     pub hidden: bool,
 }
 
+/// The person's chat with themselves, Teams' notes. Graph serves its
+/// messages but not the chat itself (that answers 400), and the id is not
+/// in Microsoft's documentation; Wren builds the list entry itself.
+pub const NOTES_CHAT: &str = "48:notes";
+
 impl Chat {
+    pub fn is_notes(&self) -> bool {
+        self.id == NOTES_CHAT
+    }
+
+    /// Whose avatar the chat shows: the other person of a one-on-one chat,
+    /// or the person themselves in their notes.
+    pub fn face<'a>(&'a self, me: &str) -> Option<&'a Member> {
+        if self.is_notes() {
+            self.members.first()
+        } else {
+            self.peer(me)
+        }
+    }
+
+    /// Order in the list: notes first, as in Teams, then newest activity.
+    pub fn list_order(&self) -> (bool, std::cmp::Reverse<Millis>) {
+        (!self.is_notes(), std::cmp::Reverse(self.activity()))
+    }
+
     /// What the list and the header call the chat: its topic, or the other
     /// members' names.
     pub fn title(&self, me: &str) -> String {
@@ -264,6 +288,25 @@ pub struct Message {
 impl Message {
     pub fn is_from(&self, user: &str) -> bool {
         self.author_id.as_deref() == Some(user)
+    }
+
+    /// What the chat list shows for a message: its text, or its files.
+    pub fn preview_text(&self) -> String {
+        let text = self.body.summary(140);
+        if !text.is_empty() {
+            return text;
+        }
+        let files: Vec<&str> = self
+            .attachments
+            .iter()
+            .filter(|a| matches!(a.kind, AttachmentKind::File))
+            .filter_map(|a| a.name.as_deref())
+            .collect();
+        if files.is_empty() {
+            String::new()
+        } else {
+            format!("📎 {}", files.join(", "))
+        }
     }
 
     pub fn quote(&self) -> Option<&Attachment> {

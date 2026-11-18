@@ -61,7 +61,7 @@ fn header(app: &mut App, ui: &mut egui::Ui, conversation: &ConversationId) {
                         web = chat.web_url.clone();
                         match chat.kind {
                             ChatKind::OneOnOne => {
-                                let peer = chat.peer(&me);
+                                let peer = chat.face(&me);
                                 widgets::avatar(
                                     ui,
                                     app,
@@ -70,14 +70,19 @@ fn header(app: &mut App, ui: &mut egui::Ui, conversation: &ConversationId) {
                                     32.0,
                                     true,
                                 );
-                                let subtitle = peer
-                                    .and_then(|p| app.presence.get(&p.user_id))
-                                    .map(|p| match &p.status_message {
-                                        Some(message) => format!("{} · {message}", p.describe()),
-                                        None => p.describe(),
-                                    })
-                                    .or_else(|| peer.and_then(|p| p.email.clone()))
-                                    .unwrap_or_default();
+                                let subtitle = if chat.is_notes() {
+                                    "Notes to yourself. Only you can see them.".to_owned()
+                                } else {
+                                    peer.and_then(|p| app.presence.get(&p.user_id))
+                                        .map(|p| match &p.status_message {
+                                            Some(message) => {
+                                                format!("{} · {message}", p.describe())
+                                            }
+                                            None => p.describe(),
+                                        })
+                                        .or_else(|| peer.and_then(|p| p.email.clone()))
+                                        .unwrap_or_default()
+                                };
                                 (title, subtitle)
                             }
                             ChatKind::Group => {

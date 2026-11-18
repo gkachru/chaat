@@ -1260,7 +1260,7 @@ impl App {
     }
 
     fn on_chats(&mut self, mut chats: Vec<Chat>, cached: bool) {
-        chats.sort_by_key(|chat| std::cmp::Reverse(chat.activity()));
+        chats.sort_by_key(Chat::list_order);
         let me = self.me().to_owned();
         if !cached && !self.chats.is_empty() {
             let mut notices = Vec::new();
@@ -1395,8 +1395,7 @@ impl App {
                 at: last.created,
                 deleted: last.deleted,
             });
-            self.chats
-                .sort_by_key(|chat| std::cmp::Reverse(chat.activity()));
+            self.chats.sort_by_key(Chat::list_order);
         }
         self.trim_conversations();
     }
@@ -2333,8 +2332,7 @@ impl App {
                 at: message.created,
                 deleted: false,
             });
-            self.chats
-                .sort_by_key(|chat| std::cmp::Reverse(chat.activity()));
+            self.chats.sort_by_key(Chat::list_order);
         }
         self.drafts.remove(&conversation);
         if !channel_reply {
@@ -2484,21 +2482,7 @@ impl App {
 
 /// What the chat list shows for a message: its text, or its files.
 fn preview_text(message: &Message) -> String {
-    let text = message.body.summary(140);
-    if !text.is_empty() {
-        return text;
-    }
-    let files: Vec<&str> = message
-        .attachments
-        .iter()
-        .filter(|a| matches!(a.kind, crate::model::AttachmentKind::File))
-        .filter_map(|a| a.name.as_deref())
-        .collect();
-    if files.is_empty() {
-        String::new()
-    } else {
-        format!("📎 {}", files.join(", "))
-    }
+    message.preview_text()
 }
 
 impl fastframe_shell::Resident for App {

@@ -30,6 +30,7 @@ undocumented Teams endpoints.
 |---|---|
 | [Chat list][chats] | Maximum page size 50; expanded members are capped at 25 |
 | [Chat messages][messages] | Maximum page size 50; descending creation/modification order, with matching date filters; follow paging links |
+| Notes to yourself | Not in Microsoft's documentation. The chat id is `48:notes`; `GET /chats/48:notes` answers 400 and the chat is missing from `/me/chats`, but `GET`/`POST /chats/48:notes/messages` work with Chat.ReadWrite (tested 18 Nov 2026). It does not exist until the person first writes to themselves (404). Treat it as fragile: a failure must leave the rest of the chat list alone |
 | [Message export][export] | `GET /chats/getAllMessages` is application-only; it is not the delegated notification resource below |
 | [Channel messages][channels] | Wren uses `ChannelMessage.Read.All` for reads, requested incrementally with admin consent |
 | [Presence sessions][presence] | Sessions expire; Wren updates its session only on input and clears it at sign-out or exit |
