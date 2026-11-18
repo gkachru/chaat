@@ -33,6 +33,7 @@ impl Graph {
             .value
             .into_iter()
             .map(|user| Member {
+                tenant_id: None,
                 email: user.mail.or(user.user_principal_name),
                 display_name: user.display_name.unwrap_or_default(),
                 user_id: user.id,

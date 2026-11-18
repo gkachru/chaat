@@ -64,6 +64,7 @@ pub struct ConversationMember {
     pub display_name: Option<String>,
     pub user_id: Option<String>,
     pub email: Option<String>,
+    pub tenant_id: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]

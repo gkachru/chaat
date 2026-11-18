@@ -313,6 +313,7 @@ mod tests {
         let chat = Chat {
             topic: Some("Launch crew".into()),
             members: vec![Member {
+                tenant_id: None,
                 user_id: "u-ada".into(),
                 display_name: "Ada Lovelace".into(),
                 email: None,

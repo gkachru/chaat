@@ -87,6 +87,7 @@ fn person(id: &str) -> &'static Person {
 fn member(id: &str) -> Member {
     let p = person(id);
     Member {
+        tenant_id: None,
         user_id: p.id.into(),
         display_name: p.name.into(),
         email: Some(p.email.into()),
@@ -730,6 +731,7 @@ pub fn search_people(app: &App, query: &str) -> Vec<Member> {
         .filter(|p| p.id != ME)
         .map(|p| member(p.id))
         .chain(DIRECTORY.iter().map(|(id, name, email)| Member {
+            tenant_id: None,
             user_id: (*id).into(),
             display_name: (*name).into(),
             email: Some((*email).into()),
@@ -779,6 +781,7 @@ fn populate_second(app: &mut App, now: i64) {
     });
     app.granted = crate::auth::scope_string(&[]);
     let advisor = |id: &str, name: &str, email: &str| Member {
+        tenant_id: None,
         user_id: id.into(),
         display_name: name.into(),
         email: Some(email.into()),

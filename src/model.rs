@@ -89,6 +89,10 @@ pub struct Member {
     pub user_id: String,
     pub display_name: String,
     pub email: Option<String>,
+    /// The person's home organisation, when Graph says (chat members). People
+    /// from other organisations can't be followed by a presence subscription.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<String>,
 }
 
 /// The newest message of a chat, as the chat list shows it.
@@ -651,6 +655,7 @@ mod tests {
 
     fn member(id: &str, name: &str) -> Member {
         Member {
+            tenant_id: None,
             user_id: id.into(),
             display_name: name.into(),
             email: None,

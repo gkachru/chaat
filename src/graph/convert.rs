@@ -45,6 +45,7 @@ pub fn chat(chat: g::Chat) -> Chat {
                 user_id: member.user_id?,
                 display_name: member.display_name.unwrap_or_default(),
                 email: member.email,
+                tenant_id: member.tenant_id,
             })
         })
         .collect();
@@ -436,7 +437,7 @@ mod tests {
             "lastUpdatedDateTime": "2026-10-10T09:00:00Z",
             "webUrl": "https://teams.microsoft.com/l/chat/19%3Aabc%40thread.v2/0",
             "members": [
-                {"@odata.type": "#microsoft.graph.aadUserConversationMember", "id": "m1", "displayName": "Ada", "userId": "u-ada", "email": "ada@contoso.com"},
+                {"@odata.type": "#microsoft.graph.aadUserConversationMember", "id": "m1", "displayName": "Ada", "userId": "u-ada", "email": "ada@contoso.com", "tenantId": "t-ada"},
                 {"@odata.type": "#microsoft.graph.aadUserConversationMember", "id": "m2", "displayName": "Me", "userId": "u-me", "email": "me@contoso.com"}
             ],
             "lastMessagePreview": {
@@ -449,6 +450,8 @@ mod tests {
         .unwrap();
         let chat = chat(raw);
         assert_eq!(chat.title("u-me"), "Ada");
+        assert_eq!(chat.members[0].tenant_id.as_deref(), Some("t-ada"));
+        assert_eq!(chat.members[1].tenant_id, None);
         assert_eq!(chat.preview.as_ref().unwrap().text, "Ship it");
         assert!(chat.is_unread("u-me"));
         assert_eq!(

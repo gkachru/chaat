@@ -67,11 +67,13 @@ How it works:
    subscription, on presence (`Presence.Read.All`), follows you, your
    one-on-one contacts and your group chats' members
    (`communications/presences?$filter=id in (…)`, up to 650 people, contacts
-   first): your own lets the call bar follow calls, the others keep presence
+   first; only people in your own organisation, since people from other
+   organisations get their dots when you look): your own lets the call bar follow calls, the others keep presence
    dots current. Graph allows one presence subscription per person and app,
    so Chaat replaces it when someone new appears, and a second device on the
    same account goes without. If Graph refuses the list as malformed (400),
-   Chaat halves it, down to you alone, and keeps that size for the session;
+   Chaat searches for the longest list it accepts (halving, then bisecting;
+   about 10 requests for 66 people) and keeps that size for the session;
    other refusals (such as 409 while an earlier subscription still exists)
    leave presence to fetches on look until push reconnects. If Graph refuses it, chat
    updates still work.

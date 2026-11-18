@@ -83,10 +83,10 @@ enum Internal {
     PresencePushed(Option<String>),
     /// Fetch the contacts whose presence changed since the last flush.
     FlushPresence,
-    /// A chat list arrived: the people of one-on-one chats, most recent
-    /// first, and what caused the fetch.
+    /// A chat list arrived: whose presence it shows (see `People`), and what
+    /// caused the fetch.
     Contacts {
-        people: Vec<String>,
+        people: People,
         trigger: Trigger,
     },
 }
@@ -434,9 +434,9 @@ impl Worker {
                 // fetched because of a push leaves presence to its own
                 // notifications.
                 if trigger != Trigger::Push {
-                    self.presence(people.clone());
+                    self.presence(people.all);
                 }
-                self.contacts.send_replace(people);
+                self.contacts.send_replace(people.followable);
             }
         }
     }
@@ -791,7 +791,7 @@ impl Worker {
             }
             if result.is_ok() && resource == Resource::Chats {
                 let me = record.id.split('.').next().unwrap_or_default().to_owned();
-                let people = contacts_of(&store, me).await;
+                let people = contacts_of(&store, me, record.tenant_id.clone()).await;
                 let _ = internal.send(Internal::Contacts { people, trigger });
             }
             if lost {
@@ -1517,7 +1517,7 @@ fn describe(resource: &Resource) -> &'static str {
 /// first, without repeats. Meeting chats are left out: their attendee lists
 /// are long and short-lived. Graph expands at most 25 members per chat in
 /// the list, so larger groups are partly covered until the chat opens.
-async fn contacts_of(store: &Arc<Mutex<Store>>, me: String) -> Vec<String> {
+async fn contacts_of(store: &Arc<Mutex<Store>>, me: String, tenant: String) -> People {
     let store = Arc::clone(store);
     tokio::task::spawn_blocking(move || {
         let chats = store
@@ -1525,28 +1525,49 @@ async fn contacts_of(store: &Arc<Mutex<Store>>, me: String) -> Vec<String> {
             .unwrap_or_else(|p| p.into_inner())
             .chats()
             .unwrap_or_default();
-        people_to_follow(&chats, &me)
+        people_to_follow(&chats, &me, &tenant)
     })
     .await
     .unwrap_or_default()
 }
 
-fn people_to_follow(chats: &[crate::model::Chat], me: &str) -> Vec<String> {
-    use crate::model::ChatKind;
-    let mut people: Vec<String> = Vec::new();
-    let mut add = |user: &str| {
-        if user != me && !user.is_empty() && !people.iter().any(|p| p == user) {
-            people.push(user.to_owned());
+/// Whose presence the chat list shows, in order (see [`contacts_of`]).
+#[derive(Debug, Default, PartialEq)]
+struct People {
+    /// Everyone: fetched when the person looks.
+    all: Vec<String>,
+    /// Those in the person's own organisation, for the presence
+    /// subscription. Graph refuses (400) a subscription that includes people
+    /// from other organisations, though it answers presence fetches for
+    /// them. Members whose organisation Graph didn't give are kept.
+    followable: Vec<String>,
+}
+
+fn people_to_follow(chats: &[crate::model::Chat], me: &str, tenant: &str) -> People {
+    use crate::model::{ChatKind, Member};
+    let mut people = People::default();
+    let mut add = |member: &Member| {
+        let user = member.user_id.as_str();
+        if user == me || user.is_empty() || people.all.iter().any(|p| p == user) {
+            return;
+        }
+        people.all.push(user.to_owned());
+        let ours = member
+            .tenant_id
+            .as_deref()
+            .is_none_or(|theirs| tenant.is_empty() || theirs.eq_ignore_ascii_case(tenant));
+        if ours {
+            people.followable.push(user.to_owned());
         }
     };
     for chat in chats {
         if let Some(peer) = chat.peer(me) {
-            add(&peer.user_id);
+            add(peer);
         }
     }
     for chat in chats.iter().filter(|chat| chat.kind == ChatKind::Group) {
         for member in &chat.members {
-            add(&member.user_id);
+            add(member);
         }
     }
     people
@@ -1662,6 +1683,7 @@ async fn fetch_resource(
             // The notes chat is not in the listing; a failure to find it
             // leaves the rest of the list as it is.
             let me = crate::model::Member {
+                tenant_id: None,
                 user_id: record.id.split('.').next().unwrap_or_default().to_owned(),
                 display_name: record.display_name.clone(),
                 email: Some(record.username.clone()).filter(|u| !u.is_empty()),
@@ -1886,60 +1908,118 @@ struct Followed {
     people: Vec<String>,
 }
 
+/// The next list size to try when Graph accepted `lo` people (0: none yet)
+/// and refused `hi` as malformed: halve until a size works, then bisect the
+/// gap. `None` when `lo` is the most Graph takes.
+fn next_presence_size(lo: usize, hi: usize) -> Option<usize> {
+    if hi <= lo + 1 {
+        None
+    } else if lo == 0 {
+        Some(hi / 2)
+    } else {
+        Some((lo + hi) / 2)
+    }
+}
+
 /// Subscribes to the presence of `people` (the person first, then the most
-/// wanted contacts), at most `cap` of them. If Graph refuses the request as
-/// malformed (400), it tries again with the first half, down to the person
-/// alone, so the most useful dots stay live. `cap` keeps what worked for the
-/// rest of the session (0 after any other refusal, such as 409 while an
-/// earlier presence subscription still exists), so later chat-list updates
-/// don't repeat refused requests.
+/// wanted contacts), at most `cap` of them. Graph's documented limit is 650,
+/// but it has refused (400) lists far shorter, so on 400 this searches for
+/// the longest list it accepts: halving until one works, then bisecting.
+/// Graph allows one presence subscription per person and app, so trying a
+/// longer list first deletes the one that works, and a refusal recreates
+/// it. `cap` keeps the size found for the rest of the session (0 after any
+/// other refusal, such as 409 while an earlier presence subscription still
+/// exists), so later chat-list updates don't repeat refused requests.
 async fn follow_presence(
     graph: &Graph,
     people: &[String],
     to: &Endpoints,
     cap: &mut usize,
 ) -> Option<Followed> {
-    let mut count = people.len().min(*cap);
-    while count > 0 {
-        let asked = &people[..count];
-        match graph
-            .subscribe_presence(
-                asked,
-                &to.notification,
-                &to.lifecycle,
-                &to.client_state,
-                realtime::LIFETIME,
-            )
-            .await
-        {
+    let total = people.len().min(*cap);
+    if total == 0 {
+        return None;
+    }
+    let subscribe = |count: usize| {
+        graph.subscribe_presence(
+            &people[..count],
+            &to.notification,
+            &to.lifecycle,
+            &to.client_state,
+            realtime::LIFETIME,
+        )
+    };
+    let mut lo = 0;
+    let mut hi = total + 1;
+    let mut held: Option<Followed> = None;
+    let mut size = total;
+    loop {
+        let replacing = held.take();
+        if let Some(old) = &replacing {
+            let _ = graph.delete_subscription(&old.id).await;
+        }
+        let mut result = subscribe(size).await;
+        if replacing.is_some() && matches!(result, Err(GraphError::Http { status: 409, .. })) {
+            // Graph may still be removing the one just deleted.
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            result = subscribe(size).await;
+        }
+        match result {
             Ok(subscription) => {
-                log::info!(
-                    "push: following presence of {count} of {} people",
-                    people.len()
-                );
-                if count < people.len() {
-                    *cap = count;
-                }
-                return Some(Followed {
+                lo = size;
+                held = Some(Followed {
                     id: subscription.id,
-                    people: asked.to_vec(),
+                    people: people[..size].to_vec(),
                 });
             }
-            Err(GraphError::Http { status: 400, .. }) if count > 1 => {
-                log::info!(
-                    "push: presence subscription for {count} people refused (400); trying fewer"
-                );
-                count /= 2;
+            Err(GraphError::Http { status: 400, .. }) => {
+                log::info!("push: presence subscription for {size} people refused (400)");
+                hi = size;
+            }
+            Err(error) if lo > 0 => {
+                // Searching upward failed some other way: keep what worked.
+                log::info!("push: presence subscription for {size} people failed ({error})");
+                hi = size;
             }
             Err(error) => {
-                log::info!("push: no presence subscription for {count} people ({error})");
+                log::info!("push: no presence subscription for {size} people ({error})");
+                *cap = 0;
+                return None;
+            }
+        }
+        match next_presence_size(lo, hi) {
+            Some(next) => size = next,
+            None => break,
+        }
+    }
+    if lo == 0 {
+        *cap = 0;
+        return None;
+    }
+    if held.is_none() {
+        // The last, longer try was refused after the working one was deleted.
+        match subscribe(lo).await {
+            Ok(subscription) => {
+                held = Some(Followed {
+                    id: subscription.id,
+                    people: people[..lo].to_vec(),
+                })
+            }
+            Err(error) => {
+                log::info!("push: no presence subscription for {lo} people ({error})");
                 *cap = 0;
                 return None;
             }
         }
     }
-    *cap = 0;
-    None
+    log::info!(
+        "push: following presence of {lo} of {} people",
+        people.len()
+    );
+    if lo < people.len() {
+        *cap = lo;
+    }
+    held
 }
 
 /// The ids of the subscriptions a session holds.
@@ -2248,19 +2328,53 @@ mod tests {
     use super::*;
     use crate::model::{Chat, ChatKind, Member};
 
+    /// A chat whose members are `id` (in the person's organisation, "t-1"),
+    /// `id@t-2` (another organisation) or `id@` (organisation not given).
     fn chat(kind: ChatKind, members: &[&str]) -> Chat {
         Chat {
             kind,
             members: members
                 .iter()
-                .map(|id| Member {
-                    user_id: (*id).into(),
-                    display_name: id.to_uppercase(),
-                    email: None,
+                .map(|spec| {
+                    let (id, tenant) = match spec.split_once('@') {
+                        Some((id, "")) => (id, None),
+                        Some((id, tenant)) => (id, Some(tenant.to_owned())),
+                        None => (*spec, Some("T-1".to_owned())),
+                    };
+                    Member {
+                        user_id: id.into(),
+                        display_name: id.to_uppercase(),
+                        email: None,
+                        tenant_id: tenant,
+                    }
                 })
                 .collect(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn the_presence_search_finds_the_longest_accepted_list() {
+        let total = 66;
+        for limit in 1..=total {
+            let (mut lo, mut hi, mut size, mut tries) = (0, total + 1, total, 0);
+            loop {
+                tries += 1;
+                if size <= limit {
+                    lo = size;
+                } else {
+                    hi = size;
+                }
+                match next_presence_size(lo, hi) {
+                    Some(next) => size = next,
+                    None => break,
+                }
+            }
+            assert_eq!(lo, limit, "limit {limit}");
+            assert!(tries <= 13, "limit {limit} took {tries} tries");
+        }
+        // Everyone accepted at once: one try.
+        assert_eq!(next_presence_size(66, 67), None);
     }
 
     #[test]
@@ -2272,9 +2386,20 @@ mod tests {
             chat(ChatKind::OneOnOne, &["ada", "me"]),
             chat(ChatKind::Group, &["me", "bo", "hedy"]),
         ];
-        assert_eq!(
-            people_to_follow(&chats, "me"),
-            ["bo", "ada", "grace", "hedy"]
-        );
+        let people = people_to_follow(&chats, "me", "t-1");
+        assert_eq!(people.all, ["bo", "ada", "grace", "hedy"]);
+        assert_eq!(people.followable, people.all);
+    }
+
+    #[test]
+    fn people_from_other_organisations_are_fetched_but_not_followed() {
+        let chats = [
+            chat(ChatKind::OneOnOne, &["me", "partner@t-2"]),
+            chat(ChatKind::OneOnOne, &["me", "ada"]),
+            chat(ChatKind::Group, &["me", "guest@t-3", "unknown@", "grace"]),
+        ];
+        let people = people_to_follow(&chats, "me", "t-1");
+        assert_eq!(people.all, ["partner", "ada", "guest", "unknown", "grace"]);
+        assert_eq!(people.followable, ["ada", "unknown", "grace"]);
     }
 }

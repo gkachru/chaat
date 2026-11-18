@@ -304,7 +304,9 @@ async fn a_refused_presence_list_shrinks_and_is_not_retried() {
         Event::Push(PushStatus::Failed(reason)) => panic!("push failed: {reason}"),
         _ => None,
     });
-    // Four people refused, then two: the person and the newest contact.
+    // Four people refused, two accepted, three refused (after deleting the
+    // two, since Graph allows one), then two again: the person and the
+    // newest contact.
     let deadline = Instant::now() + Duration::from_secs(5);
     let two = "communications/presences?$filter=id in ('u-me','u-ada')";
     while !presence_subscriptions(&server)
@@ -319,6 +321,12 @@ async fn a_refused_presence_list_shrinks_and_is_not_retried() {
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+    let four = "communications/presences?$filter=id in ('u-me','u-ada','u-grace','u-bo')";
+    let three = "communications/presences?$filter=id in ('u-me','u-ada','u-grace')";
+    assert_eq!(
+        presence_subscriptions(&server).await,
+        [four, two, three, two]
+    );
     // Later chat-list updates keep to the size that worked.
     let settled = presence_subscriptions(&server).await.len();
     for _ in 0..3 {

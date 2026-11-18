@@ -3160,11 +3160,13 @@ mod tests {
             id: "19:a".into(),
             members: vec![
                 Member {
+                    tenant_id: None,
                     user_id: "u-me".into(),
                     display_name: "Me".into(),
                     email: Some("me@contoso.com".into()),
                 },
                 Member {
+                    tenant_id: None,
                     user_id: "u-ada".into(),
                     display_name: "Ada".into(),
                     email: Some("ada@contoso.com".into()),

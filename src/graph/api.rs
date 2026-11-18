@@ -816,6 +816,7 @@ mod tests {
     #[tokio::test]
     async fn the_notes_chat_comes_from_its_newest_message() {
         let me = || crate::model::Member {
+            tenant_id: None,
             user_id: "u-me".into(),
             display_name: "Me".into(),
             email: None,
