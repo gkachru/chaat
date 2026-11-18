@@ -219,21 +219,21 @@ fn sidebar(app: &mut App, ui: &mut egui::Ui) {
                         );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             let refresh =
-                                widgets::icon_button(ui, &palette, Icon::Refresh, "Refresh (âR)");
+                                widgets::icon_button(ui, &palette, Icon::Refresh, "Refresh (⌘R)");
                             widgets::on_click(&refresh, &mut app.actions, Action::Refresh);
                             if app.section == Section::Chats {
                                 let search = widgets::icon_button(
                                     ui,
                                     &palette,
                                     Icon::Search,
-                                    "Search and jump (âK)",
+                                    "Search and jump (⌘K)",
                                 );
                                 widgets::on_click(&search, &mut app.actions, Action::OpenSwitcher);
                                 let new_chat = widgets::icon_button(
                                     ui,
                                     &palette,
                                     Icon::Compose,
-                                    "New chat (âN)",
+                                    "New chat (⌘N)",
                                 );
                                 widgets::on_click(&new_chat, &mut app.actions, Action::OpenNewChat);
                             }
@@ -284,7 +284,7 @@ fn main(app: &mut App, ui: &mut egui::Ui) {
                     let (title, text) = if app.section == Section::Chats {
                         (
                             "No chat open",
-                            "Pick a chat on the left, or press âK to jump to anyone.",
+                            "Pick a chat on the left, or press ⌘K to jump to anyone.",
                         )
                     } else {
                         ("No channel open", "Pick a channel on the left.")
@@ -395,9 +395,9 @@ fn perf(app: &App, ctx: &egui::Context) {
     let first = app
         .perf
         .first_frame
-        .map_or_else(|| "â".into(), |d| format!("{} ms", d.as_millis()));
+        .map_or_else(|| "–".into(), |d| format!("{} ms", d.as_millis()));
     let text = format!(
-        "frame {:.2} ms avg Â· {:.2} ms max Â· {} frames Â· first frame {} Â· {} chats Â· {} messages loaded",
+        "frame {:.2} ms avg · {:.2} ms max · {} frames · first frame {} · {} chats · {} messages loaded",
         app.perf.average_ms(),
         max,
         app.perf.frames,
