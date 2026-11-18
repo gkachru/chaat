@@ -118,7 +118,10 @@ impl Relay {
 pub fn router(relay: Relay) -> Router {
     Router::new()
         .route("/", get(|| async { "chaat-relay ok\n" }))
-        .route("/ws/{channel}", get(connect))
+        .route(
+            "/ws/{channel}",
+            get(connect).route_layer(axum::middleware::from_fn(trace_websocket)),
+        )
         .route("/graph/{channel}", post(notification))
         .route("/lifecycle/{channel}", post(notification))
         .layer(DefaultBodyLimit::max(BODY_LIMIT))
@@ -140,6 +143,36 @@ fn valid_channel(channel: &str) -> bool {
         && channel
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// Debug log for every WebSocket request, before and after the relay
+/// answers, numbered so the two lines can be matched: whether it asked to
+/// upgrade, whether it carried an access key (never the key, never the
+/// channel), the HTTP version, the status and how long the answer took.
+/// Shows whether a client whose connection stalls reached the relay at all.
+async fn trace_websocket(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let upgrade = request
+        .headers()
+        .get(header::UPGRADE)
+        .is_some_and(|value| value.as_bytes().eq_ignore_ascii_case(b"websocket"));
+    log::debug!(
+        "ws #{id}: request ({:?}, upgrade: {upgrade}, key: {})",
+        request.version(),
+        request.headers().contains_key(KEY_HEADER)
+    );
+    let started = std::time::Instant::now();
+    let response = next.run(request).await;
+    log::debug!(
+        "ws #{id}: answered {} after {} ms",
+        response.status().as_u16(),
+        started.elapsed().as_millis()
+    );
+    response
 }
 
 async fn connect(
@@ -166,6 +199,7 @@ async fn connect(
     }
     ws.max_message_size(CLIENT_MESSAGE_LIMIT)
         .max_frame_size(CLIENT_MESSAGE_LIMIT)
+        .on_failed_upgrade(|error| log::debug!("websocket upgrade failed: {error}"))
         .on_upgrade(move |socket| serve_client(socket, channel, relay))
 }
 
