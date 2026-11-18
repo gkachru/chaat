@@ -71,11 +71,13 @@ How it works:
    organisations get their dots when you look): your own lets the call bar follow calls, the others keep presence
    dots current. Graph allows one presence subscription per person and app,
    so Chaat replaces it when someone new appears, and a second device on the
-   same account goes without. If Graph refuses the list as malformed (400),
-   Chaat searches for the longest list it accepts (halving, then bisecting;
-   about 10 requests for 66 people) and keeps that size for the session;
-   other refusals (such as 409 while an earlier subscription still exists)
-   leave presence to fetches on look until push reconnects. If Graph refuses it, chat
+   same account goes without. Graph refuses (400) a list that contains users
+   it cannot follow and names them ("Remove the failing users and retry");
+   Chaat leaves those people out for the session and asks again. A 400 that
+   names nobody makes Chaat search for the longest list Graph accepts. A
+   conflict (409, an earlier subscription Graph hasn't forgotten) is retried
+   once after 3 seconds; other refusals leave presence to fetches on look
+   until push reconnects. If Graph refuses it, chat
    updates still work.
 4. Graph validates the URL (the relay echoes the `validationToken`), then
    posts each change. The relay forwards it over the WebSocket.

@@ -347,3 +347,63 @@ async fn a_refused_presence_list_shrinks_and_is_not_retried() {
         matches!(e, Event::Push(PushStatus::Off)).then_some(())
     });
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn users_graph_names_are_left_out_and_stay_out() {
+    let server = MockServer::start().await;
+    // Graph cannot follow Grace, and says so, as it does on live tenants.
+    Mock::given(method("POST"))
+        .and(path("/v1.0/subscriptions"))
+        .and(wiremock::matchers::body_string_contains("'u-grace'"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+            "error": {"code": "ExtensionError", "message":
+                "Operation: Create; Exception: [Status Code: BadRequest; Reason: Subscription failed for some users. Remove the failing users and retry. (u-grace)]"}
+        })))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    let (backend, relay_url, _dir) = start(&server).await;
+    backend.send(Command::Fetch {
+        resource: Resource::Chats,
+        trigger: Trigger::Start,
+    });
+    wait_for(&backend, 5, |e| match e {
+        Event::Presence(list) => Some(list),
+        _ => None,
+    });
+    backend.send(Command::Relay(Some(relay_url)));
+    wait_for(&backend, 10, |e| match e {
+        Event::Push(PushStatus::Live) => Some(()),
+        Event::Push(PushStatus::Failed(reason)) => panic!("push failed: {reason}"),
+        _ => None,
+    });
+    let four = "communications/presences?$filter=id in ('u-me','u-ada','u-grace','u-bo')";
+    let without_grace = "communications/presences?$filter=id in ('u-me','u-ada','u-bo')";
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !presence_subscriptions(&server)
+        .await
+        .iter()
+        .any(|r| r == without_grace)
+    {
+        assert!(
+            Instant::now() < deadline,
+            "{:?}",
+            presence_subscriptions(&server).await
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(presence_subscriptions(&server).await, [four, without_grace]);
+    // Later chat-list updates don't bring Grace back.
+    for _ in 0..2 {
+        backend.send(Command::Fetch {
+            resource: Resource::Chats,
+            trigger: Trigger::Refresh,
+        });
+        tokio::time::sleep(Duration::from_millis(2100)).await;
+    }
+    assert_eq!(presence_subscriptions(&server).await, [four, without_grace]);
+    backend.send(Command::Relay(None));
+    wait_for(&backend, 5, |e| {
+        matches!(e, Event::Push(PushStatus::Off)).then_some(())
+    });
+}

@@ -48,6 +48,11 @@ pub enum GraphError {
     Throttled { retry_after: Duration },
     #[error("Microsoft Graph answered {status} ({code})")]
     Http { status: u16, code: String },
+    /// 400 from a presence subscription naming the users Graph won't follow
+    /// ("Remove the failing users and retry"). Only their ids are kept, and
+    /// the message shows only how many.
+    #[error("Microsoft Graph cannot follow {} of the people asked for", .0.len())]
+    UsersRefused(Vec<String>),
     #[error("could not reach Microsoft Graph: {0}")]
     Network(String),
     #[error("Microsoft Graph sent an unreadable answer")]
@@ -212,8 +217,9 @@ impl Graph {
                 }
                 _ => {}
             }
-            let code = error_code(response).await;
+            let (code, refused) = error_detail(response).await;
             return Err(match status {
+                StatusCode::BAD_REQUEST if !refused.is_empty() => GraphError::UsersRefused(refused),
                 StatusCode::UNAUTHORIZED => GraphError::Auth(TokenError::Rejected(
                     "Microsoft Graph did not accept the session. Sign in again.".into(),
                 )),
@@ -326,11 +332,19 @@ async fn decode<T: DeserializeOwned>(response: reqwest::Response) -> Result<T, G
     })
 }
 
-async fn error_code(response: reqwest::Response) -> String {
+/// The error code, and the users a refused presence subscription names.
+/// Nothing else of the message is kept: it can quote request data.
+async fn error_detail(response: reqwest::Response) -> (String, Vec<String>) {
     let body = response.text().await.unwrap_or_default();
-    serde_json::from_str::<types::ErrorBody>(&body)
+    let error = serde_json::from_str::<types::ErrorBody>(&body)
         .ok()
-        .and_then(|b| b.error)
+        .and_then(|b| b.error);
+    let refused = error
+        .as_ref()
+        .and_then(|e| e.message.as_deref())
+        .map(refused_users)
+        .unwrap_or_default();
+    let code = error
         .and_then(|e| e.code)
         .filter(|code| {
             code.len() < 80
@@ -338,7 +352,27 @@ async fn error_code(response: reqwest::Response) -> String {
                     .chars()
                     .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
         })
-        .unwrap_or_else(|| "unknown".into())
+        .unwrap_or_else(|| "unknown".into());
+    (code, refused)
+}
+
+/// The user ids in Graph's "Subscription failed for some users. Remove the
+/// failing users and retry. (id, id)", or none for any other message.
+fn refused_users(message: &str) -> Vec<String> {
+    if !message.contains("Remove the failing users") {
+        return Vec::new();
+    }
+    let Some(list) = message
+        .rfind('(')
+        .and_then(|start| message[start + 1..].split(')').next())
+    else {
+        return Vec::new();
+    };
+    list.split(',')
+        .map(str::trim)
+        .filter(|id| crate::realtime::is_user_id(id))
+        .map(str::to_owned)
+        .collect()
 }
 
 fn retry_after(response: &reqwest::Response) -> Option<Duration> {
@@ -425,6 +459,20 @@ mod tests {
     use super::*;
     use wiremock::matchers::{body_string_contains, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[test]
+    fn refused_presence_users_are_read_from_graphs_message() {
+        let a = "3f1b0c2e-0000-4000-8000-0000000000aa";
+        let b = "3f1b0c2e-0000-4000-8000-0000000000bb";
+        let message = format!(
+            "Operation: Create; Exception: [Status Code: BadRequest; Reason: Subscription failed for some users. Remove the failing users and retry. ({a}, {b})]"
+        );
+        assert_eq!(refused_users(&message), [a, b]);
+        assert!(refused_users("Subscription conflict - Subscription already exists.").is_empty());
+        assert!(refused_users("Remove the failing users and retry. (x'y, )").is_empty());
+        let error = GraphError::UsersRefused(vec![a.into(), b.into()]);
+        assert!(!error.to_string().contains(a), "ids stay out of messages");
+    }
 
     #[test]
     fn origins_and_segments() {

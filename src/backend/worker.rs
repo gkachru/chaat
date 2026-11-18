@@ -1921,70 +1921,154 @@ fn next_presence_size(lo: usize, hi: usize) -> Option<usize> {
     }
 }
 
+/// What a push session learned about following presence, kept until push
+/// reconnects so chat-list updates don't repeat refused requests.
+struct PresenceLimits {
+    /// The most people to ask for (0: don't try again this session).
+    cap: usize,
+    /// People Graph said it cannot follow (lower-case ids).
+    refused: std::collections::HashSet<String>,
+}
+
+impl PresenceLimits {
+    fn new() -> Self {
+        Self {
+            cap: realtime::PRESENCE_LIMIT,
+            refused: std::collections::HashSet::new(),
+        }
+    }
+
+    /// `people` without those Graph refused, up to the cap.
+    fn wanted(&self, people: &[String]) -> Vec<String> {
+        people
+            .iter()
+            .filter(|id| !self.refused.contains(&id.to_ascii_lowercase()))
+            .take(self.cap)
+            .cloned()
+            .collect()
+    }
+}
+
+/// How many rounds of "remove the failing users" to follow before searching.
+const REFUSAL_ROUNDS: usize = 5;
+
 /// Subscribes to the presence of `people` (the person first, then the most
-/// wanted contacts), at most `cap` of them. Graph's documented limit is 650,
-/// but it has refused (400) lists far shorter, so on 400 this searches for
-/// the longest list it accepts: halving until one works, then bisecting.
-/// Graph allows one presence subscription per person and app, so trying a
-/// longer list first deletes the one that works, and a refusal recreates
-/// it. `cap` keeps the size found for the rest of the session (0 after any
-/// other refusal, such as 409 while an earlier presence subscription still
-/// exists), so later chat-list updates don't repeat refused requests.
+/// wanted contacts). Graph refuses (400) a list containing users it cannot
+/// follow and names them; those are dropped, remembered, and the rest asked
+/// for again. A 400 that names nobody falls back to searching for the
+/// longest accepted list (see [`search_presence`]). A conflict (409) is
+/// retried once after a pause, since Graph can take a moment to forget a
+/// subscription just deleted; other refusals end attempts for the session.
 async fn follow_presence(
     graph: &Graph,
     people: &[String],
     to: &Endpoints,
-    cap: &mut usize,
+    limits: &mut PresenceLimits,
 ) -> Option<Followed> {
-    let total = people.len().min(*cap);
-    if total == 0 {
-        return None;
+    let mut list = limits.wanted(people);
+    let mut conflict_retried = false;
+    let mut rounds = 0;
+    loop {
+        if list.is_empty() {
+            limits.cap = 0;
+            return None;
+        }
+        match subscribe_presence_of(graph, &list, to).await {
+            Ok(id) => {
+                log::info!(
+                    "push: following presence of {} of {} people",
+                    list.len(),
+                    people.len()
+                );
+                return Some(Followed { id, people: list });
+            }
+            Err(GraphError::UsersRefused(ids)) if rounds < REFUSAL_ROUNDS => {
+                rounds += 1;
+                log::info!(
+                    "push: Graph cannot follow {} people; leaving them out",
+                    ids.len()
+                );
+                limits
+                    .refused
+                    .extend(ids.iter().map(|id| id.to_ascii_lowercase()));
+                list = limits.wanted(people);
+            }
+            Err(GraphError::UsersRefused(_) | GraphError::Http { status: 400, .. }) => {
+                return search_presence(graph, &list, people.len(), to, limits).await;
+            }
+            Err(GraphError::Http { status: 409, .. }) if !conflict_retried => {
+                conflict_retried = true;
+                log::info!("push: presence subscription conflict (409); retrying shortly");
+                tokio::time::sleep(Duration::from_secs(3)).await;
+            }
+            Err(error) => {
+                log::info!(
+                    "push: no presence subscription for {} people ({error})",
+                    list.len()
+                );
+                limits.cap = 0;
+                return None;
+            }
+        }
     }
-    let subscribe = |count: usize| {
-        graph.subscribe_presence(
-            &people[..count],
+}
+
+async fn subscribe_presence_of(
+    graph: &Graph,
+    people: &[String],
+    to: &Endpoints,
+) -> Result<String, GraphError> {
+    graph
+        .subscribe_presence(
+            people,
             &to.notification,
             &to.lifecycle,
             &to.client_state,
             realtime::LIFETIME,
         )
-    };
+        .await
+        .map(|subscription| subscription.id)
+}
+
+/// Finds the longest prefix of `people` Graph accepts when it refuses a list
+/// without saying whom it objects to: halving until a size works, then
+/// bisecting. Graph allows one presence subscription per person and app, so
+/// trying a longer list first deletes the one that works, and a refusal
+/// recreates it. Keeps the size found in `limits.cap` for the session.
+async fn search_presence(
+    graph: &Graph,
+    people: &[String],
+    asked: usize,
+    to: &Endpoints,
+    limits: &mut PresenceLimits,
+) -> Option<Followed> {
+    let total = people.len();
     let mut lo = 0;
-    let mut hi = total + 1;
+    let mut hi = total;
     let mut held: Option<Followed> = None;
-    let mut size = total;
-    loop {
-        let replacing = held.take();
-        if let Some(old) = &replacing {
+    let mut size = total / 2;
+    while size > 0 {
+        if let Some(old) = held.take() {
             let _ = graph.delete_subscription(&old.id).await;
         }
-        let mut result = subscribe(size).await;
-        if replacing.is_some() && matches!(result, Err(GraphError::Http { status: 409, .. })) {
-            // Graph may still be removing the one just deleted.
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            result = subscribe(size).await;
-        }
-        match result {
-            Ok(subscription) => {
+        match subscribe_presence_of(graph, &people[..size], to).await {
+            Ok(id) => {
                 lo = size;
                 held = Some(Followed {
-                    id: subscription.id,
+                    id,
                     people: people[..size].to_vec(),
                 });
             }
-            Err(GraphError::Http { status: 400, .. }) => {
+            Err(GraphError::UsersRefused(_) | GraphError::Http { status: 400, .. }) => {
                 log::info!("push: presence subscription for {size} people refused (400)");
                 hi = size;
             }
-            Err(error) if lo > 0 => {
-                // Searching upward failed some other way: keep what worked.
+            Err(error) => {
                 log::info!("push: presence subscription for {size} people failed ({error})");
                 hi = size;
-            }
-            Err(error) => {
-                log::info!("push: no presence subscription for {size} people ({error})");
-                *cap = 0;
-                return None;
+                if lo == 0 {
+                    break;
+                }
             }
         }
         match next_presence_size(lo, hi) {
@@ -1993,32 +2077,27 @@ async fn follow_presence(
         }
     }
     if lo == 0 {
-        *cap = 0;
+        limits.cap = 0;
         return None;
     }
     if held.is_none() {
         // The last, longer try was refused after the working one was deleted.
-        match subscribe(lo).await {
-            Ok(subscription) => {
+        match subscribe_presence_of(graph, &people[..lo], to).await {
+            Ok(id) => {
                 held = Some(Followed {
-                    id: subscription.id,
+                    id,
                     people: people[..lo].to_vec(),
                 })
             }
             Err(error) => {
                 log::info!("push: no presence subscription for {lo} people ({error})");
-                *cap = 0;
+                limits.cap = 0;
                 return None;
             }
         }
     }
-    log::info!(
-        "push: following presence of {lo} of {} people",
-        people.len()
-    );
-    if lo < people.len() {
-        *cap = lo;
-    }
+    log::info!("push: following presence of {lo} of {asked} people");
+    limits.cap = lo;
     held
 }
 
@@ -2127,9 +2206,8 @@ async fn push_loop(
                 client_state: client_state.clone(),
             };
             let wanted = realtime::presence_watch(&me, &contacts.borrow_and_update());
-            let mut presence_cap = realtime::PRESENCE_LIMIT;
-            let mut presence =
-                follow_presence(&graph, &wanted, &endpoints, &mut presence_cap).await;
+            let mut limits = PresenceLimits::new();
+            let mut presence = follow_presence(&graph, &wanted, &endpoints, &mut limits).await;
             let mut subscriptions = held(&subscription.id, presence.as_ref());
             record_subscriptions(&leftovers, &subscriptions).await;
             let mut contacts_open = true;
@@ -2153,8 +2231,8 @@ async fn push_loop(
                             contacts_open = false;
                             continue;
                         }
-                        let mut wanted = realtime::presence_watch(&me, &contacts.borrow_and_update());
-                        wanted.truncate(presence_cap);
+                        let wanted = realtime::presence_watch(&me, &contacts.borrow_and_update());
+                        let wanted = limits.wanted(&wanted);
                         let followed = presence.as_ref().map_or(&[][..], |p| p.people.as_slice());
                         // Graph cannot change whom a subscription follows,
                         // and allows one presence subscription per person
@@ -2163,7 +2241,7 @@ async fn push_loop(
                             if let Some(old) = presence.take() {
                                 let _ = graph.delete_subscription(&old.id).await;
                             }
-                            presence = follow_presence(&graph, &wanted, &endpoints, &mut presence_cap).await;
+                            presence = follow_presence(&graph, &wanted, &endpoints, &mut limits).await;
                             subscriptions = held(&subscription.id, presence.as_ref());
                             record_subscriptions(&leftovers, &subscriptions).await;
                         }
