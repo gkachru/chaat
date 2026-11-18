@@ -1,4 +1,4 @@
-//! Wren: a fast, native client for Microsoft Teams.
+//! Chaat: a fast, native client for Microsoft Teams.
 //!
 //! See README.md for what works today and docs/architecture.md for how the
 //! pieces fit: `ui` draws state and emits `model::Action`s, `app` applies

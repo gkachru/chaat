@@ -260,7 +260,7 @@ pub fn populate(app: &mut App) {
             "Perfect. Let's keep the scope exactly that.",
         );
         b.react("❤️", &[ME]);
-        b.text(ME, t + 9 * MINUTE, "Startup is now measured from launch to the first frame. To see it yourself:\n```\nRUST_LOG=wren=info chaat --measure-startup\n```");
+        b.text(ME, t + 9 * MINUTE, "Startup is now measured from launch to the first frame. To see it yourself:\n```\nRUST_LOG=chaat=info chaat --measure-startup\n```");
         b.react("🎉", &["u-ada", ME]);
         b.text("u-ada", now - 14 * MINUTE, "Amazing. I'll write the release notes; can you check https://github.com/crmne/spotifast for how they phrase theirs?");
         let preview_at = now - 14 * MINUTE;

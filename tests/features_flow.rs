@@ -7,13 +7,13 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use chaat::auth::session::AccountRecord;
+use chaat::backend::{AuthStatus, Backend, BackendOptions, Command, Event, Waker};
+use chaat::model::{Availability, ConversationId, MentionRef};
+use chaat::paths::AppDirs;
+use chaat::secrets::{MemoryStore, SecretStore};
 use wiremock::matchers::{body_json, header, method, path, query_param};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
-use wren::auth::session::AccountRecord;
-use wren::backend::{AuthStatus, Backend, BackendOptions, Command, Event, Waker};
-use wren::model::{Availability, ConversationId, MentionRef};
-use wren::paths::AppDirs;
-use wren::secrets::{MemoryStore, SecretStore};
 
 const CLIENT: &str = "6731de76-14a6-49ae-97bc-6eba6914391e";
 const ACCOUNT: &str = "u-me.t-1";
@@ -152,7 +152,7 @@ async fn chats_mentions_files_and_status() {
         })))
         .mount(&server)
         .await;
-    // Anything Wren fetches on its own after a send.
+    // Anything Chaat fetches on its own after a send.
     Mock::given(method("GET"))
         .and(path("/v1.0/chats/19:me_barbara@unq.gbl.spaces/messages"))
         .respond_with(ok(serde_json::json!({"value": []})))
@@ -184,7 +184,7 @@ async fn chats_mentions_files_and_status() {
     let dirs = AppDirs::under(dir.path());
     let secrets: Arc<dyn SecretStore> = Arc::new(MemoryStore::default());
     secrets
-        .write(&wren::secrets::refresh_key(ACCOUNT), "refresh-1")
+        .write(&chaat::secrets::refresh_key(ACCOUNT), "refresh-1")
         .unwrap();
     std::fs::create_dir_all(dirs.account(ACCOUNT)).unwrap();
     AccountRecord {
@@ -252,7 +252,7 @@ async fn chats_mentions_files_and_status() {
     // Mention her and send a file.
     let file = dir.path().join("plan.pdf");
     std::fs::write(&file, b"%PDF-1.7 plan").unwrap();
-    let (html, mentions) = wren::html::compose_with_mentions(
+    let (html, mentions) = chaat::html::compose_with_mentions(
         "@Barbara Liskov the plan",
         &[MentionRef {
             user_id: "u-barbara".into(),
@@ -314,7 +314,7 @@ async fn chats_mentions_files_and_status() {
         matches!(e, Event::MyPresence(_)).then_some(())
     });
 
-    // Joining a meeting whose chat Wren has not seen: look it up.
+    // Joining a meeting whose chat Chaat has not seen: look it up.
     backend.send(Command::FindMeetingChat(JOIN.into()));
     let (join_url, chat) = wait_for(&backend, 5, |e| match e {
         Event::MeetingChat { join_url, chat } => Some((join_url, chat)),
@@ -323,13 +323,13 @@ async fn chats_mentions_files_and_status() {
     assert_eq!(join_url, JOIN);
     let chat = chat.expect("the meeting's chat");
     assert_eq!(chat.id, "19:meeting_abc@thread.v2");
-    assert_eq!(chat.kind, wren::model::ChatKind::Meeting);
-    assert!(wren::calling::same_meeting(
+    assert_eq!(chat.kind, chaat::model::ChatKind::Meeting);
+    assert!(chaat::calling::same_meeting(
         chat.join_url.as_deref().unwrap(),
         JOIN
     ));
 
-    // Using Wren keeps a presence session; quitting ends it.
+    // Using Chaat keeps a presence session; quitting ends it.
     backend.send(Command::PresenceActive);
     backend.send(Command::PresenceActive);
     let deadline = Instant::now() + Duration::from_secs(5);

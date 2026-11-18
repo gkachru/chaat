@@ -108,7 +108,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             ui.add_space(18.0);
 
             // Join by link.
-            let link_id = egui::Id::new("wren-join-link");
+            let link_id = egui::Id::new("chaat-join-link");
             let mut link: String = ui.ctx().data(|d| d.get_temp(link_id)).unwrap_or_default();
             Frame::new()
                 .fill(palette.panel)

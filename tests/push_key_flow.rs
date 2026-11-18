@@ -5,13 +5,13 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use chaat::auth::session::AccountRecord;
+use chaat::backend::{AuthStatus, Backend, BackendOptions, Command, Event, Waker};
+use chaat::paths::AppDirs;
+use chaat::realtime::{PushStatus, RelayKey};
+use chaat::secrets::{MemoryStore, SecretStore};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
-use wren::auth::session::AccountRecord;
-use wren::backend::{AuthStatus, Backend, BackendOptions, Command, Event, Waker};
-use wren::paths::AppDirs;
-use wren::realtime::{PushStatus, RelayKey};
-use wren::secrets::{MemoryStore, SecretStore};
 
 const CLIENT: &str = "6731de76-14a6-49ae-97bc-6eba6914391e";
 const ACCOUNT: &str = "u-me.t-1";
@@ -77,7 +77,7 @@ async fn a_keyed_relay_needs_the_stored_key() {
     let store = Arc::new(MemoryStore::default());
     let secrets: Arc<dyn SecretStore> = store.clone();
     secrets
-        .write(&wren::secrets::refresh_key(ACCOUNT), "refresh-1")
+        .write(&chaat::secrets::refresh_key(ACCOUNT), "refresh-1")
         .unwrap();
     std::fs::create_dir_all(dirs.account(ACCOUNT)).unwrap();
     AccountRecord {
@@ -148,7 +148,7 @@ async fn a_keyed_relay_needs_the_stored_key() {
         .then_some(())
     });
     assert_eq!(
-        store.read(wren::secrets::RELAY_KEY).unwrap().as_deref(),
+        store.read(chaat::secrets::RELAY_KEY).unwrap().as_deref(),
         Some(KEY)
     );
     backend.send(Command::Relay(Some(relay_url.clone())));
@@ -172,7 +172,7 @@ async fn a_keyed_relay_needs_the_stored_key() {
         )
         .then_some(())
     });
-    assert_eq!(store.read(wren::secrets::RELAY_KEY).unwrap(), None);
+    assert_eq!(store.read(chaat::secrets::RELAY_KEY).unwrap(), None);
     backend.send(Command::Relay(None));
     wait_for(&backend, 5, |e| {
         matches!(e, Event::Push(PushStatus::Off)).then_some(())

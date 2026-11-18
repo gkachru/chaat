@@ -87,7 +87,7 @@ impl Graph {
 
     /// `setUserPreferredPresence`, or `clearUserPreferredPresence` for
     /// `None` (Presence.ReadWrite). It shows while the person has any
-    /// presence session: a Teams client, or Wren's own.
+    /// presence session: a Teams client, or Chaat's own.
     pub async fn set_preferred_presence(
         &self,
         me: &str,
@@ -120,7 +120,7 @@ impl Graph {
         .await
     }
 
-    /// `setPresence`: Wren's own presence session, as a Teams client keeps
+    /// `setPresence`: Chaat's own presence session, as a Teams client keeps
     /// one while it runs. `sessionId` is the app's client ID.
     pub async fn set_presence_session(
         &self,
@@ -146,7 +146,7 @@ impl Graph {
         .await
     }
 
-    /// `clearPresence` for Wren's session.
+    /// `clearPresence` for Chaat's session.
     pub async fn clear_presence_session(
         &self,
         me: &str,

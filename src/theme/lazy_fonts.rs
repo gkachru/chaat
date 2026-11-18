@@ -16,14 +16,14 @@ pub(super) struct LazyFonts {
 
 impl egui::Plugin for LazyFonts {
     fn debug_name(&self) -> &'static str {
-        "wren-lazy-fonts"
+        "chaat-lazy-fonts"
     }
 
     fn on_begin_pass(&mut self, ui: &mut egui::Ui) {
         if let Some(fonts) = self.result.lock().take() {
             ui.ctx().set_fonts(fonts);
             ui.ctx()
-                .data_mut(|d| d.insert_temp(egui::Id::new("wren-font-revision"), 1_u64));
+                .data_mut(|d| d.insert_temp(egui::Id::new("chaat-font-revision"), 1_u64));
             self.loaded = true;
             self.seen.clear();
         }
@@ -43,7 +43,7 @@ impl egui::Plugin for LazyFonts {
             let result = Arc::clone(&self.result);
             let ctx = ctx.clone();
             std::thread::Builder::new()
-                .name("wren-script-fonts".into())
+                .name("chaat-script-fonts".into())
                 .spawn(move || {
                     let fonts = super::font_definitions(false, true);
                     *result.lock() = Some(fonts);

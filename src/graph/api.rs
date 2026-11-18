@@ -1,4 +1,4 @@
-//! The Graph endpoints Wren uses, each with the delegated permission it
+//! The Graph endpoints Chaat uses, each with the delegated permission it
 //! needs. docs/permissions.md lists them for administrators.
 
 use serde_json::json;
@@ -189,7 +189,7 @@ impl Graph {
         }))
     }
 
-    /// One chat, for a chat Wren has not listed yet (Chat.ReadWrite).
+    /// One chat, for a chat Chaat has not listed yet (Chat.ReadWrite).
     pub async fn chat(&self, chat: &str) -> Result<Chat, GraphError> {
         let raw: g::Chat = self
             .get(&format!(

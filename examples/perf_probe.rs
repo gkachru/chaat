@@ -8,14 +8,14 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
+use chaat::app::{App, Image};
+use chaat::backend::{Event as BackendEvent, Waker};
+use chaat::model::{Action, ConversationId, Section};
+use chaat::paths::AppDirs;
+use chaat::settings::{Settings, ThemeChoice};
 use clap::{Parser, ValueEnum};
 use egui::{Event, Modifiers, MouseWheelUnit, Pos2, Vec2};
 use serde_json::json;
-use wren::app::{App, Image};
-use wren::backend::{Event as BackendEvent, Waker};
-use wren::model::{Action, ConversationId, Section};
-use wren::paths::AppDirs;
-use wren::settings::{Settings, ThemeChoice};
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum Case {
@@ -54,7 +54,7 @@ struct Args {
     /// Use installed system fonts, as the real app does. Default is the CI font.
     #[arg(long)]
     system_fonts: bool,
-    /// Diagnostic comparison only. This does not change Wren's defaults.
+    /// Diagnostic comparison only. This does not change Chaat's defaults.
     #[arg(long)]
     reduce_texture_memory: bool,
     #[arg(long)]
@@ -68,7 +68,7 @@ struct Probe {
     started: Instant,
     frames: usize,
     paints: Arc<AtomicU64>,
-    pacing: Option<wren::pacing::FramePacer>,
+    pacing: Option<chaat::pacing::FramePacer>,
     times: Vec<f64>,
     immediate: usize,
     causes: std::collections::BTreeMap<String, usize>,
@@ -98,7 +98,7 @@ impl Probe {
         let waker = Waker::default();
         waker.attach(ctx);
         let mut app = App::new(AppDirs::under(dir.path()), settings, waker, true);
-        wren::ui::install(ctx, !args.system_fonts);
+        chaat::ui::install(ctx, !args.system_fonts);
         ctx.options_mut(|o| o.reduce_texture_memory = args.reduce_texture_memory);
         if matches!(args.case, Case::History | Case::Scroll) {
             let id = app.open.clone().unwrap();
@@ -115,7 +115,7 @@ impl Probe {
         if matches!(args.case, Case::Spinner) {
             let conversation = app.open.clone().unwrap();
             app.loading
-                .insert(wren::sync::Resource::Messages(conversation));
+                .insert(chaat::sync::Resource::Messages(conversation));
         }
         if matches!(args.case, Case::Unicode) {
             let id = app.open.clone().unwrap();
@@ -125,7 +125,7 @@ impl Probe {
                 .messages
                 .last_mut()
                 .unwrap()
-                .body = wren::html::RichText::plain("日本語 中文 العربية עברית हिन्दी 🙂");
+                .body = chaat::html::RichText::plain("日本語 中文 العربية עברית हिन्दी 🙂");
         }
         let image = if matches!(args.case, Case::Images) {
             let image = image::RgbaImage::from_fn(args.image_width, args.image_height, |x, y| {
@@ -189,9 +189,9 @@ impl Probe {
             "stage": stage, "case": format!("{:?}", self.args.case), "native": self.args.native,
             "seconds": self.started.elapsed().as_secs_f64(), "frames": self.frames,
             "paint_callbacks": self.paints.load(Ordering::Relaxed),
-            "fallback_font_revision": wren::theme::font_revision(ctx),
-            "cjk_glyph": ctx.fonts_mut(|f| f.has_glyph(&wren::theme::regular(14.0), '日')),
-            "arabic_glyph": ctx.fonts_mut(|f| f.has_glyph(&wren::theme::regular(14.0), 'ع')),
+            "fallback_font_revision": chaat::theme::font_revision(ctx),
+            "cjk_glyph": ctx.fonts_mut(|f| f.has_glyph(&chaat::theme::regular(14.0), '日')),
+            "arabic_glyph": ctx.fonts_mut(|f| f.has_glyph(&chaat::theme::regular(14.0), 'ع')),
             "pixels_per_point": ctx.pixels_per_point(), "images_viewed": self.loaded,
             "messages": self.app.open.as_ref().and_then(|id| self.app.conversation(id)).map(|c| c.messages.len()),
             "encoded_bytes": bytes, "decoded_bytes": decoded, "image_texture_bytes": textures,
@@ -282,7 +282,7 @@ impl Probe {
         let started = Instant::now();
         let ctx = ui.ctx().clone();
         self.scrolling.apply(&ctx);
-        wren::ui::show(&mut self.app, ui);
+        chaat::ui::show(&mut self.app, ui);
         self.app.apply_actions(&ctx);
         if self.args.native {
             let paints = Arc::clone(&self.paints);
@@ -354,7 +354,7 @@ fn main() -> eframe::Result<()> {
             },
             Box::new(move |cc| {
                 let mut probe = Probe::new(args, &cc.egui_ctx);
-                probe.pacing = Some(wren::pacing::FramePacer::new(cc));
+                probe.pacing = Some(chaat::pacing::FramePacer::new(cc));
                 Ok(Box::new(probe))
             }),
         )

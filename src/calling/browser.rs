@@ -280,8 +280,8 @@ pub fn link(browser: &Browser, url: &str, profile: Option<&str>) -> Option<Launc
     })
 }
 
-/// Starts the process detached from Wren: no shell, no inherited input or
-/// output, its own process group (so Ctrl-C in a terminal running Wren does
+/// Starts the process detached from Chaat: no shell, no inherited input or
+/// output, its own process group (so Ctrl-C in a terminal running Chaat does
 /// not close the browser), reaped on a short-lived thread.
 pub fn spawn(launch: &Launch) -> std::io::Result<()> {
     let mut command = std::process::Command::new(&launch.program);
@@ -297,7 +297,7 @@ pub fn spawn(launch: &Launch) -> std::io::Result<()> {
     }
     let mut child = command.spawn()?;
     let _ = std::thread::Builder::new()
-        .name("wren-browser".into())
+        .name("chaat-browser".into())
         .spawn(move || {
             let _ = child.wait();
         });
@@ -424,13 +424,13 @@ mod tests {
                 width: 900,
                 height: 700,
             }),
-            Some("Wren 1a2b"),
+            Some("Chaat 1a2b"),
         )
         .unwrap();
         assert_eq!(
             launch.args,
             [
-                "--profile-directory=Wren 1a2b",
+                "--profile-directory=Chaat 1a2b",
                 "--window-position=10,20",
                 "--window-size=900,700",
                 "--app=https://teams.microsoft.com/l/meetup-join/19%3ameeting_x%40thread.v2/0",

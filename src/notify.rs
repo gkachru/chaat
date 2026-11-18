@@ -10,7 +10,7 @@ pub fn show(title: &str, body: &str) {
     let title = title.to_owned();
     let body = crate::html::truncate(body, 240);
     let _ = std::thread::Builder::new()
-        .name("wren-notify".into())
+        .name("chaat-notify".into())
         .spawn(move || {
             let mut notification = notify_rust::Notification::new();
             notification.summary(&title).body(&body).appname("Chaat");
@@ -23,7 +23,7 @@ pub fn show(title: &str, body: &str) {
 }
 
 /// macOS attributes a notification to an app by bundle identifier. Inside
-/// Wren.app, post as Wren; a bare binary (development) keeps the library's
+/// Chaat.app, post as Chaat; a bare binary (development) keeps the library's
 /// default, since an identifier without a bundle shows nothing.
 #[cfg(target_os = "macos")]
 fn claim_identity() {

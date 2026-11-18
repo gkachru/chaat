@@ -113,7 +113,9 @@ pub fn native() -> Arc<dyn SecretStore> {
 const WINDOWS_PART: usize = 1200;
 
 /// Marks an entry that only says where the parts of a long secret are:
-/// `wren-parts:<generation>:<count>`.
+/// `wren-parts:<generation>:<count>`. The name predates the rename to Chaat
+/// and stays: it is stored in people's credential stores, and a new name
+/// would lose their saved sign-in.
 const PARTS_MARK: &str = "wren-parts:";
 
 /// Stores secrets longer than `part` characters across numbered entries.

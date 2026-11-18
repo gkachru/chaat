@@ -1071,7 +1071,7 @@ fn status_message(app: &mut App, ctx: &egui::Context) {
     app.actions.extend(actions);
 }
 
-/// Explains a permission before Wren asks Microsoft for it.
+/// Explains a permission before Chaat asks Microsoft for it.
 /// Settings → Calls and meetings.
 fn call_settings(
     app: &mut App,

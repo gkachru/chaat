@@ -94,7 +94,7 @@ struct Job {
 }
 
 fn cache(ctx: &Context) -> Arc<Shared> {
-    let id = egui::Id::new("wren-image-cache");
+    let id = egui::Id::new("chaat-image-cache");
     if let Some(cache) = ctx.data(|d| d.get_temp::<Arc<Shared>>(id)) {
         return cache;
     }
@@ -105,7 +105,7 @@ fn cache(ctx: &Context) -> Arc<Shared> {
     });
     let weak = Arc::downgrade(&shared);
     std::thread::Builder::new()
-        .name("wren-images".into())
+        .name("chaat-images".into())
         .spawn(move || worker(weak, receiver))
         .expect("could not start the image decoder");
     ctx.add_bytes_loader(Arc::new(Sources(Arc::clone(&shared))));
@@ -120,7 +120,7 @@ pub fn install(ctx: &Context) {
 }
 
 fn managed(uri: &str) -> bool {
-    uri.starts_with("bytes://wren/") || uri.starts_with("bytes://pasted-")
+    uri.starts_with("bytes://chaat/") || uri.starts_with("bytes://pasted-")
 }
 
 fn source_uri(uri: &str) -> &str {
@@ -194,7 +194,7 @@ pub fn needs_source(ctx: &Context, uri: &str, hint: SizeHint) -> bool {
 struct Sources(Arc<Shared>);
 impl BytesLoader for Sources {
     fn id(&self) -> &str {
-        "wren-image-sources"
+        "chaat-image-sources"
     }
     fn load(&self, _: &Context, uri: &str) -> BytesLoadResult {
         if !managed(uri) {
@@ -233,7 +233,7 @@ impl BytesLoader for Sources {
 struct Decoder(Arc<Shared>);
 impl ImageLoader for Decoder {
     fn id(&self) -> &str {
-        "wren-image-decoder"
+        "chaat-image-decoder"
     }
     fn load(&self, ctx: &Context, uri: &str, hint: SizeHint) -> ImageLoadResult {
         if !managed(uri) {
@@ -403,7 +403,7 @@ fn decode(
 struct Textures(Arc<Shared>);
 impl TextureLoader for Textures {
     fn id(&self) -> &str {
-        "wren-image-textures"
+        "chaat-image-textures"
     }
     fn load(
         &self,
@@ -563,12 +563,12 @@ mod tests {
     fn gif_frame_suffixes_use_the_same_source_and_texture() {
         let hint = SizeHint::Width(256);
         assert_eq!(
-            Key::new("bytes://wren/test.gif", hint),
-            Key::new("bytes://wren/test.gif#0", hint)
+            Key::new("bytes://chaat/test.gif", hint),
+            Key::new("bytes://chaat/test.gif#0", hint)
         );
         assert_eq!(
-            source_uri("bytes://wren/test.gif#original#0"),
-            "bytes://wren/test.gif"
+            source_uri("bytes://chaat/test.gif#original#0"),
+            "bytes://chaat/test.gif"
         );
     }
 
@@ -591,7 +591,7 @@ mod tests {
     #[test]
     fn originals_are_released_after_leaving_and_can_be_reopened_without_network() {
         let ctx = Context::default();
-        let uri = "bytes://wren/test.png";
+        let uri = "bytes://chaat/test.png";
         include(&ctx, uri.into(), png());
         let thumbnail = ready(&ctx, uri);
         let full = ready(&ctx, &original(uri));
@@ -619,12 +619,12 @@ mod tests {
     fn compressed_sources_and_offscreen_textures_have_budgets() {
         let ctx = Context::default();
         for i in 0..20 {
-            include(&ctx, format!("bytes://wren/{i}.png"), vec![0; MIB]);
+            include(&ctx, format!("bytes://chaat/{i}.png"), vec![0; MIB]);
         }
         let shared = cache(&ctx);
         assert!(Sources(Arc::clone(&shared)).byte_size() <= SOURCE_BUDGET);
-        assert!(!contains(&ctx, "bytes://wren/0.png"));
-        assert!(contains(&ctx, "bytes://wren/19.png"));
+        assert!(!contains(&ctx, "bytes://chaat/0.png"));
+        assert!(contains(&ctx, "bytes://chaat/19.png"));
         {
             let mut state = shared.state.lock();
             state.pass = 1;
@@ -636,7 +636,7 @@ mod tests {
                 );
                 state.textures.insert(
                     (
-                        Key::new(&format!("bytes://wren/{i}.png"), SizeHint::Width(1024)),
+                        Key::new(&format!("bytes://chaat/{i}.png"), SizeHint::Width(1024)),
                         TextureOptions::default(),
                     ),
                     Texture {

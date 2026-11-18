@@ -64,7 +64,7 @@ impl AppDirs {
     }
 
     /// Moves the last run's log aside before this run starts a new one.
-    /// Fails harmlessly when there is none, or when another running Wren
+    /// Fails harmlessly when there is none, or when another running Chaat
     /// still has it open.
     pub fn keep_previous_log(&self) {
         let _ = std::fs::rename(self.log_file(), self.previous_log_file());

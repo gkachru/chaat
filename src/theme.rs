@@ -2,7 +2,7 @@
 //!
 //! [`Palette`] holds every colour the interface uses, in a dark and a light
 //! variant. It implements fastframe's palette trait, so the shared palettes
-//! (Catppuccin, Nord, Rosé Pine, Tokyo Night, ...) restyle Wren too.
+//! (Catppuccin, Nord, Rosé Pine, Tokyo Night, ...) restyle Chaat too.
 
 use std::collections::BTreeSet;
 
@@ -17,7 +17,7 @@ fastframe_icons::icons! {
     /// Every icon the interface draws: Lucide (ISC), 24 px outlines in white
     /// so egui's tint colours them.
     pub enum Icon {
-        prefix: "wren-icon-",
+        prefix: "chaat-icon-",
         directory: "../assets/icons/",
         Chat => "message-circle",
         Teams => lucide "users",
@@ -287,7 +287,10 @@ pub fn install_fonts(ctx: &egui::Context, reproducible: bool) {
 }
 
 pub fn font_revision(ctx: &egui::Context) -> u64 {
-    ctx.data(|d| d.get_temp(egui::Id::new("wren-font-revision")).unwrap_or(0))
+    ctx.data(|d| {
+        d.get_temp(egui::Id::new("chaat-font-revision"))
+            .unwrap_or(0)
+    })
 }
 
 fn font_definitions(reproducible: bool, fallbacks: bool) -> egui::FontDefinitions {
@@ -304,7 +307,7 @@ fn font_definitions(reproducible: bool, fallbacks: bool) -> egui::FontDefinition
     fonts
 }
 
-/// Applies a palette to egui's visuals and Wren's text styles.
+/// Applies a palette to egui's visuals and Chaat's text styles.
 pub fn apply(ctx: &egui::Context, palette: &Palette) {
     let rendering = rendering();
     ctx.all_styles_mut(|style| {

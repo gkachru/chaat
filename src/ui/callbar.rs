@@ -1,6 +1,6 @@
-//! The call bar: the call or meeting Wren follows, and what to do next.
+//! The call bar: the call or meeting Chaat follows, and what to do next.
 //!
-//! Docked beside a call window, it sits at the top of Wren's narrow panel,
+//! Docked beside a call window, it sits at the top of Chaat's narrow panel,
 //! under the macOS traffic lights. Otherwise it runs along the bottom of the
 //! main area.
 

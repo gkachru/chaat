@@ -21,7 +21,7 @@ jobs:
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          cargo metadata --locked --no-deps --format-version 1 | python3 -c 'import json,os,sys; p=next(p for p in json.load(sys.stdin)["packages"] if p["name"]=="wren"); assert os.environ["RELEASE_TAG"]=="v"+p["version"], "tag must match Cargo.toml"'
+          cargo metadata --locked --no-deps --format-version 1 | python3 -c 'import json,os,sys; p=next(p for p in json.load(sys.stdin)["packages"] if p["name"]=="chaat"); assert os.environ["RELEASE_TAG"]=="v"+p["version"], "tag must match Cargo.toml"'
       - run: cargo fmt --all --check
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - run: cargo test --locked --workspace --all-targets

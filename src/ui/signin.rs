@@ -8,7 +8,7 @@ use crate::backend::AuthStatus;
 use crate::model::Action;
 use crate::theme;
 
-pub const LOGO: &str = "bytes://wren-logo.svg";
+pub const LOGO: &str = "bytes://chaat-logo.svg";
 pub const DOCS: &str = "https://github.com/gkachru/chaat/blob/main/docs/azure-app-registration.md";
 
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
@@ -55,7 +55,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     }
                     ui.add_space(24.0);
                     ui.label(
-                        egui::RichText::new("Chaat is an independent project based on the open-source Wren app, not affiliated with Microsoft. It talks only to Microsoft's official APIs and keeps your data on this computer.")
+                        egui::RichText::new("Chaat is an independent project based on the open-source Chaat app, not affiliated with Microsoft. It talks only to Microsoft's official APIs and keeps your data on this computer.")
                             .font(theme::regular(12.0))
                             .color(palette.dim),
                     );
@@ -180,7 +180,7 @@ fn card(app: &mut App, ui: &mut egui::Ui) {
     }
 }
 
-/// The application (client) ID and tenant Wren signs in with.
+/// The application (client) ID and tenant Chaat signs in with.
 fn registration(app: &mut App, ui: &mut egui::Ui, first_run: bool) {
     let palette = app.palette;
     if first_run {

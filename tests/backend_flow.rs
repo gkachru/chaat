@@ -10,13 +10,13 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use base64::Engine;
+use chaat::backend::{AuthStatus, Backend, BackendOptions, Command, Event, Waker};
+use chaat::model::ConversationId;
+use chaat::paths::AppDirs;
+use chaat::secrets::{MemoryStore, SecretStore};
+use chaat::sync::{Resource, Trigger};
 use wiremock::matchers::{body_string_contains, header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
-use wren::backend::{AuthStatus, Backend, BackendOptions, Command, Event, Waker};
-use wren::model::ConversationId;
-use wren::paths::AppDirs;
-use wren::secrets::{MemoryStore, SecretStore};
-use wren::sync::{Resource, Trigger};
 
 const CLIENT: &str = "6731de76-14a6-49ae-97bc-6eba6914391e";
 const CHAT: &str = "19:ada-me@unq.gbl.spaces";
@@ -40,7 +40,7 @@ fn wait_for<T>(backend: &Backend, seconds: u64, mut pick: impl FnMut(Event) -> O
         pending.extend(backend.poll());
         while !pending.is_empty() {
             let event = pending.remove(0);
-            if std::env::var("WREN_TEST_EVENTS").is_ok() {
+            if std::env::var("CHAAT_TEST_EVENTS").is_ok() {
                 eprintln!("event: {event:?}");
             }
             if let Some(found) = pick(event) {
@@ -64,7 +64,7 @@ fn query_value(url: &str, key: &str) -> String {
 
 async fn mock_microsoft() -> MockServer {
     let server = MockServer::start().await;
-    // Entra: the code Wren's loopback received, with the PKCE verifier.
+    // Entra: the code Chaat's loopback received, with the PKCE verifier.
     Mock::given(method("POST"))
         .and(path("/organizations/oauth2/v2.0/token"))
         .and(body_string_contains("grant_type=authorization_code"))
@@ -208,7 +208,7 @@ async fn sign_in_sync_send_restore_and_sign_out() {
     assert_eq!(account, "u-me.t-1");
     assert_eq!(
         secrets
-            .read(&wren::secrets::refresh_key(&account))
+            .read(&chaat::secrets::refresh_key(&account))
             .unwrap()
             .as_deref(),
         Some("refresh-1")
@@ -249,7 +249,7 @@ async fn sign_in_sync_send_restore_and_sign_out() {
     backend.send(Command::Send {
         conversation: conversation.clone(),
         local_id: "local-1".into(),
-        html: wren::html::compose("Shipping **today**"),
+        html: chaat::html::compose("Shipping **today**"),
         reply_to: None,
         mentions: Vec::new(),
         files: Vec::new(),
@@ -332,7 +332,7 @@ async fn sign_in_sync_send_restore_and_sign_out() {
         .and(path(format!("/v1.0/chats/{CHAT}/messages")))
         .and(query_param(
             "$filter",
-            format!("createdDateTime lt {}", wren::time::to_iso(before)),
+            format!("createdDateTime lt {}", chaat::time::to_iso(before)),
         ))
         .respond_with(
             ResponseTemplate::new(200).set_body_json(serde_json::json!({"value": [{
@@ -351,7 +351,7 @@ async fn sign_in_sync_send_restore_and_sign_out() {
     let earlier = wait_for(&backend, 5, |e| match e {
         Event::Messages {
             messages,
-            merge: wren::backend::Merge::Older,
+            merge: chaat::backend::Merge::Older,
             more: Some(false),
             cached: false,
             ..
@@ -365,7 +365,7 @@ async fn sign_in_sync_send_restore_and_sign_out() {
     // The refresh token was used and rotated by the date-ranged refresh.
     let deadline = Instant::now() + Duration::from_secs(5);
     while secrets
-        .read(&wren::secrets::refresh_key(&account))
+        .read(&chaat::secrets::refresh_key(&account))
         .unwrap()
         .as_deref()
         != Some("refresh-2")
@@ -401,7 +401,9 @@ async fn sign_in_sync_send_restore_and_sign_out() {
         matches!(e, Event::Auth(AuthStatus::SignedOut)).then_some(())
     });
     assert_eq!(
-        secrets.read(&wren::secrets::refresh_key(&account)).unwrap(),
+        secrets
+            .read(&chaat::secrets::refresh_key(&account))
+            .unwrap(),
         None
     );
     assert!(!dirs.account(&account).exists());

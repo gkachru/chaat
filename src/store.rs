@@ -1,6 +1,6 @@
 //! The local cache: one SQLite database per account.
 //!
-//! Chats, teams, channels, messages, meetings and photos are kept so Wren
+//! Chats, teams, channels, messages, meetings and photos are kept so Chaat
 //! opens instantly and navigates without waiting for the network. Rows hold
 //! the model types as JSON next to the columns queries need, so adding a
 //! model field needs no migration. Message text is indexed with FTS5 for
@@ -48,7 +48,7 @@ impl Store {
         db.busy_timeout(std::time::Duration::from_secs(5))?;
         let version: i32 = db.pragma_query_value(None, "user_version", |row| row.get(0))?;
         if version > SCHEMA_VERSION {
-            // A newer Wren wrote this cache. It is only a cache: start over.
+            // A newer Chaat wrote this cache. It is only a cache: start over.
             log::warn!("cache schema {version} is newer than {SCHEMA_VERSION}; rebuilding it");
             db.execute_batch(
                 "DROP TABLE IF EXISTS chats; DROP TABLE IF EXISTS teams; DROP TABLE IF EXISTS channels;
@@ -333,7 +333,7 @@ impl Store {
         Ok(rows.filter_map(|json| from_json(&json.ok()?)).collect())
     }
 
-    /// The newest change Wren has seen in a conversation, for date-ranged
+    /// The newest change Chaat has seen in a conversation, for date-ranged
     /// refreshes.
     pub fn last_modified(&self, conversation: &ConversationId) -> Option<i64> {
         self.db
@@ -587,7 +587,7 @@ mod tests {
     #[test]
     fn files_reopen_with_their_data() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("accounts").join("a").join("wren.db");
+        let path = dir.path().join("accounts").join("a").join("chaat.db");
         {
             let mut store = Store::open(&path).unwrap();
             store
@@ -625,7 +625,7 @@ mod tests {
     #[test]
     fn media_cache_evicts_least_recently_used_bytes_and_survives_reopening() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("wren.db");
+        let path = dir.path().join("chaat.db");
         {
             let mut store = Store::open(&path).unwrap();
             store.save_media_with_budget("a", b"aaaa", 8).unwrap();

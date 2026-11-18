@@ -252,7 +252,7 @@ impl Graph {
         decode(response).await
     }
 
-    /// A POST whose answer has no body Wren needs (204, or ignored).
+    /// A POST whose answer has no body Chaat needs (204, or ignored).
     pub async fn post_no_content<B: Serialize>(
         &self,
         path: &str,

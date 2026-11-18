@@ -5,8 +5,8 @@
 //! Communication Services can, but bills every participant-minute, while the
 //! Teams licence covers calls only in Microsoft's own clients. So the call
 //! itself runs in Teams on the web, by default in a chrome-less Edge or
-//! Chrome window that Wren opens beside itself ([`browser`], [`dock`]), and
-//! Wren follows it as the companion: the call bar, the meeting chat and the
+//! Chrome window that Chaat opens beside itself ([`browser`], [`dock`]), and
+//! Chaat follows it as the companion: the call bar, the meeting chat and the
 //! person's presence ([`session`]). See docs/calling.md.
 
 pub mod browser;

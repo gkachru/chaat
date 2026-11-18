@@ -154,7 +154,7 @@ fn drop_files(app: &mut App, ctx: &egui::Context) {
             .as_ref()
             .map(|open| app.title_of(open))
             .unwrap_or_default();
-        egui::Area::new(egui::Id::new("wren-drop"))
+        egui::Area::new(egui::Id::new("chaat-drop"))
             .order(egui::Order::Foreground)
             .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
             .interactable(false)
@@ -331,7 +331,7 @@ fn toasts(app: &mut App, ctx: &egui::Context) {
     }
     let palette = app.palette;
     let now = ctx.input(|i| i.time);
-    let shown_id = egui::Id::new("wren-toast-times");
+    let shown_id = egui::Id::new("chaat-toast-times");
     let mut times: std::collections::HashMap<u64, f64> =
         ctx.data(|d| d.get_temp(shown_id)).unwrap_or_default();
     for toast in &app.toasts {
@@ -355,7 +355,7 @@ fn toasts(app: &mut App, ctx: &egui::Context) {
     times.retain(|id, _| app.toasts.iter().any(|t| t.id == *id));
     ctx.data_mut(|d| d.insert_temp(shown_id, times));
 
-    egui::Area::new(egui::Id::new("wren-toasts"))
+    egui::Area::new(egui::Id::new("chaat-toasts"))
         .anchor(Align2::CENTER_BOTTOM, vec2(0.0, -96.0))
         .order(egui::Order::Foreground)
         .interactable(true)
@@ -433,7 +433,7 @@ fn perf(app: &App, ctx: &egui::Context) {
         app.chats.len(),
         messages,
     );
-    egui::Area::new(egui::Id::new("wren-perf"))
+    egui::Area::new(egui::Id::new("chaat-perf"))
         .anchor(Align2::RIGHT_BOTTOM, vec2(-12.0, -12.0))
         .order(egui::Order::Tooltip)
         .interactable(false)

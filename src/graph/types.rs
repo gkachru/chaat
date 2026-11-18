@@ -1,4 +1,4 @@
-//! Graph's JSON shapes, only as far as Wren reads them. Every field is
+//! Graph's JSON shapes, only as far as Chaat reads them. Every field is
 //! optional or defaulted: Graph adds fields freely and leaves many out.
 
 use serde::Deserialize;
@@ -295,7 +295,7 @@ pub struct SearchHit {
     pub resource: Option<serde_json::Value>,
 }
 
-/// A OneDrive file, as Wren reads it back after an upload.
+/// A OneDrive file, as Chaat reads it back after an upload.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct DriveItem {

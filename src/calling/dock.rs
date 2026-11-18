@@ -1,19 +1,19 @@
-//! Docking: during a call, the call window takes the left part of where Wren
-//! was and Wren becomes a narrow panel on the right, with the meeting chat.
+//! Docking: during a call, the call window takes the left part of where Chaat
+//! was and Chaat becomes a narrow panel on the right, with the meeting chat.
 //!
-//! Everything here is in screen points (what browsers call DIPs). Wren moves
+//! Everything here is in screen points (what browsers call DIPs). Chaat moves
 //! only its own window; the browser places the call window from
 //! `--window-position` and `--window-size`. Wayland lets no app choose its
-//! position, so there Wren cannot know its frame and does not dock.
+//! position, so there Chaat cannot know its frame and does not dock.
 
 use super::browser::Placement;
 
-/// Wren's width while docked.
+/// Chaat's width while docked.
 pub const PANEL_WIDTH: f32 = 380.0;
 /// Below this frame width the call window would be too small to share.
 pub const MIN_FRAME_WIDTH: f32 = 960.0;
 const MIN_FRAME_HEIGHT: f32 = 400.0;
-/// Space between the call window and Wren.
+/// Space between the call window and Chaat.
 const GAP: f32 = 8.0;
 
 /// A window's outer rectangle in screen points.
@@ -29,11 +29,11 @@ pub struct Frame {
 pub struct Plan {
     /// Where the browser opens the call window.
     pub call: Placement,
-    /// Wren's own outer frame while docked.
-    pub wren: Frame,
+    /// Chaat's own outer frame while docked.
+    pub chaat: Frame,
 }
 
-/// Splits Wren's current frame between the call and Wren, or `None` when it
+/// Splits Chaat's current frame between the call and Chaat, or `None` when it
 /// is too small to share.
 pub fn plan(frame: Frame) -> Option<Plan> {
     if frame.width < MIN_FRAME_WIDTH || frame.height < MIN_FRAME_HEIGHT {
@@ -47,7 +47,7 @@ pub fn plan(frame: Frame) -> Option<Plan> {
             width: call_width.round() as i32,
             height: frame.height.round() as i32,
         },
-        wren: Frame {
+        chaat: Frame {
             x: frame.x + frame.width - PANEL_WIDTH,
             y: frame.y,
             width: PANEL_WIDTH,
@@ -61,7 +61,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_wide_frame_is_split_with_wren_on_the_right() {
+    fn a_wide_frame_is_split_with_chaat_on_the_right() {
         let plan = plan(Frame {
             x: 100.0,
             y: 50.0,
@@ -78,10 +78,10 @@ mod tests {
                 height: 800
             }
         );
-        assert_eq!(plan.wren.x, 960.0);
-        assert_eq!(plan.wren.width, PANEL_WIDTH);
+        assert_eq!(plan.chaat.x, 960.0);
+        assert_eq!(plan.chaat.width, PANEL_WIDTH);
         // Nothing overlaps.
-        assert!((plan.call.x + plan.call.width) as f32 <= plan.wren.x);
+        assert!((plan.call.x + plan.call.width) as f32 <= plan.chaat.x);
     }
 
     #[test]

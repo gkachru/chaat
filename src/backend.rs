@@ -132,9 +132,9 @@ pub enum Command {
     /// Sets (`Some`) or resets (`None`) the person's preferred availability.
     SetAvailability(Option<Availability>),
     SetStatusMessage(String),
-    /// The person is using Wren: keep the presence session Available.
+    /// The person is using Chaat: keep the presence session Available.
     PresenceActive,
-    /// Whether Wren keeps a presence session at all.
+    /// Whether Chaat keeps a presence session at all.
     PresenceSession(bool),
     /// The browser (and profile) to open Microsoft's sign-in page in, so
     /// Teams on the web shares the session; `None` uses the default browser.
@@ -322,12 +322,12 @@ impl Backend {
         let (event_tx, event_rx) = std::sync::mpsc::channel();
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
-            .thread_name("wren-runtime")
+            .thread_name("chaat-runtime")
             .enable_all()
             .build()
             .expect("unable to start the async runtime");
         let thread = std::thread::Builder::new()
-            .name("wren-backend".into())
+            .name("chaat-backend".into())
             .spawn(move || {
                 runtime.block_on(worker::run(dirs, options, event_tx, command_rx, waker));
                 runtime.shutdown_timeout(Duration::from_secs(2));

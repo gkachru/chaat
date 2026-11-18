@@ -1,4 +1,4 @@
-//! Graph's shapes into Wren's model.
+//! Graph's shapes into Chaat's model.
 
 use super::types as g;
 use crate::html;

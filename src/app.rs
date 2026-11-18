@@ -243,7 +243,7 @@ impl Perf {
     }
 }
 
-/// One Microsoft account: its backend and everything Wren shows for it.
+/// One Microsoft account: its backend and everything Chaat shows for it.
 pub struct Account {
     pub backend: Backend,
     /// `oid.tid`, once signed in or restored.
@@ -529,7 +529,7 @@ pub struct App {
     /// said they were in a call. No new bar shows for it until presence
     /// says the call is over.
     call_dismissed: Option<Option<String>>,
-    /// Wren's window before it moved beside a call window.
+    /// Chaat's window before it moved beside a call window.
     pub docked: Option<Docked>,
     /// Edge and Chrome, found on first use.
     browsers: Option<Vec<crate::calling::browser::Browser>>,
@@ -704,7 +704,7 @@ impl App {
         }
         let account = self.accounts.remove(index);
         let _ = std::thread::Builder::new()
-            .name("wren-retire".into())
+            .name("chaat-retire".into())
             .spawn(move || drop(account));
         if self.active >= self.accounts.len() {
             self.active = self.accounts.len().saturating_sub(1);
@@ -1335,7 +1335,7 @@ impl App {
                 self.notify_message(&title, author.as_deref(), &text);
             }
         }
-        // Read state Wren set locally survives a cached list.
+        // Read state Chaat set locally survives a cached list.
         for chat in &mut chats {
             if let Some(known) = self.chats.iter().find(|c| c.id == chat.id)
                 && known.last_read > chat.last_read
@@ -1415,7 +1415,7 @@ impl App {
                 self.notify_message(&title, Some(author), text);
             }
         }
-        // A message that arrives while Wren is behind another window stays
+        // A message that arrives while Chaat is behind another window stays
         // unread, so Teams keeps it unread on other devices too. Coming back
         // to the window marks it read.
         if open
@@ -2357,7 +2357,7 @@ impl App {
         }
         // Who can open the files: everyone in the chat. Channel uploads get
         // an organisation link instead (Graph does not list channel members
-        // with Wren's permissions).
+        // with Chaat's permissions).
         let recipients: Vec<String> = match &conversation {
             ConversationId::Chat(chat) => self
                 .chat(chat)
@@ -2596,7 +2596,7 @@ fn register_image(ctx: &egui::Context, key: &str, bytes: Vec<u8>) -> Option<Stri
         [b'G', b'I', b'F', _] => "gif",
         _ => return None,
     };
-    let uri = format!("bytes://wren/{key}.{extension}");
+    let uri = format!("bytes://chaat/{key}.{extension}");
     crate::images::include(ctx, uri.clone(), bytes);
     Some(uri)
 }
@@ -2714,7 +2714,7 @@ mod tests {
 
     fn app() -> (App, tokio::sync::mpsc::UnboundedReceiver<Command>) {
         let (backend, commands) = Backend::recording();
-        let dir = std::env::temp_dir().join("wren-test-unused");
+        let dir = std::env::temp_dir().join("chaat-test-unused");
         let mut app = App::with_backend(
             AppDirs::under(&dir),
             Settings::default(),
@@ -2936,7 +2936,7 @@ mod tests {
         assert!(!app.quit_requested);
         let prepared = fastframe_update::Prepared::sample(
             fastframe_update::Installation {
-                executable: PathBuf::from("/tmp/wren"),
+                executable: PathBuf::from("/tmp/chaat"),
                 kind: fastframe_update::Kind::Portable,
             },
             "0.1.1",

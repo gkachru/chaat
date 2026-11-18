@@ -21,7 +21,7 @@ pub const FOLDER: &str = "Microsoft Teams Chat Files";
 pub const SIMPLE_LIMIT: u64 = 4 * 1024 * 1024;
 /// 16 × 320 KiB.
 pub const CHUNK: u64 = 16 * 320 * 1024;
-/// The largest file Wren sends.
+/// The largest file Chaat sends.
 pub const MAX_FILE: u64 = 1024 * 1024 * 1024;
 
 /// A file attached to an outgoing message.
@@ -191,7 +191,7 @@ impl Graph {
     }
 
     /// A view link for everyone in the organisation, for files posted in
-    /// channels (whose members Wren does not list).
+    /// channels (whose members Chaat does not list).
     pub async fn organization_link(&self, item: &str) -> Result<(), GraphError> {
         self.post_no_content(
             &format!("me/drive/items/{}/createLink", segment(item)),

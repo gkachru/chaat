@@ -9,7 +9,7 @@
 //! hicolor icons, so every platform's icon comes from the one SVG.
 
 fn png(size: usize) -> Vec<u8> {
-    let pixels = wren::platform::icon_rgba(size);
+    let pixels = chaat::platform::icon_rgba(size);
     let image = image::RgbaImage::from_raw(size as u32, size as u32, pixels).expect("square RGBA");
     let mut bytes = Vec::new();
     image

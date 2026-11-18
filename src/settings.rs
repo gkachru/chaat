@@ -23,7 +23,7 @@ pub enum ThemeChoice {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
-    /// The Entra ID application (client) ID Wren signs in with. Each person or
+    /// The Entra ID application (client) ID Chaat signs in with. Each person or
     /// organisation registers their own; see docs/azure-app-registration.md.
     pub client_id: String,
     /// `organizations` (any work or school account), or one tenant's ID or
@@ -40,7 +40,7 @@ pub struct Settings {
     pub account: Option<String>,
     /// Every signed-in account, in the order they were added.
     pub accounts: Vec<String>,
-    /// Keep a presence session while Wren runs, so people see you available
+    /// Keep a presence session while Chaat runs, so people see you available
     /// (needs Presence.ReadWrite).
     pub presence_session: bool,
     pub perf_overlay: bool,
@@ -66,13 +66,13 @@ pub struct CallSettings {
     pub open_in: crate::calling::CallsOpenIn,
     /// Edge or Chrome for app windows; `None` takes the first installed.
     pub browser: Option<crate::calling::browser::BrowserKind>,
-    /// Move Wren beside the call window while a call runs.
+    /// Move Chaat beside the call window while a call runs.
     pub dock: bool,
     /// One browser profile per account, so each profile holds one Microsoft
     /// sign-in. Profile folders by account ID.
     pub profile_per_account: bool,
     pub profiles: std::collections::BTreeMap<String, String>,
-    /// Signing out of Wren also signs the call browser out of Microsoft.
+    /// Signing out of Chaat also signs the call browser out of Microsoft.
     pub sign_out_browser: bool,
     /// Every web link (messages, calendar, "Open in Teams") opens in the
     /// call browser and profile instead of the default browser.
@@ -109,7 +109,7 @@ impl Default for Settings {
             tenant: "organizations".into(),
             theme: ThemeChoice::System,
             notifications: true,
-            // Off by default: without push notifications a hidden Wren
+            // Off by default: without push notifications a hidden Chaat
             // cannot learn about new messages (docs/realtime.md).
             keep_running: false,
             zoom: 1.0,

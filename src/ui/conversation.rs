@@ -273,7 +273,7 @@ fn history(app: &mut App, ui: &mut egui::Ui, conversation: &ConversationId) {
     let now = crate::time::now();
     let mut actions: Vec<Action> = Vec::new();
     let jump = app.jump_to.take();
-    let hover_id = egui::Id::new(("wren-hover-row", conversation.key()));
+    let hover_id = egui::Id::new(("chaat-hover-row", conversation.key()));
     let previous_hover: Option<(String, egui::Rect)> = ui.ctx().data(|d| d.get_temp(hover_id));
     let pointer = ui.input(|i| i.pointer.hover_pos());
     let mut hovered: Option<(usize, egui::Rect, bool)> = None;

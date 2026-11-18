@@ -1,6 +1,6 @@
 //! Teams message bodies, both ways.
 //!
-//! Graph hands chat and channel messages over as an HTML fragment. Wren has
+//! Graph hands chat and channel messages over as an HTML fragment. Chaat has
 //! no browser engine, so [`parse`] reads the small subset Teams writes
 //! (paragraphs, emphasis, links, code, quotes, lists, mentions, emoji,
 //! inline images) into [`RichText`], which the interface lays out with egui.

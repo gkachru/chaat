@@ -26,7 +26,7 @@ pub fn loading(ui: &mut Ui, color: Color32, size: f32) -> Response {
     response.on_hover_text("Loading…")
 }
 
-/// A round avatar: the person's photo when Wren has it, their initials
+/// A round avatar: the person's photo when Chaat has it, their initials
 /// otherwise, and a presence dot when `presence` is known.
 pub fn avatar(
     ui: &mut Ui,
@@ -81,7 +81,7 @@ pub fn avatar(
         && missing_photo
     {
         ui.ctx().data_mut(|data| {
-            data.get_temp_mut_or_default::<Vec<String>>(egui::Id::new("wren-photo-wants"))
+            data.get_temp_mut_or_default::<Vec<String>>(egui::Id::new("chaat-photo-wants"))
                 .push(user.to_owned())
         });
     }
@@ -311,7 +311,7 @@ pub fn section_label(ui: &mut Ui, palette: &Palette, text: &str) {
 pub fn request_photos(app: &mut App, ctx: &egui::Context) {
     let wants: Vec<String> = ctx.data_mut(|data| {
         std::mem::take(
-            data.get_temp_mut_or_default::<Vec<String>>(egui::Id::new("wren-photo-wants")),
+            data.get_temp_mut_or_default::<Vec<String>>(egui::Id::new("chaat-photo-wants")),
         )
     });
     for user in wants {
@@ -333,7 +333,7 @@ pub fn window_drag(ui: &mut Ui, rect: egui::Rect, id: &str) {
     #[cfg(target_os = "macos")]
     ui.push_id(id, |ui| fastframe_titlebar::drag(ui, rect));
 
-    // Wren keeps the native frame on Windows and Linux. The shared drag
+    // Chaat keeps the native frame on Windows and Linux. The shared drag
     // helper only handles those platforms when its drawn title bar is on.
     #[cfg(not(target_os = "macos"))]
     {

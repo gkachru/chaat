@@ -1,6 +1,6 @@
 //! Push updates through a chaat-relay (experimental).
 //!
-//! When a relay is configured, Wren:
+//! When a relay is configured, Chaat:
 //!
 //! 1. opens a WebSocket to `{relay}/ws/{channel}` with a random channel;
 //! 2. subscribes to Graph change notifications for all of the signed-in
@@ -116,7 +116,7 @@ pub fn websocket_request(
     Some(request)
 }
 
-/// What a notification asks Wren to do.
+/// What a notification asks Chaat to do.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Notice {
     /// A message in this chat was created, edited or deleted.
@@ -150,7 +150,7 @@ struct Item {
 }
 
 /// Reads a notification batch. Items whose `clientState` is not ours are
-/// dropped: the relay, or anyone who guessed the URL, cannot make Wren do
+/// dropped: the relay, or anyone who guessed the URL, cannot make Chaat do
 /// more than fetch, but foreign items are still ignored.
 pub fn parse(body: &str, client_state: &str) -> Vec<Notice> {
     let Ok(batch) = serde_json::from_str::<Batch>(body) else {

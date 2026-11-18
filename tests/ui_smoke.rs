@@ -2,13 +2,13 @@
 //! window: layout must not panic, actions must apply, and each view must
 //! draw something.
 
+use chaat::app::{App, Overlay};
+use chaat::backend::{AuthStatus, Waker};
+use chaat::model::{Action, ConversationId, Section};
+use chaat::model::{Availability, MentionRef};
+use chaat::paths::AppDirs;
+use chaat::settings::{Settings, ThemeChoice};
 use egui::load::BytesLoader as _;
-use wren::app::{App, Overlay};
-use wren::backend::{AuthStatus, Waker};
-use wren::model::{Action, ConversationId, Section};
-use wren::model::{Availability, MentionRef};
-use wren::paths::AppDirs;
-use wren::settings::{Settings, ThemeChoice};
 
 struct Harness {
     app: App,
@@ -32,7 +32,7 @@ impl Harness {
             true,
         );
         let ctx = egui::Context::default();
-        wren::ui::install(&ctx, true);
+        chaat::ui::install(&ctx, true);
         Self {
             app,
             ctx,
@@ -60,7 +60,7 @@ impl Harness {
             let ctx = ui.ctx().clone();
             app.observe_window(&ctx);
             app.background(&ctx);
-            wren::ui::show(app, ui);
+            chaat::ui::show(app, ui);
             app.apply_actions(&ctx);
         });
         // No renderer here: drop the texture uploads on purpose.
@@ -473,7 +473,7 @@ fn large_pasted_text_stays_scrollable_and_sendable_inside_the_composer() {
                         .collect::<Vec<_>>()
                         .join(separator);
                     h.app.handle(
-                        wren::backend::Event::Pasted {
+                        chaat::backend::Event::Pasted {
                             conversation: chat.clone(),
                             range: (0, 0),
                             text: pasted.clone(),
@@ -567,9 +567,9 @@ fn pasted_image_preview_and_image_only_send_draw() {
     let mut h = Harness::new();
     h.frames(3);
     let chat = h.app.open.clone().unwrap();
-    let image = wren::clipboard::encode_rgba(2, 2, &[0, 128, 255, 255].repeat(4)).unwrap();
+    let image = chaat::clipboard::encode_rgba(2, 2, &[0, 128, 255, 255].repeat(4)).unwrap();
     h.app.handle(
-        wren::backend::Event::Pasted {
+        chaat::backend::Event::Pasted {
             conversation: chat.clone(),
             range: (0, 0),
             text: String::new(),
@@ -602,7 +602,7 @@ fn pasted_image_preview_and_image_only_send_draw() {
 
 fn image_shapes<'a>(
     h: &'a Harness,
-    image: &wren::clipboard::InlineImage,
+    image: &chaat::clipboard::InlineImage,
 ) -> Vec<&'a egui::epaint::RectShape> {
     cached_image_shapes(h, &image.uri())
 }
@@ -646,13 +646,13 @@ fn clicking_received_images_opens_the_shared_viewer_at_their_original_size() {
                     .unwrap();
                 let bytes = bytes.into_inner();
                 h.app.handle(
-                    wren::backend::Event::Media {
+                    chaat::backend::Event::Media {
                         url: url.into(),
                         bytes: Some(bytes.clone()),
                     },
                     &h.ctx,
                 );
-                let wren::app::Image::Ready(uri) = h.app.media[url].clone() else {
+                let chaat::app::Image::Ready(uri) = h.app.media[url].clone() else {
                     panic!("fixture image is registered");
                 };
                 let message = h
@@ -663,7 +663,7 @@ fn clicking_received_images_opens_the_shared_viewer_at_their_original_size() {
                     .messages
                     .last_mut()
                     .unwrap();
-                message.body = wren::html::parse(&format!(
+                message.body = chaat::html::parse(&format!(
                     "<img src=\"{url}\" alt=\"Bild\" width=\"120\" height=\"80\">"
                 ));
                 let count = h.app.conversations[&chat].messages.len();
@@ -719,9 +719,9 @@ fn clicking_an_optimistic_image_message_opens_the_same_viewer_as_its_draft() {
     h.frames(3);
     let chat = h.app.open.clone().unwrap();
     let image =
-        wren::clipboard::encode_rgba(640, 480, &[0, 128, 255, 255].repeat(640 * 480)).unwrap();
+        chaat::clipboard::encode_rgba(640, 480, &[0, 128, 255, 255].repeat(640 * 480)).unwrap();
     h.app.handle(
-        wren::backend::Event::Pasted {
+        chaat::backend::Event::Pasted {
             conversation: chat.clone(),
             range: (0, 0),
             text: String::new(),
@@ -744,7 +744,10 @@ fn clicking_an_optimistic_image_message_opens_the_same_viewer_as_its_draft() {
     assert_eq!(h.app.overlay, Some(Overlay::ImagePreview(image.uri())));
 }
 
-fn image_clips(h: &Harness, image: &wren::clipboard::InlineImage) -> Vec<(egui::Rect, egui::Rect)> {
+fn image_clips(
+    h: &Harness,
+    image: &chaat::clipboard::InlineImage,
+) -> Vec<(egui::Rect, egui::Rect)> {
     fn collect(
         shape: &egui::epaint::Shape,
         clip: egui::Rect,
@@ -784,11 +787,14 @@ fn composer_images_have_usable_thumbnails_and_open_full_previews() {
                 h.app.settings.theme = theme.clone();
                 h.frames(3);
                 let chat = h.app.open.clone().unwrap();
-                let image =
-                    wren::clipboard::encode_rgba(w, height, &[0, 128, 255, 255].repeat(w * height))
-                        .unwrap();
+                let image = chaat::clipboard::encode_rgba(
+                    w,
+                    height,
+                    &[0, 128, 255, 255].repeat(w * height),
+                )
+                .unwrap();
                 h.app.handle(
-                    wren::backend::Event::Pasted {
+                    chaat::backend::Event::Pasted {
                         conversation: chat.clone(),
                         range: (0, 0),
                         text: String::new(),
@@ -895,11 +901,14 @@ fn multiple_pasted_images_wrap_without_clipping() {
             h.frames(3);
             let chat = h.app.open.clone().unwrap();
             for (w, height) in [(1200, 24), (24, 1200), (256, 256)] {
-                let image =
-                    wren::clipboard::encode_rgba(w, height, &[0, 128, 255, 255].repeat(w * height))
-                        .unwrap();
+                let image = chaat::clipboard::encode_rgba(
+                    w,
+                    height,
+                    &[0, 128, 255, 255].repeat(w * height),
+                )
+                .unwrap();
                 h.app.handle(
-                    wren::backend::Event::Pasted {
+                    chaat::backend::Event::Pasted {
                         conversation: chat.clone(),
                         range: (0, 0),
                         text: String::new(),
@@ -1118,12 +1127,12 @@ fn shift_enter_adds_a_line_and_plain_enter_sends_or_saves() {
 fn prepending_history_preserves_the_visible_row() {
     let mut h = Harness::new();
     let chat = h.app.open.clone().unwrap();
-    let now = wren::time::now();
+    let now = chaat::time::now();
     h.app.conversations.get_mut(&chat).unwrap().messages = (0..80)
-        .map(|i| wren::model::Message {
+        .map(|i| chaat::model::Message {
             id: format!("anchor-{i}"),
             created: now - (80 - i) * 60_000,
-            body: wren::html::RichText::plain(
+            body: chaat::html::RichText::plain(
                 "A message with enough text to occupy a complete row.",
             ),
             ..Default::default()
@@ -1142,17 +1151,17 @@ fn prepending_history_preserves_the_visible_row() {
     h.frames(25);
     let before = h.app.conversations[&chat].history_anchor.clone().unwrap();
     h.app.handle(
-        wren::backend::Event::Messages {
+        chaat::backend::Event::Messages {
             conversation: chat.clone(),
-            messages: vec![wren::model::Message {
+            messages: vec![chaat::model::Message {
                 id: "prepended".into(),
                 created: now - 81 * 60_000,
-                body: wren::html::RichText::plain(
+                body: chaat::html::RichText::plain(
                     "Earlier history\nwith several lines\nto move the existing content.",
                 ),
                 ..Default::default()
             }],
-            merge: wren::backend::Merge::Older,
+            merge: chaat::backend::Merge::Older,
             more: Some(true),
             cached: false,
         },
@@ -1169,7 +1178,7 @@ fn prepending_history_preserves_the_visible_row() {
 
 #[test]
 fn kind_chips_filter_the_chat_list_and_stack_with_unread() {
-    use wren::model::ChatKind;
+    use chaat::model::ChatKind;
 
     fn painted_texts(h: &Harness) -> Vec<String> {
         painted_shapes(h)
@@ -1221,7 +1230,7 @@ fn kind_chips_filter_the_chat_list_and_stack_with_unread() {
                     .app
                     .chats
                     .iter()
-                    .filter(|c| wren::ui::chat_list::listed(&h.app, c, &me))
+                    .filter(|c| chaat::ui::chat_list::listed(&h.app, c, &me))
                     .map(|c| c.kind)
                     .collect();
                 kinds.sort_by_key(|k| *k as u8);
@@ -1249,7 +1258,7 @@ fn kind_chips_filter_the_chat_list_and_stack_with_unread() {
             let at = chip(&h, "Unread");
             h.click(at);
             for chat in &h.app.chats {
-                if wren::ui::chat_list::listed(&h.app, chat, &me) {
+                if chaat::ui::chat_list::listed(&h.app, chat, &me) {
                     assert!(chat.kind != ChatKind::OneOnOne && chat.is_unread(&me));
                 }
             }
@@ -1640,7 +1649,7 @@ fn mentions_and_files_in_the_demo() {
         .clone();
     assert_eq!(sent.attachments[0].name.as_deref(), Some("checklist.pdf"));
     let first = &sent.body.blocks[0];
-    let wren::html::Block::Paragraph(spans) = first else {
+    let chaat::html::Block::Paragraph(spans) = first else {
         panic!("paragraph expected")
     };
     assert!(spans[0].style.mention && spans[0].text == "Grace Hopper");
@@ -1680,7 +1689,7 @@ fn setting_status_and_message() {
 #[test]
 fn new_dialogs_draw() {
     let mut h = Harness::new();
-    h.app.overlay = Some(Overlay::Consent(wren::auth::FILES_SCOPE));
+    h.app.overlay = Some(Overlay::Consent(chaat::auth::FILES_SCOPE));
     assert!(h.frames(2) > 50);
     h.app.overlay = Some(Overlay::NewChat);
     h.app.new_chat.query = "a".into();
@@ -1736,15 +1745,15 @@ fn call_settings_draw_and_apply() {
     h.act(Action::OpenSettings);
     assert!(h.frames(2) > 50);
     let mut calls = h.app.settings.calls.clone();
-    assert_eq!(calls.open_in, wren::calling::CallsOpenIn::AppWindow);
+    assert_eq!(calls.open_in, chaat::calling::CallsOpenIn::AppWindow);
     assert!(calls.dock);
-    calls.open_in = wren::calling::CallsOpenIn::Browser;
+    calls.open_in = chaat::calling::CallsOpenIn::Browser;
     h.act(Action::SetCallSettings(calls));
     assert_eq!(
         h.app.settings.calls.open_in,
-        wren::calling::CallsOpenIn::Browser
+        chaat::calling::CallsOpenIn::Browser
     );
-    assert_eq!(h.app.opener(), wren::calling::Opener::Browser);
+    assert_eq!(h.app.opener(), chaat::calling::Opener::Browser);
     // A call from the Calls page, with the bar along the bottom.
     h.act(Action::CloseOverlay);
     h.app.section = Section::Calls;
@@ -1761,9 +1770,9 @@ fn a_loading_conversation_settles_without_animation_repaints() {
     for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
         let mut h = Harness::new();
         h.app.settings.theme = theme;
-        h.app.loading.insert(wren::sync::Resource::Chats);
+        h.app.loading.insert(chaat::sync::Resource::Chats);
         let open = h.app.open.clone().unwrap();
-        h.app.loading.insert(wren::sync::Resource::Messages(open));
+        h.app.loading.insert(chaat::sync::Resource::Messages(open));
         h.frames(40);
         assert!(
             h.repaint_after > std::time::Duration::from_millis(100),
@@ -1785,9 +1794,9 @@ fn an_evicted_draft_image_reopens_at_original_resolution_without_losing_the_draf
     h.frames(3);
     let chat = h.app.open.clone().unwrap();
     let image =
-        wren::clipboard::encode_rgba(1200, 800, &[15, 50, 90, 255].repeat(1200 * 800)).unwrap();
+        chaat::clipboard::encode_rgba(1200, 800, &[15, 50, 90, 255].repeat(1200 * 800)).unwrap();
     h.app.handle(
-        wren::backend::Event::Pasted {
+        chaat::backend::Event::Pasted {
             conversation: chat.clone(),
             range: (0, 0),
             text: String::new(),
@@ -1802,10 +1811,10 @@ fn an_evicted_draft_image_reopens_at_original_resolution_without_losing_the_draf
         "draft bypassed the bounded source cache"
     );
     h.ctx.forget_image(&image.uri());
-    assert!(!wren::images::contains(&h.ctx, &image.uri()));
+    assert!(!chaat::images::contains(&h.ctx, &image.uri()));
     h.act(Action::PreviewImage(image.uri()));
     h.wait_for_images();
-    assert!(wren::images::contains(&h.ctx, &image.uri()));
+    assert!(chaat::images::contains(&h.ctx, &image.uri()));
     assert_eq!(h.app.drafts[&chat].images, vec![image.clone()]);
     assert!(
         h.ctx

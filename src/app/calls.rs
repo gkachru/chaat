@@ -1,4 +1,4 @@
-//! Calls in Teams on the web: opening them, docking Wren beside the call
+//! Calls in Teams on the web: opening them, docking Chaat beside the call
 //! window, and the call session behind the call bar (docs/calling.md).
 
 use egui::{ViewportCommand, pos2, vec2};
@@ -11,7 +11,7 @@ use crate::calling::session::{CallSession, CallState, CallTarget, ChatLookup, in
 use crate::calling::{Opener, TEAMS_WEB, same_meeting};
 use crate::model::{Action, Chat, ChatKind, ConversationId, Section, ToastKind};
 
-/// Wren's window before it docked, to restore afterwards.
+/// Chaat's window before it docked, to restore afterwards.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Docked {
     position: Option<egui::Pos2>,
@@ -21,7 +21,7 @@ pub struct Docked {
     pub call: Placement,
 }
 
-/// The smallest window Wren allows, except while docked.
+/// The smallest window Chaat allows, except while docked.
 const MIN_SIZE: egui::Vec2 = vec2(720.0, 480.0);
 
 impl App {
@@ -179,7 +179,7 @@ impl App {
             return;
         }
         let opener = self.opener();
-        // Dock first, so the call window opens where Wren was.
+        // Dock first, so the call window opens where Chaat was.
         let placement = match &opener {
             Opener::AppWindow(_) if self.settings.calls.dock => self.dock(ctx),
             _ => None,
@@ -300,7 +300,7 @@ impl App {
     }
 
     /// Follows the call from a reading of the person's own presence. A call
-    /// Wren did not open shows too, but not a calendar entry alone.
+    /// Chaat did not open shows too, but not a calendar entry alone.
     /// A bar the person closed stays closed for the rest of that call.
     pub(super) fn observe_call(&mut self, activity: Option<&str>) {
         let now = crate::time::now();
@@ -383,7 +383,7 @@ impl App {
         }
     }
 
-    /// Moves Wren into a narrow panel on the right of its frame and returns
+    /// Moves Chaat into a narrow panel on the right of its frame and returns
     /// where the call window should go, or `None` when it cannot dock
     /// (unknown position on Wayland, full screen, a small window).
     pub(super) fn dock(&mut self, ctx: &egui::Context) -> Option<Placement> {
@@ -415,8 +415,8 @@ impl App {
         })?;
         let decorations = outer.size() - inner.size();
         let size = vec2(
-            plan.wren.width / zoom - decorations.x,
-            plan.wren.height / zoom - decorations.y,
+            plan.chaat.width / zoom - decorations.x,
+            plan.chaat.height / zoom - decorations.y,
         );
         self.docked = Some(Docked {
             position: Some(outer.min),
@@ -433,13 +433,13 @@ impl App {
         )));
         ctx.send_viewport_cmd(ViewportCommand::InnerSize(size));
         ctx.send_viewport_cmd(ViewportCommand::OuterPosition(pos2(
-            plan.wren.x / zoom,
-            plan.wren.y / zoom,
+            plan.chaat.x / zoom,
+            plan.chaat.y / zoom,
         )));
         Some(plan.call)
     }
 
-    /// Puts Wren's window back where it was before docking.
+    /// Puts Chaat's window back where it was before docking.
     pub(super) fn undock(&mut self, ctx: &egui::Context) {
         let Some(docked) = self.docked.take() else {
             return;
@@ -491,7 +491,7 @@ impl App {
         }
     }
 
-    /// With the setting on, signing out of Wren also signs the call browser
+    /// With the setting on, signing out of Chaat also signs the call browser
     /// out of Microsoft (and so out of Teams on the web).
     pub(super) fn sign_out_browser(&mut self) {
         if !self.settings.calls.sign_out_browser || self.demo {

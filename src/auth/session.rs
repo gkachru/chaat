@@ -17,7 +17,7 @@ use crate::secrets::{SecretStore, refresh_key};
 
 const REFRESH_MARGIN: Duration = Duration::from_secs(5 * 60);
 
-/// What Wren remembers about an account outside the credential store. No
+/// What Chaat remembers about an account outside the credential store. No
 /// secrets: the refresh token lives in the OS store under the account's id.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AccountRecord {

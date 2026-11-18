@@ -105,7 +105,7 @@ struct Worker {
     options: super::BackendOptions,
     relay: Option<String>,
     stop_push: Option<watch::Sender<bool>>,
-    /// Whether Wren keeps a presence session (setting), and when it last
+    /// Whether Chaat keeps a presence session (setting), and when it last
     /// refreshed it.
     session_enabled: bool,
     session_refreshed: Option<Instant>,
@@ -1033,9 +1033,9 @@ impl Worker {
         });
     }
 
-    /// The person is using Wren. An Available presence session turns
+    /// The person is using Chaat. An Available presence session turns
     /// inactive five minutes after its last refresh and Away five minutes
-    /// later, so Wren refreshes it only while someone is at the keyboard;
+    /// later, so Chaat refreshes it only while someone is at the keyboard;
     /// stepping away lets Graph mark them Away, as a Teams client would.
     fn presence_active(&mut self) {
         let Some(account) = &self.account else { return };
@@ -1073,7 +1073,7 @@ impl Worker {
         });
     }
 
-    /// Ends Wren's presence session, if it started one (at sign-out, when
+    /// Ends Chaat's presence session, if it started one (at sign-out, when
     /// turned off, and at exit).
     async fn end_presence_session(&mut self) {
         if self.session_refreshed.take().is_none() {

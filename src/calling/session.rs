@@ -1,7 +1,7 @@
-//! A call or meeting that Wren opened, or noticed from presence, and what
+//! A call or meeting that Chaat opened, or noticed from presence, and what
 //! the call bar says about it.
 //!
-//! Wren cannot see inside Teams on the web. It learns that a call is running
+//! Chaat cannot see inside Teams on the web. It learns that a call is running
 //! from the person's own presence activity, read when the window gains focus
 //! and, with a relay, when Graph says the presence changed. Presence can
 //! flicker, so a call ends only after it has looked over for a minute. That
@@ -27,7 +27,7 @@ pub enum CallTarget {
         names: String,
         video: bool,
     },
-    /// A call Wren did not open, noticed from presence.
+    /// A call Chaat did not open, noticed from presence.
     Elsewhere,
 }
 
@@ -104,7 +104,7 @@ impl CallSession {
         }
     }
 
-    /// A call noticed from presence that Wren did not open.
+    /// A call noticed from presence that Chaat did not open.
     pub fn elsewhere(now: Millis, account: Option<String>) -> Self {
         Self {
             state: CallState::Live { since: now },

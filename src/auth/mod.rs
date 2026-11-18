@@ -1,7 +1,7 @@
 //! Microsoft Entra ID sign-in: the OAuth 2.0 authorization code flow with
 //! PKCE for a public client, and the device code flow as a fallback.
 //!
-//! Wren never sees a password. The system browser signs in with Microsoft
+//! Chaat never sees a password. The system browser signs in with Microsoft
 //! and sends a one-time code back to a listener on the loopback interface
 //! (`loopback`); the code and the PKCE verifier become tokens at the token
 //! endpoint (`token`). `session::TokenSource` keeps the access token fresh
@@ -35,7 +35,7 @@ pub const SIGN_IN_SCOPES: &[&str] = &[
     "Calendars.Read",
 ];
 
-/// Reading channel posts. Requires tenant admin consent, so Wren asks for it
+/// Reading channel posts. Requires tenant admin consent, so Chaat asks for it
 /// separately (incremental consent) when someone opens a channel.
 pub const CHANNEL_READ_SCOPE: &str = "ChannelMessage.Read.All";
 
@@ -54,7 +54,7 @@ pub const PRESENCE_WRITE_SCOPE: &str = "Presence.ReadWrite";
 /// User-consentable; asked for on first use.
 pub const ONLINE_MEETINGS_SCOPE: &str = "OnlineMeetings.Read";
 
-/// The scopes Wren may ask for beyond sign-in, each when a feature first
+/// The scopes Chaat may ask for beyond sign-in, each when a feature first
 /// needs it (incremental consent).
 pub const OPTIONAL_SCOPES: &[&str] = &[
     CHANNEL_READ_SCOPE,

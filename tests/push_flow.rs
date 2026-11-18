@@ -5,14 +5,14 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use chaat::auth::session::AccountRecord;
+use chaat::backend::{AuthStatus, Backend, BackendOptions, Command, Event, Waker};
+use chaat::model::ConversationId;
+use chaat::paths::AppDirs;
+use chaat::realtime::PushStatus;
+use chaat::secrets::{MemoryStore, SecretStore};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
-use wren::auth::session::AccountRecord;
-use wren::backend::{AuthStatus, Backend, BackendOptions, Command, Event, Waker};
-use wren::model::ConversationId;
-use wren::paths::AppDirs;
-use wren::realtime::PushStatus;
-use wren::secrets::{MemoryStore, SecretStore};
 
 const CLIENT: &str = "6731de76-14a6-49ae-97bc-6eba6914391e";
 const ACCOUNT: &str = "u-me.t-1";
@@ -99,7 +99,7 @@ async fn a_change_notification_fetches_the_chat() {
     let dirs = AppDirs::under(dir.path());
     let secrets: Arc<dyn SecretStore> = Arc::new(MemoryStore::default());
     secrets
-        .write(&wren::secrets::refresh_key(ACCOUNT), "refresh-1")
+        .write(&chaat::secrets::refresh_key(ACCOUNT), "refresh-1")
         .unwrap();
     std::fs::create_dir_all(dirs.account(ACCOUNT)).unwrap();
     AccountRecord {
@@ -139,7 +139,7 @@ async fn a_change_notification_fetches_the_chat() {
         _ => None,
     });
 
-    // What Wren asked Graph for.
+    // What Chaat asked Graph for.
     let requests = server.received_requests().await.unwrap();
     let subscribe = requests
         .iter()
@@ -198,7 +198,7 @@ async fn a_change_notification_fetches_the_chat() {
     });
     assert_eq!(messages[0].body.to_plain(), "Pushed!");
 
-    // A presence change: Wren fetches the person's presence (the call bar
+    // A presence change: Chaat fetches the person's presence (the call bar
     // follows calls this way).
     let presence_fetches = |requests: &[wiremock::Request]| {
         requests

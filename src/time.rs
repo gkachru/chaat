@@ -17,7 +17,7 @@ pub fn parse_iso(value: &str) -> Option<Millis> {
 }
 
 /// Parses a calendar `dateTime` without an offset (Graph's
-/// `dateTimeTimeZone`), in the zone it names. Wren asks for UTC.
+/// `dateTimeTimeZone`), in the zone it names. Chaat asks for UTC.
 pub fn parse_civil(value: &str, zone: Option<&str>) -> Option<Millis> {
     // Graph writes seven fractional digits; jiff takes up to nine.
     let civil: civil::DateTime = value.parse().ok()?;

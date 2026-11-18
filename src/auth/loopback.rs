@@ -1,7 +1,7 @@
 //! The loopback listener that receives the authorization code.
 //!
 //! Entra ID lets a desktop app register `http://localhost` and use any port
-//! at run time. Wren binds a random free port on 127.0.0.1 (and the same
+//! at run time. Chaat binds a random free port on 127.0.0.1 (and the same
 //! port on ::1 when it can, since browsers may resolve `localhost` to
 //! either), opens the browser, and waits for one request carrying the code
 //! and the state it sent. Anything else (a favicon, a stale tab) gets an

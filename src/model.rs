@@ -1,4 +1,4 @@
-//! Wren's own types. Views and the store never see Graph's JSON shapes; the
+//! Chaat's own types. Views and the store never see Graph's JSON shapes; the
 //! Graph layer translates into these in `graph::convert`.
 
 use std::fmt;
@@ -11,7 +11,7 @@ use crate::html::RichText;
 /// sorting and grouping never parse strings in the frame.
 pub type Millis = i64;
 
-/// A Microsoft account signed in to Wren: `<object id>.<tenant id>`, as MSAL
+/// A Microsoft account signed in to Chaat: `<object id>.<tenant id>`, as MSAL
 /// names a home account. `demo` for the offline sample data.
 pub type AccountId = String;
 
@@ -122,7 +122,7 @@ pub struct Chat {
 
 /// The person's chat with themselves, Teams' notes. Graph serves its
 /// messages but not the chat itself (that answers 400), and the id is not
-/// in Microsoft's documentation; Wren builds the list entry itself.
+/// in Microsoft's documentation; Chaat builds the list entry itself.
 pub const NOTES_CHAT: &str = "48:notes";
 
 impl Chat {
@@ -237,7 +237,7 @@ pub enum AttachmentKind {
         author: Option<String>,
         preview: String,
     },
-    /// An Adaptive Card or other card Wren does not draw.
+    /// An Adaptive Card or other card Chaat does not draw.
     Card,
     Other,
 }
@@ -552,7 +552,7 @@ pub enum Action {
     SetAvailability(Option<Availability>),
     SetStatusMessage(String),
     OpenStatusMessage,
-    /// Whether Wren keeps a presence session (shows you available while it
+    /// Whether Chaat keeps a presence session (shows you available while it
     /// runs).
     SetPresenceSession(bool),
 
@@ -579,7 +579,7 @@ pub enum Action {
     CallDone,
     /// Brings the call window forward.
     ShowCall,
-    /// Docks Wren beside the call window (`true`) or restores its size.
+    /// Docks Chaat beside the call window (`true`) or restores its size.
     DockWindow(bool),
     /// Looks up the meeting's chat, asking for OnlineMeetings.Read first.
     FindMeetingChat,

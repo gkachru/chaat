@@ -1,5 +1,5 @@
 [package]
-name = "wren"
+name = "chaat"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.98"
@@ -14,7 +14,7 @@ default-run = "chaat"
 members = [".", "relay"]
 
 [lib]
-name = "wren"
+name = "chaat"
 path = "src/lib.rs"
 
 [[bin]]
@@ -61,7 +61,7 @@ fastframe-log = { git = "https://github.com/crmne/fastframe", tag = "v0.6.0" }
 # Tray item: StatusNotifier on Linux, notification area on Windows, menu bar
 # on macOS.
 fastframe-tray = { git = "https://github.com/crmne/fastframe", tag = "v0.6.0" }
-# Keeps Wren running (sync, notifications) with the window closed. Its
+# Keeps Chaat running (sync, notifications) with the window closed. Its
 # fastframe-file dependency detects durable writes on the interface thread.
 fastframe-shell = { git = "https://github.com/crmne/fastframe", tag = "v0.6.0" }
 # macOS header dragging, double-click actions and traffic lights; replaces

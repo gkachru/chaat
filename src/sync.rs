@@ -1,4 +1,4 @@
-//! When Wren may ask Graph for something again.
+//! When Chaat may ask Graph for something again.
 //!
 //! Microsoft's Teams API rules allow fetching a resource whenever the person
 //! asks to see it, but not polling: "If your app polls to see whether a
@@ -37,7 +37,7 @@ pub enum Resource {
 /// Why a fetch is being considered.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Trigger {
-    /// Wren started or the person signed in.
+    /// Chaat started or the person signed in.
     Start,
     /// The person opened the view that shows the resource.
     Opened,
