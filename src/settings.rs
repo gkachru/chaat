@@ -71,6 +71,9 @@ pub struct CallSettings {
     pub profiles: std::collections::BTreeMap<String, String>,
     /// Signing out of Wren also signs the call browser out of Microsoft.
     pub sign_out_browser: bool,
+    /// Every web link (messages, calendar, "Open in Teams") opens in the
+    /// call browser and profile instead of the default browser.
+    pub links_in_browser: bool,
 }
 
 impl Default for CallSettings {
@@ -82,6 +85,7 @@ impl Default for CallSettings {
             profile_per_account: false,
             profiles: std::collections::BTreeMap::new(),
             sign_out_browser: false,
+            links_in_browser: false,
         }
     }
 }

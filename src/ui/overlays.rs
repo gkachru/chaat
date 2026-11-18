@@ -1062,7 +1062,36 @@ fn call_settings(
                 ui.selectable_value(&mut calls.open_in, choice, choice.label());
             }
         });
-    if calls.open_in == CallsOpenIn::AppWindow {
+    let app_window = calls.open_in == CallsOpenIn::AppWindow;
+    if !browsers.is_empty() && (app_window || calls.links_in_browser) {
+        let current = calls
+            .browser
+            .filter(|b| browsers.contains(b))
+            .unwrap_or(browsers[0]);
+        egui::ComboBox::from_label(egui::RichText::new("Browser").color(palette.secondary))
+            .selected_text(current.name())
+            .show_ui(ui, |ui| {
+                for kind in browsers {
+                    if ui.selectable_label(current == *kind, kind.name()).clicked() {
+                        calls.browser = Some(*kind);
+                    }
+                }
+            });
+    }
+    if let [first, ..] = browsers {
+        let current = calls
+            .browser
+            .filter(|b| browsers.contains(b))
+            .unwrap_or(*first);
+        ui.checkbox(
+            &mut calls.links_in_browser,
+            format!("Open all links in {}", current.short()),
+        )
+        .on_hover_text(
+            "Links in messages and the calendar open in this browser instead of your default one, in the same profile as calls.",
+        );
+    }
+    if app_window {
         match browsers {
             [] => {
                 ui.label(
@@ -1076,15 +1105,6 @@ fn call_settings(
                     .browser
                     .filter(|b| found.contains(b))
                     .unwrap_or(found[0]);
-                egui::ComboBox::from_label(egui::RichText::new("Browser").color(palette.secondary))
-                    .selected_text(current.name())
-                    .show_ui(ui, |ui| {
-                        for kind in found {
-                            if ui.selectable_label(current == *kind, kind.name()).clicked() {
-                                calls.browser = Some(*kind);
-                            }
-                        }
-                    });
                 ui.checkbox(
                     &mut calls.dock,
                     "Move Chaat beside the call window during calls",

@@ -21,6 +21,7 @@ Settings → Calls and meetings controls:
 |---|---|
 | Open in | A Teams web app window, the default browser, or the Teams app |
 | Browser | An installed Edge or Chrome; Edge is preferred by default |
+| Open all links in Edge or Chrome | Links in messages, the calendar and "Open in Teams" open in the chosen browser and the same profile as calls, instead of the default browser; off by default. `mailto:` links still use the default mail app. Shown whenever Edge or Chrome is installed |
 | Move Chaat beside the call window during calls | Dock Chaat in a 380-point panel and restore its previous geometry afterward; on by default |
 | A separate browser profile for each account | Optional, shown with multiple accounts; off by default |
 | Signing out of Chaat also signs the browser out of Microsoft | Optional; off by default |

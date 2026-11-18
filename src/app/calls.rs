@@ -518,6 +518,30 @@ impl App {
         }
     }
 
+    /// The launch for a web link when links open in the call browser, or
+    /// `None` for the default browser.
+    pub fn link_launch(&mut self, url: &str) -> Option<browser::Launch> {
+        if !self.settings.calls.links_in_browser {
+            return None;
+        }
+        let preferred = self.settings.calls.browser;
+        let chosen = browser::pick(self.call_browsers(), preferred)?.clone();
+        let profile = self.browser_profile(self.active);
+        browser::link(&chosen, url, profile.as_deref())
+    }
+
+    /// Opens a web link in the call browser when chosen, else (or if that
+    /// fails) in the default browser.
+    pub(super) fn open_link(&mut self, url: &str) {
+        if let Some(launch) = self.link_launch(url) {
+            match browser::spawn(&launch) {
+                Ok(()) => return,
+                Err(error) => log::info!("could not open a link in the call browser: {error}"),
+            }
+        }
+        super::open_external(url);
+    }
+
     pub(super) fn set_call_settings(&mut self, calls: crate::settings::CallSettings) {
         if self.settings.calls == calls {
             return;
@@ -670,5 +694,46 @@ mod tests {
         calls.profile_per_account = true;
         app.set_call_settings(calls);
         assert_eq!(app.browser_profile(0), Some(profile));
+    }
+
+    #[test]
+    fn links_open_in_the_call_browser_only_when_chosen() {
+        let (mut app, _dir) = demo();
+        let edge = Browser {
+            kind: browser::BrowserKind::Edge,
+            program: "/edge".into(),
+        };
+        let chrome = Browser {
+            kind: browser::BrowserKind::Chrome,
+            program: "/chrome".into(),
+        };
+        app.browsers = Some(vec![edge, chrome]);
+        let url = "https://example.com/doc";
+        assert!(
+            app.link_launch(url).is_none(),
+            "the default browser by default"
+        );
+
+        let mut calls = app.settings.calls.clone();
+        calls.links_in_browser = true;
+        calls.browser = Some(browser::BrowserKind::Chrome);
+        app.set_call_settings(calls);
+        let launch = app.link_launch(url).unwrap();
+        assert_eq!(launch.program, std::path::PathBuf::from("/chrome"));
+        assert_eq!(launch.args, [url]);
+        // Links follow the call profile when each account has its own.
+        let mut calls = app.settings.calls.clone();
+        calls.profile_per_account = true;
+        app.set_call_settings(calls);
+        let profile = app.browser_profile.clone();
+        assert_eq!(
+            app.link_launch(url).unwrap().args,
+            [format!("--profile-directory={profile}"), url.to_owned()]
+        );
+        // Links that are not web links never reach the browser.
+        assert!(app.link_launch("file:///etc/passwd").is_none());
+        // With no Edge or Chrome, the default browser opens them.
+        app.browsers = Some(Vec::new());
+        assert!(app.link_launch(url).is_none());
     }
 }

@@ -1939,10 +1939,9 @@ impl App {
             Action::PrepareTeamsWeb => self.prepare_teams_web(),
             Action::SetCallSettings(calls) => self.set_call_settings(calls),
             Action::OpenUrl(url) => {
-                if url.starts_with("https://")
-                    || url.starts_with("http://")
-                    || url.starts_with("mailto:")
-                {
+                if url.starts_with("https://") || url.starts_with("http://") {
+                    self.open_link(&url);
+                } else if url.starts_with("mailto:") {
                     open_external(&url);
                 }
             }

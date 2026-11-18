@@ -259,6 +259,27 @@ pub fn page(browser: &Browser, url: &str, profile: Option<&str>) -> Option<Launc
     })
 }
 
+/// Any web link from a message or the calendar, in a normal browser tab.
+/// Only `http` and `https` with a host qualify, so the URL can never be read
+/// as a flag or name a local file or another scheme's handler.
+pub fn link(browser: &Browser, url: &str, profile: Option<&str>) -> Option<Launch> {
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))?;
+    if rest.is_empty()
+        || rest.starts_with(['/', '?', '#'])
+        || url.chars().any(|c| c.is_whitespace() || c.is_control())
+    {
+        return None;
+    }
+    let mut args = profile_args(profile);
+    args.push(url.to_owned());
+    Some(Launch {
+        program: browser.program.clone(),
+        args,
+    })
+}
+
 /// Starts the process detached from Wren: no shell, no inherited input or
 /// output, its own process group (so Ctrl-C in a terminal running Wren does
 /// not close the browser), reaped on a short-lived thread.
@@ -444,5 +465,31 @@ mod tests {
         assert!(page(&edge, "http://login.microsoftonline.com", None).is_none());
         assert!(page(&edge, "--flag", None).is_none());
         assert!(page(&edge, "https://", None).is_none());
+    }
+
+    #[test]
+    fn links_must_be_web_links_with_a_host() {
+        let edge = Browser {
+            kind: BrowserKind::Edge,
+            program: "/edge".into(),
+        };
+        let launch = link(&edge, "https://example.com/a?b=c", Some("Work")).unwrap();
+        assert_eq!(
+            launch.args,
+            ["--profile-directory=Work", "https://example.com/a?b=c"]
+        );
+        assert!(link(&edge, "http://example.com", None).is_some());
+        for refused in [
+            "--flag",
+            "file:///etc/passwd",
+            "mailto:ada@example.com",
+            "javascript:alert(1)",
+            "https://",
+            "https:///path",
+            "https://example.com/a b",
+            "https://example.com/\n--flag",
+        ] {
+            assert!(link(&edge, refused, None).is_none(), "{refused}");
+        }
     }
 }
