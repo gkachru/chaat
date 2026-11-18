@@ -169,8 +169,14 @@ impl Graph {
             }
             let response = match request.send().await {
                 Ok(response) => response,
+                // A pooled connection the far end already closed fails as a
+                // request error ("connection reset"). Repeat reads and other
+                // idempotent requests once; a repeated POST could send twice.
                 Err(error)
-                    if attempt < MAX_ATTEMPTS && (error.is_timeout() || error.is_connect()) =>
+                    if attempt < MAX_ATTEMPTS
+                        && (error.is_timeout()
+                            || error.is_connect()
+                            || (error.is_request() && method.is_idempotent() && attempt == 1)) =>
                 {
                     tokio::time::sleep(backoff(attempt)).await;
                     continue;

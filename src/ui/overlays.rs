@@ -565,6 +565,16 @@ fn settings(app: &mut App, ctx: &egui::Context) {
                 if ui.checkbox(&mut notifications, "Desktop notifications for new messages and meeting reminders").changed() {
                     actions.push(Action::SetNotifications(notifications));
                 }
+                if cfg!(any(windows, target_os = "linux")) {
+                    let mut own = app.settings.custom_titlebar;
+                    if ui
+                        .checkbox(&mut own, "Use Chaat's own title bar")
+                        .on_hover_text("Draws minimize, maximize and close in Chaat's header. Off: the system's window frame.")
+                        .changed()
+                    {
+                        actions.push(Action::SetCustomTitlebar(own));
+                    }
+                }
                 let mut keep = app.settings.keep_running;
                 if ui.checkbox(&mut keep, "Keep running in the tray when the window closes").changed() {
                     actions.push(Action::SetKeepRunning(keep));

@@ -58,6 +58,12 @@ fn content(app: &mut App, ui: &mut egui::Ui, docked: bool) {
     } else {
         0.0
     };
+    // Docked, the bar is the window's top edge: leave the title bar buttons room.
+    let right = if docked {
+        (super::header_right_inset(ui.ctx()) - 8.0).max(0.0)
+    } else {
+        0.0
+    };
     let mut actions = Vec::new();
     let Some(call) = app.call.clone() else {
         // Docked without a call (it was dismissed elsewhere): offer the way back.
@@ -69,6 +75,7 @@ fn content(app: &mut App, ui: &mut egui::Ui, docked: bool) {
                     .color(palette.text),
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_space(right);
                 let restore = widgets::pill(ui, &palette, Icon::Monitor, "Restore", false);
                 widgets::on_click(&restore, &mut actions, Action::DockWindow(false));
             });
@@ -190,6 +197,7 @@ fn content(app: &mut App, ui: &mut egui::Ui, docked: bool) {
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
+                ui.add_space(right);
                 for (icon, label, action, accent, tip) in buttons.into_iter().rev() {
                     let response =
                         widgets::pill(ui, &palette, icon, label, accent).on_hover_text(tip);

@@ -1,4 +1,8 @@
-//! The navigation rail: Chat, Teams, Calendar, Calls, and the account.
+//! The navigation rail: Chats (under the app's logo), Teams, Calendar,
+//! Calls, and the account.
+
+/// The app icon in colour, for the rail's first item.
+pub const APP_ICON: &str = "bytes://chaat-icon.svg";
 
 use egui::{CornerRadius, Frame, Sense, vec2};
 
@@ -22,7 +26,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 vec2(theme::RAIL_WIDTH, theme::HEADER_HEIGHT),
             );
             widgets::window_drag(ui, top, "rail-drag");
-            ui.add_space(theme::HEADER_HEIGHT + 4.0);
+            // macOS keeps the header's height free for the traffic lights;
+            // elsewhere the first item sits at the top.
+            ui.add_space(if cfg!(target_os = "macos") {
+                theme::HEADER_HEIGHT + 4.0
+            } else {
+                8.0
+            });
             ui.vertical_centered(|ui| {
                 ui.spacing_mut().item_spacing.y = 4.0;
                 for section in Section::ALL {
@@ -113,12 +123,6 @@ fn item(ui: &mut egui::Ui, app: &App, section: Section, badge: usize) -> egui::R
             ui.painter()
                 .rect_filled(bar, CornerRadius::same(2), palette.accent);
         }
-        let icon = match section {
-            Section::Chats => Icon::Chat,
-            Section::Teams => Icon::Teams,
-            Section::Calendar => Icon::Calendar,
-            Section::Calls => Icon::Phone,
-        };
         let tint = if active {
             palette.accent
         } else {
@@ -128,11 +132,28 @@ fn item(ui: &mut egui::Ui, app: &App, section: Section, badge: usize) -> egui::R
             rect.center_top() + vec2(0.0, 19.0),
             egui::Vec2::splat(21.0),
         );
-        icon.image(tint, 21.0).paint_at(ui, icon_rect);
+        // Chats sits first and wears the app's own logo and name.
+        let label = match section {
+            Section::Chats => {
+                egui::Image::new(APP_ICON)
+                    .fit_to_exact_size(egui::Vec2::splat(26.0))
+                    .paint_at(ui, icon_rect.expand(2.5));
+                "Chaat"
+            }
+            other => {
+                let icon = match other {
+                    Section::Teams => Icon::Teams,
+                    Section::Calendar => Icon::Calendar,
+                    _ => Icon::Phone,
+                };
+                icon.image(tint, 21.0).paint_at(ui, icon_rect);
+                other.label()
+            }
+        };
         ui.painter().text(
             rect.center_bottom() - vec2(0.0, 9.0),
             egui::Align2::CENTER_CENTER,
-            section.label(),
+            label,
             theme::medium(11.0),
             if active {
                 palette.text
@@ -155,7 +176,8 @@ fn item(ui: &mut egui::Ui, app: &App, section: Section, badge: usize) -> egui::R
         .on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-/// The avatar's menu: accounts, availability, status message, settings.
+/// The avatar's menu: accounts, availability and status message. Settings
+/// has its own button in the rail.
 fn account_menu(app: &mut App, avatar: &egui::Response) {
     let palette = app.palette;
     let mut actions = Vec::new();
@@ -224,6 +246,7 @@ fn account_menu(app: &mut App, avatar: &egui::Response) {
                         );
                     }
                 });
+                let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
                 if response.clicked() {
                     if !active {
                         actions.push(Action::SwitchAccount(index));
@@ -233,13 +256,10 @@ fn account_menu(app: &mut App, avatar: &egui::Response) {
                     ui.close();
                 }
             }
-            if ui
-                .add(
-                    egui::Button::new(egui::RichText::new("+  Add account").color(palette.text))
-                        .frame(false),
-                )
-                .clicked()
-            {
+            let add = menu_row(ui, &palette, "Add account", palette.text, |ui, at| {
+                paint_icon(ui, Icon::Plus, at, palette.text);
+            });
+            if add.clicked() {
                 actions.push(Action::AddAccount);
                 ui.close();
             }
@@ -255,31 +275,21 @@ fn account_menu(app: &mut App, avatar: &egui::Response) {
                 (Some(Availability::Offline), "Appear offline"),
                 (None, "Reset status"),
             ] {
-                let (rect, response) = ui.allocate_exact_size(vec2(268.0, 28.0), Sense::click());
-                if response.hovered() {
-                    ui.painter()
-                        .rect_filled(rect, CornerRadius::same(6), palette.surface_hover);
-                }
-                let dot = egui::pos2(rect.left() + 16.0, rect.center().y);
-                match availability {
-                    Some(availability) => {
-                        ui.painter()
-                            .circle_filled(dot, 5.0, palette.presence(availability));
-                    }
-                    None => {
-                        Icon::Refresh.image(palette.dim, 12.0).paint_at(
-                            ui,
-                            egui::Rect::from_center_size(dot, egui::Vec2::splat(12.0)),
-                        );
-                    }
-                }
-                ui.painter().text(
-                    egui::pos2(rect.left() + 32.0, rect.center().y),
-                    egui::Align2::LEFT_CENTER,
-                    label,
-                    theme::regular(13.0),
-                    palette.text,
-                );
+                let response =
+                    menu_row(
+                        ui,
+                        &palette,
+                        label,
+                        palette.text,
+                        |ui, at| match availability {
+                            Some(availability) => {
+                                ui.painter()
+                                    .circle_filled(at, 5.0, palette.presence(availability));
+                            }
+                            None => paint_icon(ui, Icon::Refresh, at, palette.dim),
+                        },
+                    );
+                let rect = response.rect;
                 if availability.is_some() && availability == current {
                     Icon::Check.image(palette.accent, 14.0).paint_at(
                         ui,
@@ -299,30 +309,49 @@ fn account_menu(app: &mut App, avatar: &egui::Response) {
                 .as_ref()
                 .and_then(|p| p.status_message.clone())
                 .unwrap_or_else(|| "Set a status message".into());
-            if ui
-                .add(
-                    egui::Button::new(
-                        egui::RichText::new(format!("✎  {}", crate::html::truncate(&message, 34)))
-                            .color(palette.secondary),
-                    )
-                    .frame(false),
-                )
-                .clicked()
-            {
+            let status = menu_row(
+                ui,
+                &palette,
+                &crate::html::truncate(&message, 34),
+                palette.secondary,
+                |ui, at| paint_icon(ui, Icon::Pencil, at, palette.secondary),
+            );
+            if status.clicked() {
                 actions.push(Action::OpenStatusMessage);
-                ui.close();
-            }
-            ui.separator();
-            if ui
-                .add(
-                    egui::Button::new(egui::RichText::new("Settings…").color(palette.text))
-                        .frame(false),
-                )
-                .clicked()
-            {
-                actions.push(Action::OpenSettings);
                 ui.close();
             }
         });
     app.actions.extend(actions);
+}
+
+/// One clickable line of the account menu: highlighted under the pointer,
+/// with a mark drawn by `leading` at the left and the label after it.
+fn menu_row(
+    ui: &mut egui::Ui,
+    palette: &theme::Palette,
+    label: &str,
+    color: egui::Color32,
+    leading: impl FnOnce(&egui::Ui, egui::Pos2),
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(vec2(268.0, 28.0), Sense::click());
+    if response.hovered() {
+        ui.painter()
+            .rect_filled(rect, CornerRadius::same(6), palette.surface_hover);
+    }
+    leading(ui, egui::pos2(rect.left() + 16.0, rect.center().y));
+    ui.painter().text(
+        egui::pos2(rect.left() + 32.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        label,
+        theme::regular(13.0),
+        color,
+    );
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+fn paint_icon(ui: &egui::Ui, icon: Icon, at: egui::Pos2, color: egui::Color32) {
+    icon.image(color, 12.0).paint_at(
+        ui,
+        egui::Rect::from_center_size(at, egui::Vec2::splat(12.0)),
+    );
 }

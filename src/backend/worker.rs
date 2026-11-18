@@ -99,6 +99,8 @@ struct Worker {
     photos_asked: HashMap<String, Instant>,
     /// Channel paging links, by conversation.
     older_links: Arc<Mutex<HashMap<ConversationId, String>>>,
+    /// Whether the last fetch reached Microsoft (see `Event::Reachable`).
+    reachable: Arc<std::sync::atomic::AtomicBool>,
     downloads: Arc<Semaphore>,
     options: super::BackendOptions,
     relay: Option<String>,
@@ -147,6 +149,7 @@ pub(super) async fn run(
         presence_seen: HashMap::new(),
         photos_asked: HashMap::new(),
         older_links: Arc::default(),
+        reachable: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         downloads: Arc::new(Semaphore::new(4)),
     };
     loop {
@@ -667,11 +670,22 @@ impl Worker {
         let internal = self.internal.clone();
         let record = account.record.clone();
         let links = Arc::clone(&self.older_links);
+        let reachable = Arc::clone(&self.reachable);
         tokio::spawn(async move {
+            use std::sync::atomic::Ordering;
             out.send(Event::Loading(resource.clone(), true));
             let result = fetch_resource(&graph, &store, &out, &resource, &record, &links).await;
             out.send(Event::Loading(resource.clone(), false));
-            if let Err(error) = result {
+            let lost = result.as_ref().err().is_some_and(is_unreachable);
+            if lost == reachable.swap(!lost, Ordering::Relaxed) {
+                out.send(Event::Reachable(!lost));
+            }
+            if lost {
+                // Brief outages fix themselves on the next look: the app
+                // shows a quiet marker instead of an error.
+                log::warn!("{}: Microsoft unreachable", describe(&resource));
+                let _ = internal.send(Internal::FetchFailed(resource.clone()));
+            } else if let Err(error) = result {
                 let _ = internal.send(Internal::FetchFailed(resource.clone()));
                 match (&resource, &error) {
                     (
@@ -1325,6 +1339,15 @@ fn channel_access(session: &Session) -> Access {
     } else {
         Access::NeedsConsent
     }
+}
+
+/// A failure to reach Microsoft at all, as opposed to an answer refusing the
+/// request.
+fn is_unreachable(error: &GraphError) -> bool {
+    matches!(
+        error,
+        GraphError::Network(_) | GraphError::Auth(TokenError::Unreachable(_))
+    )
 }
 
 fn describe(resource: &Resource) -> &'static str {

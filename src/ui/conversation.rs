@@ -137,7 +137,9 @@ fn header(app: &mut App, ui: &mut egui::Ui, conversation: &ConversationId) {
                 ui.vertical(|ui| {
                     ui.add_space(8.0);
                     ui.spacing_mut().item_spacing.y = 0.0;
-                    let width = (ui.available_width() - 260.0).max(120.0);
+                    let width =
+                        (ui.available_width() - 260.0 - super::header_right_inset(ui.ctx()))
+                            .max(120.0);
                     ui.add(egui::Label::new(super::chat_list::elided(
                         ui,
                         &title,
@@ -166,6 +168,12 @@ fn header(app: &mut App, ui: &mut egui::Ui, conversation: &ConversationId) {
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
+                    // The header's own margin already covers part of the
+                    // title bar buttons' room.
+                    let buttons = super::header_right_inset(ui.ctx());
+                    if buttons > 0.0 {
+                        ui.add_space(buttons - 8.0);
+                    }
                     if let Some(web) = web {
                         let open = widgets::icon_button(
                             ui,

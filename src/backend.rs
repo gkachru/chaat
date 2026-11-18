@@ -267,6 +267,9 @@ pub enum Event {
         join_url: String,
         chat: Option<Box<Chat>>,
     },
+    /// Whether Microsoft could be reached on the last fetch. Sent only when it
+    /// changes; a lost connection is shown quietly, not as an error.
+    Reachable(bool),
     /// Something the person should hear about, in plain words.
     Error(String),
 }

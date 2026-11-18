@@ -54,6 +54,18 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     } else {
         signin::show(app, ui);
     }
+    // Windows and Linux with Chaat's own title bar: its buttons over the
+    // header's right end, and resizing from the window's edges.
+    fastframe_titlebar::controls(
+        ui,
+        &fastframe_titlebar::Style {
+            icon: app.palette.secondary,
+            button: app.palette.surface_hover,
+            header_height: theme::HEADER_HEIGHT,
+        },
+        &fastframe_titlebar::Labels::default(),
+    );
+    fastframe_titlebar::resize(ui);
     drop_files(app, &ctx);
     overlays::show(app, &ctx);
     toasts(app, &ctx);
@@ -192,6 +204,12 @@ pub fn header_inset(ctx: &egui::Context, x: f32) -> f32 {
     (fastframe_titlebar::footprint(ctx, theme::HEADER_HEIGHT).left - x).max(0.0)
 }
 
+/// Right padding for a header at the window's right edge, beside the drawn
+/// title bar buttons on Windows and Linux.
+pub fn header_right_inset(ctx: &egui::Context) -> f32 {
+    fastframe_titlebar::footprint(ctx, theme::HEADER_HEIGHT).right
+}
+
 fn sidebar(app: &mut App, ui: &mut egui::Ui) {
     let palette = app.palette;
     let response = egui::Panel::left("sidebar")
@@ -240,6 +258,16 @@ fn sidebar(app: &mut App, ui: &mut egui::Ui) {
                             let busy = !app.loading.is_empty();
                             if busy {
                                 widgets::loading(ui, palette.dim, 14.0);
+                            } else if app.unreachable {
+                                // Quiet: a dim marker, not an error. Any
+                                // later fetch that gets through clears it.
+                                let offline = widgets::icon_button(
+                                    ui,
+                                    &palette,
+                                    Icon::Offline,
+                                    "Can't reach Microsoft right now. Chaat tries again when you come back to the window, or click to try now.",
+                                );
+                                widgets::on_click(&offline, &mut app.actions, Action::Refresh);
                             }
                         });
                     });
@@ -430,9 +458,14 @@ pub fn install(ctx: &egui::Context, reproducible: bool) {
     egui_extras::install_image_loaders(ctx);
     crate::images::install(ctx);
     fastframe_icons::install::<theme::Icon>(ctx);
+    fastframe_titlebar::install(ctx);
     ctx.include_bytes(
         signin::LOGO,
         include_bytes!("../../packaging/icons/chaat-wordmark-light.svg").as_slice(),
+    );
+    ctx.include_bytes(
+        rail::APP_ICON,
+        include_bytes!("../../packaging/icons/chaat.svg").as_slice(),
     );
     theme::install_fonts(ctx, reproducible);
     fastframe_emoji::EmojiSetup::default()

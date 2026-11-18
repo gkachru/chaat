@@ -31,7 +31,7 @@ Status as of Chaat 0.1 (unreleased).
 | Local message search | Works | SQLite FTS5 over everything cached, instant |
 | Microsoft Search (server-side) | Works | Merged into ⌘K results for queries of 3+ characters |
 | Start a new chat | Works | ⌘N or the compose button: search your organisation's directory (User.ReadBasic.All), pick one or more people, optionally name a group. `POST /chats` with Chat.Create, requested on first use. An existing 1:1 chat opens instead of a new one |
-| Real-time updates | Works by default on intent; push is experimental | Fetch on open, focus and refresh (Microsoft forbids background polling). With a self-hosted `chaat-relay`, Graph change notifications push new messages. See [realtime.md](realtime.md) |
+| Real-time updates | Works by default on intent; push is experimental | Fetch on open, focus and refresh (Microsoft forbids background polling). With a self-hosted `chaat-relay`, Graph change notifications push new messages. See [realtime.md](realtime.md). When Microsoft can't be reached, a dim offline marker in the sidebar header replaces error pop-ups until a fetch gets through; reads are retried once after a reset connection |
 | New-message notifications | Partial | Whenever a fetch finds new messages in other chats. With the relay, also while Chaat runs in the background |
 
 ## Teams and channels
@@ -68,6 +68,7 @@ Status as of Chaat 0.1 (unreleased).
 | Profile photos | Works | Lazy, cached 7 days |
 | Multiple accounts | Works | Add from the account menu or Settings; ⌘⇧A switches. Each account has its own backend, cache, credentials and push connection. Unread chats in other accounts show as a dot on your picture; their notifications still arrive. Signing in to an account twice keeps one |
 | Light, dark, system theme, 8 shared palettes | Works | fastframe-theme presets |
+| Integrated title bar | Works on Windows; compiled only on Linux | Minimize, maximize and close drawn in Chaat's header, with drag, double-click to maximize and edge resizing (fastframe-titlebar). On by default; "Use Chaat's own title bar" in Settings switches back to the system frame. macOS keeps its native traffic lights |
 | Keyboard shortcuts, ⌘K switcher | Works | ⌘/ lists them |
 | Tray / menu-bar item, keep running | Works | Off by default; with a self-hosted relay, push notifications continue while the window is closed |
 | Desktop notifications | Works | notify-rust |

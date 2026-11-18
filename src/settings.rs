@@ -44,6 +44,9 @@ pub struct Settings {
     /// (needs Presence.ReadWrite).
     pub presence_session: bool,
     pub perf_overlay: bool,
+    /// Windows and Linux: draw the title bar's buttons in Chaat's own header
+    /// instead of the system's window frame.
+    pub custom_titlebar: bool,
     pub window: Option<WindowGeometry>,
     /// A wren-relay for push updates (experimental), `https://…`.
     pub relay_url: Option<String>,
@@ -108,6 +111,7 @@ impl Default for Settings {
             accounts: Vec::new(),
             presence_session: true,
             perf_overlay: false,
+            custom_titlebar: true,
             window: None,
             relay_url: None,
             calls: CallSettings::default(),

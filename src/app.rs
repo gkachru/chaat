@@ -283,6 +283,9 @@ pub struct Account {
     /// The expired status, while this account signs in again. The cached
     /// workspace stays on screen meanwhile, and cancelling returns to it.
     pub reauth: Option<AuthStatus>,
+    /// The last fetch could not reach Microsoft. Shown as a quiet marker in
+    /// the sidebar until a fetch gets through.
+    pub unreachable: bool,
 
     pending_sends: HashMap<String, PendingSend>,
     next_local: u64,
@@ -323,6 +326,7 @@ impl Account {
             reminded: HashSet::new(),
             recent_conversations: VecDeque::new(),
             reauth: None,
+            unreachable: false,
         }
     }
 
@@ -1159,6 +1163,7 @@ impl App {
                     self.loading.remove(&resource);
                 }
             }
+            Event::Reachable(reachable) => self.unreachable = !reachable,
             Event::Error(text) => self.toast(ToastKind::Error, text),
             Event::Push(status) => self.push = status,
         }
@@ -2003,6 +2008,14 @@ impl App {
                         tray.attach();
                     }
                 }
+            }
+            Action::SetCustomTitlebar(on) => {
+                self.settings.custom_titlebar = on;
+                self.mark_settings_dirty();
+                fastframe_titlebar::set_enabled(on);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(
+                    !fastframe_titlebar::enabled(),
+                ));
             }
             Action::SetRelay(url) => {
                 let url = url.trim().to_owned();
@@ -2946,6 +2959,17 @@ mod tests {
         );
         assert!(seen.iter().any(|c| c == "MarkRead(\"19:a\")"));
         assert!(!app.chats[0].is_unread("u-me"));
+    }
+
+    #[test]
+    fn losing_the_connection_is_a_quiet_marker_not_a_toast() {
+        let (mut app, _commands) = app();
+        let ctx = egui::Context::default();
+        app.handle(Event::Reachable(false), &ctx);
+        assert!(app.unreachable);
+        assert!(app.toasts.is_empty());
+        app.handle(Event::Reachable(true), &ctx);
+        assert!(!app.unreachable);
     }
 
     #[test]

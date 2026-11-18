@@ -71,6 +71,9 @@ fn main() -> eframe::Result<()> {
         .map_err(|e| eframe::Error::AppCreation(e.into()))?;
 
     let settings = Settings::load(&dirs.settings_file());
+    // Windows and Linux: Chaat's own title bar unless the person turned it off.
+    fastframe_titlebar::init();
+    fastframe_titlebar::set_enabled(settings.custom_titlebar);
     let geometry = settings.window;
     let mut app = App::new(dirs.clone(), settings, waker.clone(), false);
     app.service = wren::backend::Backend::spawn(dirs.clone(), waker.clone());
@@ -104,6 +107,7 @@ fn main() -> eframe::Result<()> {
                 .with_icon(wren::platform::window_icon())
                 // macOS: Wren draws its own title bar under the traffic lights.
                 .with_fullsize_content_view(true)
+                .with_decorations(!fastframe_titlebar::enabled())
                 .with_titlebar_shown(false)
                 .with_title_shown(false);
             if let Some(g) = geometry

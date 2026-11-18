@@ -598,6 +598,8 @@ pub enum Action {
     SetTheme(crate::settings::ThemeChoice),
     SetNotifications(bool),
     SetKeepRunning(bool),
+    /// Windows and Linux: Chaat's own title bar, or the system's frame.
+    SetCustomTitlebar(bool),
     /// The push relay's URL; empty turns push off.
     SetRelay(String),
     TogglePerfOverlay,
