@@ -624,6 +624,34 @@ fn settings(app: &mut App, ctx: &egui::Context) {
                             actions.push(Action::SetRelay(app.form_relay.clone()));
                         }
                     });
+                    if app.settings.relay_key_set {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new("Access key saved in the system's credential store.")
+                                    .font(theme::regular(12.0))
+                                    .color(palette.secondary),
+                            );
+                            if ui.button("Remove").clicked() {
+                                actions.push(Action::SetRelayKey(None));
+                            }
+                        });
+                    } else {
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                widgets::text_field(
+                                    &mut app.form_relay_key,
+                                    "Access key, if the relay needs one",
+                                    theme::regular(13.0),
+                                )
+                                .password(true)
+                                .desired_width(ui.available_width() - 70.0),
+                            );
+                            let typed = !app.form_relay_key.trim().is_empty();
+                            if ui.add_enabled(typed, egui::Button::new("Save")).clicked() {
+                                actions.push(Action::SetRelayKey(Some(app.form_relay_key.clone())));
+                            }
+                        });
+                    }
                     let color = match app.push {
                         crate::realtime::PushStatus::Live => palette.success,
                         crate::realtime::PushStatus::Failed(_) => palette.danger,

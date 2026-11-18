@@ -23,6 +23,8 @@
   A Credential Manager entry holds at most 1280 characters, so on Windows a
   longer token is split across numbered entries (`refresh-token:<account>#<n>.<i>`)
   and the main entry only says where its parts are.
+  The push relay's access key, if you set one, is stored there too
+  (`relay-key`) and sent only to your relay.
   Access tokens live only in memory. Tokens are only ever sent to the Graph
   origin: paging links and image URLs on other hosts are refused.
 - **Least privilege.** Delegated permissions only, requested incrementally;

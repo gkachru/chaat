@@ -159,6 +159,9 @@ pub enum Command {
     MarkRead(String),
     /// The push relay to use, or none (experimental, docs/realtime.md).
     Relay(Option<String>),
+    /// Stores the relay's access key in the credential store, or removes it
+    /// (`None`). Sent to the service backend; answered with `RelayKeySaved`.
+    SaveRelayKey(Option<crate::realtime::RelayKey>),
     Presence(Vec<String>),
     Photo(String),
     Media(String),
@@ -254,6 +257,11 @@ pub enum Event {
     Loading(Resource, bool),
     /// The push relay's state.
     Push(crate::realtime::PushStatus),
+    /// Whether `SaveRelayKey` worked; `set` says whether a key is now stored.
+    RelayKeySaved {
+        set: bool,
+        ok: bool,
+    },
     /// Directory search results for `query`.
     People {
         query: String,

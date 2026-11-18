@@ -81,6 +81,41 @@ pub fn lifecycle_url(relay: &str, channel: &str) -> String {
     format!("{relay}/lifecycle/{channel}")
 }
 
+/// The header a keyed relay expects the access key in (relay/src/lib.rs).
+pub const KEY_HEADER: &str = "x-chaat-relay-key";
+
+/// A relay access key on its way to the credential store. Its `Debug` output
+/// hides the key, so a logged command cannot leak it.
+#[derive(Clone, PartialEq, Eq)]
+pub struct RelayKey(pub String);
+
+impl std::fmt::Debug for RelayKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RelayKey(…)")
+    }
+}
+
+/// Whether `key` can be a relay access key: what the relay accepts (16 or
+/// more visible ASCII characters), and short enough for a header.
+pub fn valid_relay_key(key: &str) -> bool {
+    (16..=256).contains(&key.len()) && key.bytes().all(|b| b.is_ascii_graphic())
+}
+
+/// The WebSocket request for `channel`, carrying the access key if there is
+/// one. The key goes in a header, never the URL, so proxies don't log it.
+pub fn websocket_request(
+    relay: &str,
+    channel: &str,
+    key: Option<&str>,
+) -> Option<tokio_tungstenite::tungstenite::http::Request<()>> {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let mut request = websocket_url(relay, channel).into_client_request().ok()?;
+    if let Some(key) = key {
+        request.headers_mut().insert(KEY_HEADER, key.parse().ok()?);
+    }
+    Some(request)
+}
+
 /// What a notification asks Wren to do.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Notice {
@@ -172,6 +207,27 @@ fn chat_of(resource: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relay_keys_travel_in_a_header() {
+        assert!(!valid_relay_key("short"));
+        assert!(!valid_relay_key("sixteen chars ok"));
+        assert!(valid_relay_key("0123456789abcdef"));
+        let request = websocket_request(
+            "https://relay.example.com",
+            "chan",
+            Some("0123456789abcdef"),
+        )
+        .unwrap();
+        assert_eq!(request.uri(), "wss://relay.example.com/ws/chan");
+        assert_eq!(request.headers()[KEY_HEADER], "0123456789abcdef");
+        let open = websocket_request("https://relay.example.com", "chan", None).unwrap();
+        assert_eq!(
+            format!("{:?}", RelayKey("0123456789abcdef".into())),
+            "RelayKey(…)"
+        );
+        assert!(open.headers().get(KEY_HEADER).is_none());
+    }
 
     #[test]
     fn relay_urls_must_be_https_or_loopback() {

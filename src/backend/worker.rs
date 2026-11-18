@@ -326,6 +326,24 @@ impl Worker {
                 on,
             } => self.react(conversation, message, emoji, on),
             Command::MarkRead(chat) => self.mark_read(chat),
+            Command::SaveRelayKey(key) => {
+                let secrets = Arc::clone(&self.secrets);
+                let out = self.out.clone();
+                tokio::task::spawn_blocking(move || {
+                    let set = key.is_some();
+                    let result = match key {
+                        Some(key) => secrets.write(crate::secrets::RELAY_KEY, &key.0),
+                        None => secrets.delete(crate::secrets::RELAY_KEY),
+                    };
+                    if result.is_err() {
+                        log::warn!("could not save the relay access key");
+                    }
+                    out.send(Event::RelayKeySaved {
+                        set,
+                        ok: result.is_ok(),
+                    });
+                });
+            }
             Command::Relay(relay) => {
                 self.relay = relay.as_deref().and_then(realtime::normalize_relay);
                 if relay.is_some() && self.relay.is_none() {
@@ -611,7 +629,13 @@ impl Worker {
             .to_owned();
         let out = self.out.clone();
         let internal = self.internal.clone();
-        tokio::spawn(push_loop(graph, me, relay, out, internal, stopped));
+        let secrets = Arc::clone(&self.secrets);
+        let key = tokio::task::spawn_blocking(move || secrets.read(crate::secrets::RELAY_KEY))
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .flatten();
+        tokio::spawn(push_loop(graph, me, relay, key, out, internal, stopped));
     }
 
     async fn stop_push(&mut self) {
@@ -1677,6 +1701,7 @@ async fn push_loop(
     graph: Arc<Graph>,
     me: String,
     relay: String,
+    key: Option<String>,
     out: Outbox,
     internal: mpsc::UnboundedSender<Internal>,
     mut stop: watch::Receiver<bool>,
@@ -1688,13 +1713,23 @@ async fn push_loop(
         let channel = auth::random_token(32);
         let client_state = auth::random_token(24);
         let failure = 'session: {
-            let socket =
-                match tokio_tungstenite::connect_async(realtime::websocket_url(&relay, &channel))
-                    .await
+            let Some(request) = realtime::websocket_request(&relay, &channel, key.as_deref())
+            else {
+                break 'session "the relay address or access key is not valid".to_owned();
+            };
+            let socket = match tokio_tungstenite::connect_async(request).await {
+                Ok((socket, _)) => socket,
+                Err(tokio_tungstenite::tungstenite::Error::Http(response))
+                    if response.status() == 401 =>
                 {
-                    Ok((socket, _)) => socket,
-                    Err(_) => break 'session "the relay could not be reached".to_owned(),
-                };
+                    break 'session if key.is_some() {
+                        "the relay did not accept the access key".to_owned()
+                    } else {
+                        "the relay needs an access key".to_owned()
+                    };
+                }
+                Err(_) => break 'session "the relay could not be reached".to_owned(),
+            };
             let (mut sink, mut stream) = socket.split();
             let subscription = match graph
                 .subscribe_chat_messages(

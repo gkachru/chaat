@@ -13,6 +13,11 @@
 //!   back. Graph then posts notifications there, and the relay hands each body
 //!   to the channel's WebSocket and answers `202 Accepted` at once.
 //!
+//! With an access key (`CHAAT_RELAY_KEY`), only clients that send it in the
+//! `X-Chaat-Relay-Key` header may open a WebSocket. Graph's routes stay open:
+//! Graph cannot send the key, and a forged notification only makes one
+//! client fetch from Graph again.
+//!
 //! Chaat subscribes without resource data, so notifications carry only IDs
 //! (chat and message), never message content. Chaat fetches the content
 //! itself from Graph. The relay keeps nothing on disk and forgets a channel
@@ -25,7 +30,7 @@ use std::time::Duration;
 use axum::Router;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
-use axum::http::{StatusCode, header};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use serde::Deserialize;
@@ -37,6 +42,10 @@ const BODY_LIMIT: usize = 512 * 1024;
 const QUEUE: usize = 256;
 /// Clients only send pings, so their messages are tiny.
 const CLIENT_MESSAGE_LIMIT: usize = 4 * 1024;
+/// The header Chaat sends the access key in.
+pub const KEY_HEADER: &str = "x-chaat-relay-key";
+/// Shorter keys are too easy to guess.
+pub const MIN_KEY_LEN: usize = 16;
 
 /// How many clients a relay serves at once, and how long a silent one keeps
 /// its channel.
@@ -62,6 +71,8 @@ impl Default for Limits {
 pub struct Relay {
     channels: Arc<Mutex<HashMap<String, mpsc::Sender<String>>>>,
     limits: Limits,
+    /// Clients must present this to connect, when set.
+    key: Option<Arc<str>>,
 }
 
 impl Relay {
@@ -69,7 +80,28 @@ impl Relay {
         Self {
             channels: Arc::default(),
             limits,
+            key: None,
         }
+    }
+
+    /// Requires clients to present `key`. Keys shorter than [`MIN_KEY_LEN`]
+    /// are refused.
+    pub fn with_key(mut self, key: &str) -> Result<Self, &'static str> {
+        if key.len() < MIN_KEY_LEN {
+            return Err("the access key must be at least 16 characters");
+        }
+        if !key.bytes().all(|b| b.is_ascii_graphic()) {
+            return Err("the access key may only use visible ASCII characters");
+        }
+        self.key = Some(key.into());
+        Ok(self)
+    }
+
+    fn admits(&self, headers: &HeaderMap) -> bool {
+        let Some(key) = &self.key else { return true };
+        headers
+            .get(KEY_HEADER)
+            .is_some_and(|given| same_secret(given.as_bytes(), key.as_bytes()))
     }
 
     pub fn connected(&self) -> usize {
@@ -91,6 +123,15 @@ pub fn router(relay: Relay) -> Router {
         .with_state(relay)
 }
 
+/// Compares without stopping at the first difference, so response times say
+/// nothing about how much of a guess was right.
+fn same_secret(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |diff, (x, y)| diff | (x ^ y)) == 0
+}
+
 /// Channels are Chaat's random tokens: long, URL-safe, nothing else.
 fn valid_channel(channel: &str) -> bool {
     (32..=128).contains(&channel.len())
@@ -103,9 +144,14 @@ async fn connect(
     ws: WebSocketUpgrade,
     Path(channel): Path<String>,
     State(relay): State<Relay>,
+    headers: HeaderMap,
 ) -> Response {
     if !valid_channel(&channel) {
         return StatusCode::BAD_REQUEST.into_response();
+    }
+    if !relay.admits(&headers) {
+        log::info!("refused a client without the access key");
+        return StatusCode::UNAUTHORIZED.into_response();
     }
     let full = {
         let channels = relay.channels.lock().unwrap_or_else(|p| p.into_inner());
@@ -374,5 +420,87 @@ mod tests {
         wait_for(&relay, 1).await;
         let _ = socket.send(Frame::Text("x".repeat(64 * 1024).into())).await;
         wait_for(&relay, 0).await;
+    }
+
+    const KEY: &str = "0123456789abcdef-key";
+
+    fn keyed_request(
+        host: &str,
+        key: Option<&str>,
+    ) -> tokio_tungstenite::tungstenite::http::Request<()> {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        let mut request = format!("ws://{host}/ws/{CHANNEL}")
+            .into_client_request()
+            .unwrap();
+        if let Some(key) = key {
+            request
+                .headers_mut()
+                .insert(KEY_HEADER, key.parse().unwrap());
+        }
+        request
+    }
+
+    async fn status_of(request: tokio_tungstenite::tungstenite::http::Request<()>) -> u16 {
+        match tokio_tungstenite::connect_async(request).await {
+            Ok((_, response)) => response.status().as_u16(),
+            Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+                response.status().as_u16()
+            }
+            Err(error) => panic!("unexpected error: {error}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_keyed_relay_admits_only_clients_with_the_key() {
+        let relay = Relay::default().with_key(KEY).unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let host = format!("127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let app = router(relay.clone());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        assert_eq!(status_of(keyed_request(&host, None)).await, 401);
+        assert_eq!(
+            status_of(keyed_request(&host, Some("0123456789abcdef-kez"))).await,
+            401
+        );
+        assert_eq!(status_of(keyed_request(&host, Some("short"))).await, 401);
+        assert_eq!(relay.connected(), 0);
+        assert_eq!(status_of(keyed_request(&host, Some(KEY))).await, 101);
+
+        // Graph cannot send the key; its routes stay open.
+        let validation = reqwest::Client::new()
+            .post(format!("http://{host}/graph/{CHANNEL}?validationToken=t"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(validation.status(), 200);
+        let notification = reqwest::Client::new()
+            .post(format!("http://{host}/lifecycle/{CHANNEL}"))
+            .body("{}")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(notification.status(), 202);
+    }
+
+    #[tokio::test]
+    async fn a_relay_without_a_key_ignores_the_header() {
+        let (host, _) = start().await;
+        assert_eq!(status_of(keyed_request(&host, None)).await, 101);
+        assert_eq!(status_of(keyed_request(&host, Some(KEY))).await, 101);
+    }
+
+    #[test]
+    fn weak_keys_are_refused() {
+        assert!(Relay::default().with_key("short").is_err());
+        assert!(
+            Relay::default()
+                .with_key("0123456789abcdef with space")
+                .is_err()
+        );
+        assert!(Relay::default().with_key(KEY).is_ok());
+        assert!(same_secret(b"abc", b"abc"));
+        assert!(!same_secret(b"abc", b"abd"));
+        assert!(!same_secret(b"abc", b"abcd"));
     }
 }

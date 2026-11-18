@@ -501,6 +501,9 @@ pub struct App {
     pub form_client_id: String,
     pub form_tenant: String,
     pub form_relay: String,
+    /// The relay access key being typed. Cleared once saved; never written
+    /// to the settings file.
+    pub form_relay_key: String,
     pub form_status: String,
 
     pub palette: Palette,
@@ -600,6 +603,7 @@ impl App {
             update_receipt: None,
             form_tenant: settings.tenant.clone(),
             form_relay: settings.relay_url.clone().unwrap_or_default(),
+            form_relay_key: String::new(),
             form_status: String::new(),
             dirs,
             settings,
@@ -657,6 +661,19 @@ impl App {
         self.start_account(index);
         self.sync_call_browser();
         index
+    }
+
+    /// Tells every account's backend which relay to use; each reads the
+    /// access key from the credential store when it connects.
+    fn send_relay(&self) {
+        if self.demo {
+            return;
+        }
+        for account in &self.accounts {
+            account
+                .backend
+                .send(Command::Relay(self.settings.relay_url.clone()));
+        }
     }
 
     fn start_account(&mut self, index: usize) {
@@ -1173,6 +1190,22 @@ impl App {
             Event::Reachable(reachable) => self.unreachable = !reachable,
             Event::Error(text) => self.toast(ToastKind::Error, text),
             Event::Push(status) => self.push = status,
+            Event::RelayKeySaved { set, ok } => {
+                if !ok {
+                    self.toast(
+                        ToastKind::Error,
+                        "The access key could not be saved in the system's credential store.",
+                    );
+                    return;
+                }
+                self.settings.relay_key_set = set;
+                self.mark_settings_dirty();
+                if set {
+                    self.form_relay_key.clear();
+                }
+                // Reconnect every account with the new key.
+                self.send_relay();
+            }
         }
     }
 
@@ -2031,12 +2064,25 @@ impl App {
                 }
                 self.settings.relay_url = (!url.is_empty()).then_some(url);
                 self.mark_settings_dirty();
+                self.send_relay();
+            }
+            Action::SetRelayKey(key) => {
+                let key = key.map(|key| key.trim().to_owned());
+                if key
+                    .as_deref()
+                    .is_some_and(|key| !crate::realtime::valid_relay_key(key))
+                {
+                    self.toast(
+                        ToastKind::Error,
+                        "The access key must be at least 16 characters, without spaces.",
+                    );
+                    return;
+                }
+                // The service backend owns the credential store write, so
+                // accounts never write the shared entry at the same time.
                 if !self.demo {
-                    for account in &self.accounts {
-                        account
-                            .backend
-                            .send(Command::Relay(self.settings.relay_url.clone()));
-                    }
+                    self.service
+                        .send(Command::SaveRelayKey(key.map(crate::realtime::RelayKey)));
                 }
             }
             Action::TogglePerfOverlay => {
@@ -2821,6 +2867,59 @@ mod tests {
         );
         assert!(app.conversations[&chat].restore_history_anchor);
         assert_eq!(app.conversations[&chat].messages[0].id, "earlier");
+    }
+
+    #[test]
+    fn relay_keys_are_saved_by_the_service_and_reconnect_every_account() {
+        let (mut app, mut account_commands) = app();
+        let (service, mut service_commands) = Backend::recording();
+        app.service = service;
+        app.settings.relay_url = Some("https://relay.example.com".into());
+        let ctx = egui::Context::default();
+
+        // Too short: refused here, nothing stored.
+        app.apply(Action::SetRelayKey(Some("short".into())), &ctx);
+        assert!(service_commands.try_recv().is_err());
+        assert_eq!(app.toasts.last().unwrap().kind, ToastKind::Error);
+
+        app.form_relay_key = " office-relay-key-0123 ".into();
+        app.apply(Action::SetRelayKey(Some(app.form_relay_key.clone())), &ctx);
+        match service_commands.try_recv().unwrap() {
+            Command::SaveRelayKey(Some(key)) => assert_eq!(key.0, "office-relay-key-0123"),
+            other => panic!("unexpected {other:?}"),
+        }
+        // Accounts reconnect only once the key is stored.
+        assert!(account_commands.try_recv().is_err());
+        app.handle(
+            Event::RelayKeySaved {
+                set: true,
+                ok: true,
+            },
+            &ctx,
+        );
+        assert!(app.settings.relay_key_set);
+        assert!(app.form_relay_key.is_empty());
+        assert!(matches!(
+            account_commands.try_recv().unwrap(),
+            Command::Relay(Some(url)) if url == "https://relay.example.com"
+        ));
+
+        // A failed store write changes nothing and says so.
+        app.apply(Action::SetRelayKey(None), &ctx);
+        assert!(matches!(
+            service_commands.try_recv().unwrap(),
+            Command::SaveRelayKey(None)
+        ));
+        app.handle(
+            Event::RelayKeySaved {
+                set: false,
+                ok: false,
+            },
+            &ctx,
+        );
+        assert!(app.settings.relay_key_set);
+        assert!(account_commands.try_recv().is_err());
+        assert_eq!(app.toasts.last().unwrap().kind, ToastKind::Error);
     }
 
     #[test]

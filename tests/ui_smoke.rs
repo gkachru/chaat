@@ -260,6 +260,63 @@ fn search_fields_keep_their_layout_when_typing_and_clearing() {
 }
 
 #[test]
+fn the_relay_access_key_is_masked_and_never_shown_once_saved() {
+    let texts = |h: &Harness| -> Vec<String> {
+        painted_shapes(h)
+            .into_iter()
+            .filter_map(|shape| match shape {
+                egui::epaint::Shape::Text(text) => Some(text.galley.job.text.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    let scrolled = |h: &mut Harness| {
+        h.frame_with(vec![
+            egui::Event::PointerMoved(egui::pos2(640.0, 400.0)),
+            egui::Event::MouseWheel {
+                phase: egui::TouchPhase::Move,
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, -2000.0),
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]);
+        h.frames(30);
+    };
+    for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+        let mut h = Harness::new();
+        h.app.settings.theme = theme;
+        h.app.demo = false;
+        h.app.form_relay_key = "office-relay-key-0123".into();
+        h.act(Action::OpenSettings);
+        scrolled(&mut h);
+        let painted = texts(&h);
+        assert!(
+            !painted.iter().any(|text| text.contains("office-relay-key")),
+            "the typed key is masked"
+        );
+        assert!(
+            painted
+                .iter()
+                .any(|text| text.chars().count() == 21 && text.chars().all(|c| c == '•')),
+            "the key field shows one bullet per character"
+        );
+        assert!(!painted.iter().any(|text| text.contains("Access key saved")));
+
+        h.app.form_relay_key.clear();
+        h.app.settings.relay_key_set = true;
+        scrolled(&mut h);
+        let painted = texts(&h);
+        assert!(painted.iter().any(|text| text.contains("Access key saved")));
+        assert!(
+            !painted
+                .iter()
+                .any(|text| text == "Access key, if the relay needs one"),
+            "no key field while one is saved"
+        );
+    }
+}
+
+#[test]
 fn settings_fields_have_padding_in_both_themes_and_widths() {
     for width in [720.0, 1280.0] {
         for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
@@ -289,6 +346,7 @@ fn settings_fields_have_padding_in_both_themes_and_widths() {
             };
             for value in [
                 "https://relay.example.com",
+                "Access key, if the relay needs one",
                 &h.app.form_client_id,
                 &h.app.form_tenant,
             ] {

@@ -65,13 +65,13 @@ account already open is retired.
 | `html.rs` | Teams HTML → `RichText` (a tolerant tokenizer, no browser engine) and composer markdown → HTML |
 | `backend.rs`, `backend/worker.rs` | The runtime thread, `Command`/`Event`, and the worker's tasks |
 | `auth/` | Entra ID: PKCE authorize URL, loopback listener, token endpoint (code, refresh, device code), `Session` with refresh-token rotation |
-| `secrets.rs` | Refresh tokens in the OS credential store (`keyring-core` with each platform's native store) |
+| `secrets.rs` | Refresh tokens and the relay access key in the OS credential store (`keyring-core` with each platform's native store) |
 | `graph/` | Graph client (token only to the Graph origin, 401 refresh, `Retry-After`), endpoints (`api.rs`; OneDrive uploads and sharing in `files.rs`; people, new chats and your own presence in `people.rs`), JSON shapes (`types.rs`), translation (`convert.rs`) |
 | `store.rs` | Per-account SQLite cache with FTS5 search |
 | `sync.rs` | Fetch policy (no polling; dedupe repeated requests) |
 | `calling/` | Calls in Teams on the web: finding Edge and Chrome and starting their app windows (`browser.rs`), docking geometry (`dock.rs`), the call session behind the call bar (`session.rs`); the app side is in `app/calls.rs` ([calling.md](calling.md)) |
 | `realtime.rs` | Push updates: relay WebSocket, Graph subscription lifecycle, notification parsing (experimental) |
-| `relay/` (crate `chaat-relay`, binary `chaat-relay`) | The self-hostable relay: validation handshake and forwarding of Graph notifications |
+| `relay/` (crate `chaat-relay`, binary `chaat-relay`) | The self-hostable relay: validation handshake, forwarding of Graph notifications, optional client access key |
 | `theme.rs` | Palettes (fastframe-theme compatible), visuals, type scale, Lucide icon table |
 | `platform.rs` | App icon rasterization, tray item, single-instance slot |
 | `notify.rs` | Desktop notifications |
@@ -86,6 +86,7 @@ account already open is retired.
 | Account record (name, granted scopes; no tokens) | `accounts/<account>/account.json` |
 | Signed-in accounts, in order | `settings.json`, `accounts` |
 | Refresh token | OS credential store, service `app.chaat.Chaat` (on Windows, split across entries when longer than one holds) |
+| Push relay access key (shared by all accounts; kept on sign-out) | OS credential store, `relay-key`; `settings.json` records only `relay_key_set` |
 | Logs (no message contents, tokens or URLs with queries) | state folder, `chaat.log` (the previous run in `chaat.log.1`), `panic.log` |
 
 Signing out deletes that account's refresh token and folder.

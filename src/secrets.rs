@@ -27,6 +27,9 @@ pub trait SecretStore: Send + Sync {
     fn delete(&self, key: &str) -> Result<(), SecretError>;
 }
 
+/// The push relay's access key (docs/realtime.md). One for all accounts.
+pub const RELAY_KEY: &str = "relay-key";
+
 /// The refresh token's key for one account.
 pub fn refresh_key(account: &str) -> String {
     format!("refresh-token:{account}")

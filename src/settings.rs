@@ -50,6 +50,9 @@ pub struct Settings {
     pub window: Option<WindowGeometry>,
     /// A chaat-relay for push updates (experimental), `https://…`.
     pub relay_url: Option<String>,
+    /// Whether the relay's access key is in the credential store. The key
+    /// itself never goes in this file.
+    pub relay_key_set: bool,
     pub calls: CallSettings,
     /// Check GitHub once a day and download verified app updates.
     pub automatic_updates: bool,
@@ -118,6 +121,7 @@ impl Default for Settings {
             custom_titlebar: true,
             window: None,
             relay_url: None,
+            relay_key_set: false,
             calls: CallSettings::default(),
             automatic_updates: true,
             last_update_check: 0,

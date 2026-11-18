@@ -58,7 +58,8 @@ How it works:
 1. You run `chaat-relay` (in this repository, `relay/`) on a public HTTPS
    hostname and enter its URL in **Settings → Push updates**.
 2. Chaat opens a WebSocket to `{relay}/ws/{channel}`, with a random channel
-   per run.
+   per run. If you saved an access key, it goes in the `X-Chaat-Relay-Key`
+   header.
 3. Chaat subscribes to Graph change notifications for all of your chat
    messages: `POST /subscriptions` on `/users/{id}/chats/getAllMessages`,
    delegated `Chat.Read` (covered by `Chat.ReadWrite`), delivered to
@@ -121,6 +122,32 @@ Safeguards, so one relay can serve many people:
   networks don't hold channels.
 - Clients may send messages of at most 4 KiB (they only ping). Graph's
   posts may be at most 512 KiB.
+
+### Access key
+
+A relay shared by an office should require an access key, so only people
+you gave it to can take connection slots. Limits by IP address don't work
+there: everyone behind the office network shares a few addresses.
+
+```sh
+export CHAAT_RELAY_KEY="$(openssl rand -base64 32)"
+./target/release/chaat-relay --listen 127.0.0.1:8787
+```
+
+- The key comes from the environment, not an argument, because arguments
+  show in process lists. It must be at least 16 visible ASCII characters.
+  Without it, the relay logs a warning and lets anyone connect.
+- Each person enters the key under the relay URL in **Settings → Push
+  updates**. Chaat keeps it in the OS credential store, never in the
+  settings file, and sends it only in the `X-Chaat-Relay-Key` header of the
+  WebSocket request, never in a URL, so proxies don't log it.
+- A missing or wrong key gets `401`; Chaat shows "the relay needs an access
+  key" or "the relay did not accept the access key".
+- Graph's routes (`/graph`, `/lifecycle`) need no key: Graph cannot send one,
+  and a forged notification can only make one client fetch from Graph again,
+  and only if the sender knows that client's random channel.
+- To change the key, restart the relay with the new one and tell everyone;
+  clients with the old key are refused until they update it.
 
 ### Limits
 

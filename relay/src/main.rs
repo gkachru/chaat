@@ -47,7 +47,8 @@ async fn main() {
             },
             "--help" | "-h" => {
                 println!(
-                    "chaat-relay [--listen 127.0.0.1:8787] [--max-clients 1000] [--licenses]\nForwards Microsoft Graph change notifications to Chaat. Put it behind HTTPS."
+                    "chaat-relay [--listen 127.0.0.1:8787] [--max-clients 1000] [--licenses]\nForwards Microsoft Graph change notifications to Chaat. Put it behind HTTPS.
+Set CHAAT_RELAY_KEY to require an access key from clients."
                 );
                 return;
             }
@@ -68,7 +69,22 @@ async fn main() {
         "chaat-relay listening on {listen}, at most {} clients",
         limits.max_clients
     );
-    let app = chaat_relay::router(chaat_relay::Relay::new(limits));
+    let mut relay = chaat_relay::Relay::new(limits);
+    // From the environment, not an argument: arguments show in process lists.
+    match std::env::var("CHAAT_RELAY_KEY") {
+        Ok(key) if !key.is_empty() => match relay.with_key(&key) {
+            Ok(keyed) => {
+                relay = keyed;
+                log::info!("clients must present the access key");
+            }
+            Err(reason) => {
+                eprintln!("CHAAT_RELAY_KEY: {reason}");
+                std::process::exit(2);
+            }
+        },
+        _ => log::warn!("no CHAAT_RELAY_KEY: anyone who can reach the relay may connect"),
+    }
+    let app = chaat_relay::router(relay);
     let shutdown = async {
         let _ = tokio::signal::ctrl_c().await;
     };

@@ -603,6 +603,8 @@ pub enum Action {
     SetCustomTitlebar(bool),
     /// The push relay's URL; empty turns push off.
     SetRelay(String),
+    /// The relay's access key; `None` removes it.
+    SetRelayKey(Option<String>),
     TogglePerfOverlay,
     Refresh,
     DismissToast(u64),
