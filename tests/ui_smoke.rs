@@ -1523,7 +1523,7 @@ fn joining_a_meeting_follows_it_beside_its_chat() {
     h.app.section = Section::Calendar;
     h.act(Action::JoinMeeting(url.clone()));
     let call = h.app.call.clone().expect("a call session");
-    assert_eq!(call.title(), "Design review: Wren 0.2");
+    assert_eq!(call.title(), "Design review: Chaat 0.2");
     let chat = ConversationId::Chat("19:meeting_demo-design-review@thread.v2".into());
     assert_eq!(call.chat.as_ref(), Some(&chat), "the meeting chat is found");
     assert_eq!(h.app.open.as_ref(), Some(&chat));

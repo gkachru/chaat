@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- Chaat icon: a chat bubble shaped like a bowl of chaat. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FDBA3B"/>
+      <stop offset="1" stop-color="#EA6A12"/>
+    </linearGradient>
+  </defs>
+  <rect x="72" y="72" width="880" height="880" rx="210" fill="url(#bg)"/>
+  <g transform="translate(0 -36)">
+  <path d="M262 486C272 372 410 300 512 300C614 300 752 372 762 486Z" fill="#8A3417"/>
+  <circle cx="420" cy="404" r="26" fill="#D7263D"/>
+  <circle cx="598" cy="392" r="26" fill="#D7263D"/>
+  <circle cx="530" cy="446" r="26" fill="#D7263D"/>
+  <circle cx="676" cy="452" r="26" fill="#D7263D"/>
+  <circle cx="468" cy="362" r="22" fill="#3E9B4F"/>
+  <circle cx="648" cy="420" r="22" fill="#3E9B4F"/>
+  <circle cx="350" cy="452" r="22" fill="#3E9B4F"/>
+  <circle cx="560" cy="372" r="22" fill="#3E9B4F"/>
+  <circle cx="380" cy="410" r="15" fill="#FFD45C"/>
+  <circle cx="512" cy="400" r="15" fill="#FFD45C"/>
+  <circle cx="622" cy="352" r="15" fill="#FFD45C"/>
+  <circle cx="455" cy="455" r="15" fill="#FFD45C"/>
+  <circle cx="712" cy="470" r="15" fill="#FFD45C"/>
+  <circle cx="300" cy="474" r="15" fill="#FFD45C"/>
+  <path d="M232 500H792A280 280 0 0 1 560 776L318 858L380 747A280 280 0 0 1 232 500Z" fill="#FFF7EA"/>
+  <circle cx="412" cy="610" r="34" fill="#EA6A12"/>
+  <circle cx="512" cy="610" r="34" fill="#EA6A12"/>
+  <circle cx="612" cy="610" r="34" fill="#EA6A12"/>
+  </g>
+</svg>

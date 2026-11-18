@@ -3,6 +3,8 @@
 Latest recorded measurements: offline fixtures on 15 October 2026 and a
 signed-in session after restart on 16 October. See the
 [raw results](performance-data/latest.json) for source revisions and samples.
+These were taken before the rename to Chaat; the offline figures used the
+demo mode the app had then, which is now only test data.
 
 ## Native release builds on macOS
 
@@ -68,11 +70,11 @@ Tests run the same views without a display or account.
 ## Measuring
 
 ```sh
-cargo build --locked --release --bin wren --example perf_probe
+cargo build --locked --release --bin chaat --example perf_probe
 CODESIGN_IDENTITY=- \
-packaging/macos/bundle.sh target/release/wren target/Wren.app 0.1.0
-open -W -n --stdout /tmp/wren-startup.txt target/Wren.app --args --demo --measure-startup
-open -n target/Wren.app --args --demo
+packaging/macos/bundle.sh target/release/chaat target/Chaat.app 0.1.0
+open -W -n --stdout /tmp/chaat-startup.txt target/Chaat.app --args --measure-startup
+open -n target/Chaat.app
 # After settling, inspect this bundle's PID with footprint, vmmap and top.
 
 cargo run --locked --release --example perf_probe -- \

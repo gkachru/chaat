@@ -543,8 +543,6 @@ pub enum Action {
     /// Asks for an extra scope (incremental consent), such as channel
     /// message reading.
     RequestScope(&'static str),
-    StartDemo,
-    LeaveDemo,
     SaveAppRegistration {
         client_id: String,
         tenant: String,

@@ -48,7 +48,7 @@ jobs:
       - if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libgl1-mesa-dev
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --locked --release --target ${{ matrix.target }} --bin wren
+      - run: cargo build --locked --release --target ${{ matrix.target }} --bin chaat
       - name: Import persistent macOS signing identity
         if: runner.os == 'macOS'
         env:
@@ -68,7 +68,7 @@ jobs:
         env:
           RELEASE_TAG: ${{ github.ref_name }}
           RELEASE_TARGET: ${{ matrix.target }}
-        run: packaging/copy-notices.sh "dist/wren-$RELEASE_TAG-$RELEASE_TARGET"
+        run: packaging/copy-notices.sh "dist/chaat-$RELEASE_TAG-$RELEASE_TARGET"
       - name: Package Windows portable app
         if: runner.os == 'Windows'
         shell: pwsh
@@ -76,8 +76,8 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
           RELEASE_TARGET: ${{ matrix.target }}
         run: |
-          $name = "wren-$env:RELEASE_TAG-$env:RELEASE_TARGET"
-          Copy-Item "target/$env:RELEASE_TARGET/release/wren.exe", packaging/wren-portable.txt "dist/$name/"
+          $name = "chaat-$env:RELEASE_TAG-$env:RELEASE_TARGET"
+          Copy-Item "target/$env:RELEASE_TARGET/release/chaat.exe", packaging/chaat-portable.txt "dist/$name/"
           Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip"
       - name: Remove macOS signing keychain
         if: always() && runner.os == 'macOS' && env.CODESIGN_KEYCHAIN != ''
@@ -110,7 +110,7 @@ jobs:
         run: |
           test -n "$UPDATE_SIGNING_KEY"
           umask 077
-          key="$RUNNER_TEMP/wren-signing.pem"
+          key="$RUNNER_TEMP/chaat-signing.pem"
           trap 'rm -f "$key"' EXIT
           printf '%s\n' "$UPDATE_SIGNING_KEY" > "$key"
           openssl pkey -in "$key" -pubout -outform DER | tail -c 32 | od -An -v -tx1 | tr -d ' \n' > "$RUNNER_TEMP/public-key.hex"
@@ -118,8 +118,8 @@ jobs:
           mkdir -p dist
           find packages -type f -exec cp '{}' dist/ \;
           cd dist
-          sha256sum wren-* > checksums.txt
+          sha256sum chaat-* > checksums.txt
           openssl pkeyutl -sign -rawin -inkey "$key" -in checksums.txt -out checksums.txt.sig
           flags=()
           case "$RELEASE_TAG" in *-*) flags+=(--prerelease);; esac
-          gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --draft --generate-notes "${flags[@]}" wren-* checksums.txt checksums.txt.sig
+          gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --draft --generate-notes "${flags[@]}" chaat-* checksums.txt checksums.txt.sig

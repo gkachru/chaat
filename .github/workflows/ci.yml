@@ -64,15 +64,9 @@ jobs:
           CODESIGN_IDENTITY: '-'
         run: |
           cargo build --locked --release
-          packaging/macos/bundle.sh target/release/wren "$RUNNER_TEMP/Wren.app" 0.1.0
-          open -W -n "$RUNNER_TEMP/Wren.app" --args --screenshot "$RUNNER_TEMP/wren-demo.png" --page chats --size 1280x800 --screenshot-delay 3000
-          test -s "$RUNNER_TEMP/wren-demo.png"
-      - name: macOS screenshot
-        if: runner.os == 'macOS'
-        uses: actions/upload-artifact@v7
-        with:
-          name: macos-screenshot
-          path: ${{ runner.temp }}/wren-demo.png
+          packaging/macos/bundle.sh target/release/chaat "$RUNNER_TEMP/Chaat.app" 0.1.0
+          open -W -n --stdout "$RUNNER_TEMP/startup.txt" "$RUNNER_TEMP/Chaat.app" --args --measure-startup
+          grep -q "first frame after" "$RUNNER_TEMP/startup.txt"
 
   signing:
     name: macOS signing identity regression
@@ -112,9 +106,9 @@ jobs:
       - name: Check notices in the standalone binary
         shell: bash
         run: |
-          target/release/wren --licenses > "$RUNNER_TEMP/wren-licenses.txt"
-          grep -q 'licenses/fonts/Hack-Regular.txt' "$RUNNER_TEMP/wren-licenses.txt"
-          grep -q 'Microsoft Corporation' "$RUNNER_TEMP/wren-licenses.txt"
+          target/release/chaat --licenses > "$RUNNER_TEMP/chaat-licenses.txt"
+          grep -q 'licenses/fonts/Hack-Regular.txt' "$RUNNER_TEMP/chaat-licenses.txt"
+          grep -q 'Microsoft Corporation' "$RUNNER_TEMP/chaat-licenses.txt"
       - name: Package macOS app
         if: runner.os == 'macOS'
         # Disposable development artifact, not an update release.
@@ -122,40 +116,40 @@ jobs:
           CODESIGN_IDENTITY: '-'
         run: |
           mkdir -p dist
-          packaging/macos/bundle.sh target/release/wren dist/Wren.app "$(cargo pkgid | sed 's/.*[#@]//')"
-          ditto -c -k --keepParent dist/Wren.app dist/wren-${{ matrix.name }}.zip
+          packaging/macos/bundle.sh target/release/chaat dist/Chaat.app "$(cargo pkgid | sed 's/.*[#@]//')"
+          ditto -c -k --keepParent dist/Chaat.app dist/chaat-${{ matrix.name }}.zip
       - name: Build the relay (Linux)
         if: runner.os == 'Linux'
         run: |
           cargo build --locked --release -p wren-relay
-          target/release/wren-relay --licenses > "$RUNNER_TEMP/relay-licenses.txt"
-          cmp "$RUNNER_TEMP/wren-licenses.txt" "$RUNNER_TEMP/relay-licenses.txt"
+          target/release/chaat-relay --licenses > "$RUNNER_TEMP/relay-licenses.txt"
+          cmp "$RUNNER_TEMP/chaat-licenses.txt" "$RUNNER_TEMP/relay-licenses.txt"
           mkdir -p dist/relay
-          cp target/release/wren-relay dist/relay/
+          cp target/release/chaat-relay dist/relay/
           packaging/copy-notices.sh dist/relay
-          tar -C dist/relay -czf dist/wren-relay-${{ matrix.name }}.tar.gz .
+          tar -C dist/relay -czf dist/chaat-relay-${{ matrix.name }}.tar.gz .
       - name: Package Linux tarball
         if: runner.os == 'Linux'
         run: |
-          mkdir -p dist/wren
-          cp target/release/wren packaging/linux/wren.desktop packaging/linux/wren-256.png packaging/linux/install.sh packaging/icons/wren.svg dist/wren/
-          packaging/copy-notices.sh dist/wren
-          tar -C dist -czf dist/wren-${{ matrix.name }}.tar.gz wren
+          mkdir -p dist/chaat
+          cp target/release/chaat packaging/linux/chaat.desktop packaging/linux/chaat-256.png packaging/linux/install.sh packaging/icons/chaat.svg dist/chaat/
+          packaging/copy-notices.sh dist/chaat
+          tar -C dist -czf dist/chaat-${{ matrix.name }}.tar.gz chaat
       - name: Copy Windows notices
         if: runner.os == 'Windows'
         shell: bash
-        run: packaging/copy-notices.sh dist/wren
+        run: packaging/copy-notices.sh dist/chaat
       - name: Package Windows zip
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force dist/wren | Out-Null
-          Copy-Item target/release/wren.exe dist/wren/
-          Compress-Archive -Path dist/wren/* -DestinationPath dist/wren-${{ matrix.name }}.zip
+          New-Item -ItemType Directory -Force dist/chaat | Out-Null
+          Copy-Item target/release/chaat.exe dist/chaat/
+          Compress-Archive -Path dist/chaat/* -DestinationPath dist/chaat-${{ matrix.name }}.zip
       - uses: actions/upload-artifact@v7
         with:
-          name: wren-${{ matrix.name }}
+          name: chaat-${{ matrix.name }}
           path: |
-            dist/wren-${{ matrix.name }}.*
-            dist/wren-relay-${{ matrix.name }}.*
+            dist/chaat-${{ matrix.name }}.*
+            dist/chaat-relay-${{ matrix.name }}.*
           retention-days: 14

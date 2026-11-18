@@ -96,13 +96,13 @@ async fn answer(mut stream: TcpStream, expected_state: &str) -> Result<Option<St
             "200 OK",
             page(
                 "You're signed in",
-                "You can close this tab and return to Wren.",
+                "You can close this tab and return to Chaat.",
             ),
         ),
         Redirect::Refused(reason) => ("400 Bad Request", page("Sign-in did not finish", reason)),
         Redirect::Ignored => (
             "404 Not Found",
-            page("Nothing here", "This tab is not part of a Wren sign-in."),
+            page("Nothing here", "This tab is not part of a Chaat sign-in."),
         ),
     };
     let response = format!(
@@ -171,12 +171,12 @@ fn refusal_text(error: &str, description: Option<&str>) -> String {
         .and_then(|d| d.split_whitespace().find(|w| w.starts_with("AADSTS")))
         .map(|c| c.trim_end_matches(':').to_owned());
     let base = match (error, code.as_deref()) {
-        (_, Some("AADSTS65001")) => "Wren has not been granted the permissions it asked for.".to_owned(),
+        (_, Some("AADSTS65001")) => "Chaat has not been granted the permissions it asked for.".to_owned(),
         (_, Some("AADSTS90094" | "AADSTS90095")) => {
-            "An administrator must approve Wren's permissions for your organisation.".to_owned()
+            "An administrator must approve Chaat's permissions for your organisation.".to_owned()
         }
         (_, Some("AADSTS700016")) => {
-            "The application (client) ID was not found in this tenant. Check Wren's app registration settings.".to_owned()
+            "The application (client) ID was not found in this tenant. Check Chaat's app registration settings.".to_owned()
         }
         (_, Some("AADSTS50059" | "AADSTS50194" | "AADSTS90002")) => {
             "Microsoft could not find the app registration for this tenant. For a single-tenant registration, set the tenant to your tenant ID or domain.".to_owned()
@@ -185,7 +185,7 @@ fn refusal_text(error: &str, description: Option<&str>) -> String {
             "The app registration has no matching redirect URI. Add http://localhost under 'Mobile and desktop applications'.".to_owned()
         }
         ("access_denied", _) => "Sign-in was cancelled or declined.".to_owned(),
-        ("consent_required", _) => "Consent is required for Wren's permissions.".to_owned(),
+        ("consent_required", _) => "Consent is required for Chaat's permissions.".to_owned(),
         _ => "Microsoft refused the sign-in.".to_owned(),
     };
     match code {
@@ -196,7 +196,7 @@ fn refusal_text(error: &str, description: Option<&str>) -> String {
 
 fn page(title: &str, text: &str) -> String {
     format!(
-        "<!doctype html><html><head><meta charset=\"utf-8\"><title>Wren</title><style>body{{font:16px system-ui,sans-serif;display:grid;place-items:center;height:100vh;margin:0;background:#17181b;color:#e8e8ea}}main{{text-align:center}}h1{{font-size:20px;font-weight:600}}p{{color:#a4a6ad}}</style></head><body><main><h1>{}</h1><p>{}</p></main></body></html>",
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>Chaat</title><style>body{{font:16px system-ui,sans-serif;display:grid;place-items:center;height:100vh;margin:0;background:#17181b;color:#e8e8ea}}main{{text-align:center}}h1{{font-size:20px;font-weight:600}}p{{color:#a4a6ad}}</style></head><body><main><h1>{}</h1><p>{}</p></main></body></html>",
         crate::html::escape(title),
         crate::html::escape(text)
     )

@@ -129,7 +129,7 @@ fn content(app: &mut App, ui: &mut egui::Ui, docked: bool) {
             "Restore",
             Action::DockWindow(false),
             false,
-            "Give Wren its full window back",
+            "Give Chaat its full window back",
         ));
     } else if !ended && !elsewhere && app.settings.calls.open_in == CallsOpenIn::AppWindow {
         buttons.push((
@@ -137,7 +137,7 @@ fn content(app: &mut App, ui: &mut egui::Ui, docked: bool) {
             "Dock",
             Action::DockWindow(true),
             false,
-            "Move Wren into a narrow panel beside the call",
+            "Move Chaat into a narrow panel beside the call",
         ));
     }
     buttons.push((

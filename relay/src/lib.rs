@@ -52,7 +52,7 @@ impl Relay {
 /// The relay's routes.
 pub fn router(relay: Relay) -> Router {
     Router::new()
-        .route("/", get(|| async { "wren-relay ok\n" }))
+        .route("/", get(|| async { "chaat-relay ok\n" }))
         .route("/ws/{channel}", get(connect))
         .route("/graph/{channel}", post(notification))
         .route("/lifecycle/{channel}", post(notification))

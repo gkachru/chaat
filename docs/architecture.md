@@ -1,6 +1,6 @@
 # Architecture
 
-Wren follows the architecture of [Spotifast](https://github.com/crmne/spotifast)
+Chaat follows the architecture of [Spotifast](https://github.com/crmne/spotifast)
 and [ZapFast](https://github.com/crmne/zapfast). It is one native process with
 a window drawn by egui, a background runtime that does all I/O, and
 one-directional data flow between them.
@@ -28,7 +28,7 @@ one-directional data flow between them.
    runs on the backend's tokio runtime (`src/backend/worker.rs`). The two
    sides exchange `backend::Command` and `backend::Event` over channels. Each
    event wakes the window through `fastframe_shell::Waker`. Nothing repaints
-   without input or an event, so an idle Wren draws no frames.
+   without input or an event, so an idle Chaat draws no frames.
 3. **Optimistic and cached.** A sent message, a reaction or an edit appears
    at once, marked *Sending* where it matters. Graph's answer reconciles it.
    Every list opens from the SQLite cache before the network answers.
@@ -58,9 +58,9 @@ account already open is retired.
 
 | Module | Role |
 |---|---|
-| `main.rs` | CLI, logging, single instance, tray, the eframe window and the window shell (`fastframe-shell`), screenshot mode |
+| `main.rs` | CLI, logging, single instance, tray, the eframe window and the window shell (`fastframe-shell`) |
 | `app.rs` | `App` state, event handling, the action reducer, optimistic sends, message merging |
-| `model.rs` | Wren's own types (`Chat`, `Message`, `Team`, `Channel`, `Meeting`, `Presence`, `Action`, …) |
+| `model.rs` | Chaat's own types (`Chat`, `Message`, `Team`, `Channel`, `Meeting`, `Presence`, `Action`, …) |
 | `ui/` | Views: rail, chat list, teams tree, conversation (virtualized history, composer, threads), calendar, calls, welcome/sign-in, overlays (⌘K switcher, settings, shortcuts), widgets, rich text |
 | `html.rs` | Teams HTML → `RichText` (a tolerant tokenizer, no browser engine) and composer markdown → HTML |
 | `backend.rs`, `backend/worker.rs` | The runtime thread, `Command`/`Event`, and the worker's tasks |
@@ -71,22 +71,22 @@ account already open is retired.
 | `sync.rs` | Fetch policy (no polling; dedupe repeated requests) |
 | `calling/` | Calls in Teams on the web: finding Edge and Chrome and starting their app windows (`browser.rs`), docking geometry (`dock.rs`), the call session behind the call bar (`session.rs`); the app side is in `app/calls.rs` ([calling.md](calling.md)) |
 | `realtime.rs` | Push updates: relay WebSocket, Graph subscription lifecycle, notification parsing (experimental) |
-| `relay/` (crate `wren-relay`) | The self-hostable relay: validation handshake and forwarding of Graph notifications |
+| `relay/` (crate `wren-relay`, binary `chaat-relay`) | The self-hostable relay: validation handshake and forwarding of Graph notifications |
 | `theme.rs` | Palettes (fastframe-theme compatible), visuals, type scale, Lucide icon table |
 | `platform.rs` | App icon rasterization, tray item, single-instance slot |
 | `notify.rs` | Desktop notifications |
-| `demo.rs` | Offline sample data |
+| `demo.rs` | Offline sample data for the interface tests (not reachable from the app) |
 
 ## Data on disk
 
 | What | Where |
 |---|---|
 | Settings (no secrets) | config folder, `settings.json` |
-| Cache: chats, messages, teams, channels, meetings, photos | data folder, `accounts/<account>/wren.db` (0600) |
+| Cache: chats, messages, teams, channels, meetings, photos | data folder, `accounts/<account>/chaat.db` (0600) |
 | Account record (name, granted scopes; no tokens) | `accounts/<account>/account.json` |
 | Signed-in accounts, in order | `settings.json`, `accounts` |
-| Refresh token | OS credential store, service `app.wren.Wren` (on Windows, split across entries when longer than one holds) |
-| Logs (no message contents, tokens or URLs with queries) | state folder, `wren.log` (the previous run in `wren.log.1`), `panic.log` |
+| Refresh token | OS credential store, service `app.chaat.Chaat` (on Windows, split across entries when longer than one holds) |
+| Logs (no message contents, tokens or URLs with queries) | state folder, `chaat.log` (the previous run in `chaat.log.1`), `panic.log` |
 
 Signing out deletes that account's refresh token and folder.
 

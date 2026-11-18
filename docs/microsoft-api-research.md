@@ -1,10 +1,10 @@
 # Microsoft API reference
 
-API constraints used by Wren 0.1. [Feature support](features.md) records what
+API constraints used by Chaat 0.1. [Feature support](features.md) records what
 is implemented and verified; [permissions](permissions.md) maps features to
 scopes, and [app registration](azure-app-registration.md) covers setup.
 
-Wren uses documented Microsoft Graph APIs with delegated permissions and
+Chaat uses documented Microsoft Graph APIs with delegated permissions and
 Entra ID sign-in. It never impersonates Microsoft's clients or calls
 undocumented Teams endpoints.
 
@@ -14,14 +14,14 @@ undocumented Teams endpoints.
   and no client secret. Device code is a fallback and may be blocked by
   Conditional Access. See Microsoft's [code flow][code-flow] and
   [device code flow][device-flow].
-- Wren registers `http://localhost` and binds a free port. Entra ignores
+- Chaat registers `http://localhost` and binds a free port. Entra ignores
   the port when matching localhost redirect URIs. See [redirect rules][redirect].
-- Wren's Teams features require work or school accounts. The
+- Chaat's Teams features require work or school accounts. The
   [chat API][chats] does not support delegated personal Microsoft accounts.
 - Permission flags alone do not guarantee user consent. The
   [Microsoft-managed policy][consent] restricts chat, calendar and meeting
   scopes, and [publisher verification][publisher] affects multi-tenant apps.
-  Expect an administrator to approve Wren in many tenants. Request optional
+  Expect an administrator to approve Chaat in many tenants. Request optional
   scopes only when their feature is used.
 
 ## Graph behavior
@@ -32,10 +32,10 @@ undocumented Teams endpoints.
 | [Chat messages][messages] | Maximum page size 50; descending creation/modification order, with matching date filters; follow paging links |
 | Notes to yourself | Not in Microsoft's documentation. The chat id is `48:notes`; `GET /chats/48:notes` answers 400 and the chat is missing from `/me/chats`, but `GET`/`POST /chats/48:notes/messages` work with Chat.ReadWrite (tested 18 Nov 2026). It does not exist until the person first writes to themselves (404). Treat it as fragile: a failure must leave the rest of the chat list alone |
 | [Message export][export] | `GET /chats/getAllMessages` is application-only; it is not the delegated notification resource below |
-| [Channel messages][channels] | Wren uses `ChannelMessage.Read.All` for reads, requested incrementally with admin consent |
-| [Presence sessions][presence] | Sessions expire; Wren updates its session only on input and clears it at sign-out or exit |
-| [Calendar events][calendar] | Use `onlineMeeting.joinUrl` for meeting links; Wren requests `Calendars.Read` |
-| [Meeting lookup][meeting] | Lookup by `JoinWebUrl` can return the meeting chat; Wren requests `OnlineMeetings.Read` on first use |
+| [Channel messages][channels] | Chaat uses `ChannelMessage.Read.All` for reads, requested incrementally with admin consent |
+| [Presence sessions][presence] | Sessions expire; Chaat updates its session only on input and clears it at sign-out or exit |
+| [Calendar events][calendar] | Use `onlineMeeting.joinUrl` for meeting links; Chaat requests `Calendars.Read` |
+| [Meeting lookup][meeting] | Lookup by `JoinWebUrl` can return the meeting chat; Chaat requests `OnlineMeetings.Read` on first use |
 | [Message search][search] | Delegated search returns messages the person sent or received, with a subset of properties and `from`/`size` paging |
 | [Resumable uploads][uploads] | Upload chunks to the returned `uploadUrl` without the Graph Authorization header |
 
@@ -47,11 +47,11 @@ or send Graph credentials outside the Graph origin.
 
 Microsoft's [Teams polling requirements][polling] allow repeated fetches
 when a person visits or refreshes a view, but restrict unattended polling
-for changes to once a day. Wren adds no polling timers; every fetch goes
+for changes to once a day. Chaat adds no polling timers; every fetch goes
 through `sync::Freshness::claim`. Refresh messages by date range where supported.
 
 [Chat notifications][notifications] support delegated subscriptions for
-`/users/{id}/chats/getAllMessages` and individual chats. Wren uses a
+`/users/{id}/chats/getAllMessages` and individual chats. Chaat uses a
 self-hosted HTTPS relay and requests no resource data, so the relay receives
 no message content. Respect subscription expiration and lifecycle notices.
 The implementation and deployment steps are in [realtime.md](realtime.md).
@@ -65,7 +65,7 @@ patterns rather than relying on a copied limit table.
 
 Graph's [create-call API][calls] supports bots, not delegated user calling.
 Microsoft's [Teams interop pricing][pricing] distinguishes calls in its own
-Teams clients from billable ACS usage. Wren opens documented
+Teams clients from billable ACS usage. Chaat opens documented
 [Teams deep links][deep-links] and keeps media and call controls in Teams.
 See [calling.md](calling.md) for current behavior and remaining live checks.
 
@@ -77,7 +77,7 @@ minimum permissions/data, privacy, user terms, and limits on use. Provide
 the privacy statement and revocation instructions in [privacy.md](privacy.md)
 and [permissions.md](permissions.md).
 
-Follow Microsoft's [trademark guidelines][trademarks]. Wren is independent
+Follow Microsoft's [trademark guidelines][trademarks]. Chaat is independent
 and works with Microsoft Teams; names and artwork must not imply endorsement.
 
 [code-flow]: https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-auth-code-flow

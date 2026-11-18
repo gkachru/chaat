@@ -260,7 +260,7 @@ pub fn populate(app: &mut App) {
             "Perfect. Let's keep the scope exactly that.",
         );
         b.react("❤️", &[ME]);
-        b.text(ME, t + 9 * MINUTE, "Startup is now measured from launch to the first frame. To see it yourself:\n```\nRUST_LOG=wren=info wren --demo\n```");
+        b.text(ME, t + 9 * MINUTE, "Startup is now measured from launch to the first frame. To see it yourself:\n```\nRUST_LOG=wren=info chaat --measure-startup\n```");
         b.react("🎉", &["u-ada", ME]);
         b.text("u-ada", now - 14 * MINUTE, "Amazing. I'll write the release notes; can you check https://github.com/crmne/spotifast for how they phrase theirs?");
         let preview_at = now - 14 * MINUTE;
@@ -361,7 +361,7 @@ pub fn populate(app: &mut App) {
         let mut c = chat(
             id,
             ChatKind::Meeting,
-            Some("Design review: Wren 0.2"),
+            Some("Design review: Chaat 0.2"),
             &[ME, "u-margaret", "u-hedy", "u-ada"],
             Some(now),
         );
@@ -399,7 +399,7 @@ pub fn populate(app: &mut App) {
         let id = "19:demo-oncall@thread.v2";
         let mut b = Builder::new(ConversationId::Chat(id.into()));
         b.text("u-alan", now - 3 * DAY, "Handing over on-call. Quiet week.");
-        b.text("u-hedy", now - 2 * MINUTE, "Token refresh failures spiking for one tenant (AADSTS50173). Probably a password reset wave; Wren asks those users to sign in again.").importance_high = true;
+        b.text("u-hedy", now - 2 * MINUTE, "Token refresh failures spiking for one tenant (AADSTS50173). Probably a password reset wave; Chaat asks those users to sign in again.").importance_high = true;
         let mut c = chat(
             id,
             ChatKind::Group,
@@ -450,7 +450,7 @@ pub fn populate(app: &mut App) {
 
     // Teams and channels.
     let teams = vec![
-        team("t-eng", "Engineering", "Builds and runs Wren"),
+        team("t-eng", "Engineering", "Builds and runs Chaat"),
         team("t-product", "Product", "Roadmap, design and research"),
         team("t-all", "Contoso", "Company-wide news"),
     ];
@@ -565,7 +565,7 @@ pub fn populate(app: &mut App) {
         if let Some(m) = b.messages.last_mut() {
             m.replies = replies;
         }
-        b.text("u-hedy", now - 40 * MINUTE, "Calling: Graph can't place calls as a user, so Wren opens Teams through the documented deep links. Details in docs/calling.md.");
+        b.text("u-hedy", now - 40 * MINUTE, "Calling: Graph can't place calls as a user, so Chaat opens Teams through the documented deep links. Details in docs/calling.md.");
         conversations.push(b.finish());
     }
     {
@@ -578,7 +578,7 @@ pub fn populate(app: &mut App) {
         b.text(
             "u-dorothy",
             now - DAY,
-            "New laptops arrive Monday. Install Wren from the internal share.",
+            "New laptops arrive Monday. Install Chaat from the internal share.",
         );
         conversations.push(b.finish());
     }
@@ -597,7 +597,7 @@ pub fn populate(app: &mut App) {
             team: "t-product".into(),
             channel: "19:product-design@thread.tacv2".into(),
         });
-        let root = b.text("u-margaret", now - DAY, "Design principles for Wren:\n1. The conversation is the workspace\n2. Every view opens from cache instantly\n3. Dense, calm, readable");
+        let root = b.text("u-margaret", now - DAY, "Design principles for Chaat:\n1. The conversation is the workspace\n2. Every view opens from cache instantly\n3. Dense, calm, readable");
         root.subject = Some("Principles".into());
         b.react("❤️", &[ME, "u-hedy"]);
         conversations.push(b.finish());
@@ -616,7 +616,7 @@ pub fn populate(app: &mut App) {
         ),
         meeting(
             "demo-design-review",
-            "Design review: Wren 0.2",
+            "Design review: Chaat 0.2",
             now + 25 * MINUTE,
             45,
             Some("Teams"),

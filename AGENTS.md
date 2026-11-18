@@ -1,19 +1,19 @@
-# Wren agent guide
+# Chaat agent guide
 
-Wren is a small native client for Microsoft Teams: Rust, egui (glow), tokio,
+Chaat is a small native client for Microsoft Teams: Rust, egui (glow), tokio,
 Microsoft Graph. These rules are for coding agents and contributors. Follow
 `CONTRIBUTING.md` for the checks.
 
 ## Product boundaries
 
-- Keep Wren a small native client. No browser engine (no Electron, Tauri or
-  embedded web views) for the interface, no telemetry, no Wren-operated
+- Keep Chaat a small native client. No browser engine (no Electron, Tauri or
+  embedded web views) for the interface, no telemetry, no Chaat-operated
   backend that sees user data.
 - **Official, documented Microsoft APIs only.** Microsoft Graph with
   delegated permissions, and Entra ID OAuth (authorization code + PKCE,
   device code as a fallback). Never call undocumented Teams endpoints
   (`*.teams.microsoft.com/api/...`, chatsvc, trouter), never reuse Microsoft's
-  first-party client IDs, never present Wren as Microsoft's client.
+  first-party client IDs, never present Chaat as Microsoft's client.
 - **Never poll Graph.** Microsoft's Teams API rules allow fetching when the
   person looks and at most one unattended refresh a day. Polling violates
   the Microsoft APIs Terms of Use. Every fetch goes through
@@ -33,11 +33,11 @@ Microsoft Graph. These rules are for coding agents and contributors. Follow
   a Teams feature, check it there. If the API gained a capability, update
   those pages in the same change.
 - Calls run in Microsoft's own clients (Teams on the web by default), never
-  in Wren: Microsoft's licence covers call media only there. Wren starts the
+  in Chaat: Microsoft's licence covers call media only there. Chaat starts the
   browser from an argument list with Teams links only (`calling::browser`),
   and never shares tokens with Teams on the web (docs/calling.md).
 - Don't use Microsoft or Teams logos or names in a way that implies
-  endorsement. Wren "works with Microsoft Teams".
+  endorsement. Chaat "works with Microsoft Teams".
 - Don't broaden a task into adjacent features or a general refactor.
 
 ## Architecture
@@ -89,8 +89,8 @@ Microsoft Graph. These rules are for coding agents and contributors. Follow
   points). Avoid new sizes; each one grows the glyph atlas.
 - New icons are 24 px Lucide outlines in white (`assets/icons/`), listed in
   the `icons!` table in `theme.rs`. Prefer fastframe's shared Lucide icons.
-- Check changes in both themes and at narrow and wide sizes:
-  `wren --screenshot out.png --page chats,light --size 1280x800`.
+- Check changes in both themes and at narrow and wide sizes, in
+  `tests/ui_smoke.rs` (the sample data in `src/demo.rs` is for tests only).
 
 ## Definition of done
 

@@ -121,7 +121,7 @@ pub(super) async fn run(
 ) {
     let (internal_tx, mut internal_rx) = mpsc::unbounded_channel();
     let http = reqwest::Client::builder()
-        .user_agent(concat!("Wren/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("Chaat/", env!("CARGO_PKG_VERSION")))
         .gzip(true)
         .connect_timeout(Duration::from_secs(15))
         .pool_idle_timeout(Duration::from_secs(90))
@@ -447,7 +447,7 @@ impl Worker {
             Err(error) => {
                 self.out.send(Event::Auth(AuthStatus::Expired {
                     username: record.username.clone(),
-                    reason: format!("Wren could not read its saved session: {error}."),
+                    reason: format!("Chaat could not read its saved session: {error}."),
                 }));
                 self.expired = Some(record);
             }
@@ -580,7 +580,7 @@ impl Worker {
         }));
         if !saved {
             self.out.send(Event::Error(
-                "Wren could not save this sign-in to the system credential store, so it will ask you to sign in again next time.".into(),
+                "Chaat could not save this sign-in to the system credential store, so it will ask you to sign in again next time.".into(),
             ));
         }
         self.restart_push().await;

@@ -1,10 +1,10 @@
 # Permissions
 
-Wren uses **delegated** Microsoft Graph permissions only. It acts as the
+Chaat uses **delegated** Microsoft Graph permissions only. It acts as the
 signed-in person, and can never see more than that person can in Teams.
 It asks for the smallest set that covers its features. Permissions that only
 one feature needs are requested the first time someone uses that feature
-(incremental consent): Wren explains why, then opens Microsoft's consent page.
+(incremental consent): Chaat explains why, then opens Microsoft's consent page.
 `ChannelMessage.Read.All`, the one that needs admin consent, is requested when
 someone opens a channel.
 
@@ -40,7 +40,7 @@ It does not request `Files.ReadWrite` or create a OneDrive sharing link.
 
 ## Revoking access
 
-Sign out in Wren (**Settings → Sign out**) to delete the refresh token from
+Sign out in Chaat (**Settings → Sign out**) to delete the refresh token from
 the OS credential store and remove the account's local cache. To revoke the
 grant at Microsoft, open [My Apps](https://myapps.microsoft.com) or ask an
 administrator to remove the app's consent in Entra ID.

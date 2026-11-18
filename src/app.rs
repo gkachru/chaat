@@ -317,7 +317,7 @@ impl Account {
             unread_kept: None,
             drafts: HashMap::new(),
             push: crate::realtime::PushStatus::Off,
-            browser_profile: format!("Wren {}", crate::auth::random_token(4)),
+            browser_profile: format!("Chaat {}", crate::auth::random_token(4)),
             pending_sends: HashMap::new(),
             next_local: 0,
             reminded: HashSet::new(),
@@ -1780,8 +1780,6 @@ impl App {
                     );
                 }
             }
-            Action::StartDemo => self.switch_demo(true),
-            Action::LeaveDemo => self.switch_demo(false),
             Action::SaveAppRegistration { client_id, tenant } => {
                 let client_id = client_id.trim().to_owned();
                 if !crate::settings::is_guid(&client_id) {
@@ -2448,32 +2446,6 @@ impl App {
         hits.sort_by_key(|hit| std::cmp::Reverse(hit.at));
         hits.truncate(50);
         hits
-    }
-
-    fn switch_demo(&mut self, demo: bool) {
-        if self.demo == demo {
-            return;
-        }
-        self.overlay = None;
-        // Retire every account's backend off the interface thread.
-        while !self.accounts.is_empty() {
-            self.retire_slot(0);
-        }
-        self.active = 0;
-        self.demo = demo;
-        if demo {
-            self.accounts.push(Account::new(Backend::detached().0));
-            crate::demo::populate(self);
-        } else {
-            let ids = self.settings.accounts.clone();
-            if ids.is_empty() {
-                self.add_slot(None);
-            }
-            for id in ids {
-                self.add_slot(Some(id));
-            }
-            self.active = 0;
-        }
     }
 
     pub fn shutdown(&mut self) {

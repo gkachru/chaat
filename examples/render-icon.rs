@@ -1,8 +1,8 @@
-//! Writes Wren's icon from packaging/icons/wren.svg:
+//! Writes Chaat's icon from packaging/icons/chaat.svg:
 //!
 //! ```sh
 //! cargo run --example render-icon -- out.png 1024   # one PNG
-//! cargo run --example render-icon -- wren.ico       # Windows icon, 16 to 256 px
+//! cargo run --example render-icon -- chaat.ico      # Windows icon, 16 to 256 px
 //! ```
 //!
 //! Packaging uses it for the macOS .icns, the Windows .ico and the Linux
@@ -45,7 +45,7 @@ fn ico(sizes: &[usize]) -> Vec<u8> {
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    let path = args.next().unwrap_or_else(|| "wren.png".into());
+    let path = args.next().unwrap_or_else(|| "chaat.png".into());
     let bytes = if path.ends_with(".ico") {
         ico(&[16, 24, 32, 48, 64, 128, 256])
     } else {

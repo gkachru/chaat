@@ -1,10 +1,10 @@
-//! Where Wren keeps its files.
+//! Where Chaat keeps its files.
 //!
 //! | What | Where |
 //! | --- | --- |
 //! | `settings.json` | the config folder |
-//! | `accounts/<id>/wren.db` (cache of chats, messages, teams) | the data folder |
-//! | `wren.log`, `wren.log.1` (the previous run), `panic.log` | the state folder |
+//! | `accounts/<id>/chaat.db` (cache of chats, messages, teams) | the data folder |
+//! | `chaat.log`, `chaat.log.1` (the previous run), `panic.log` | the state folder |
 //!
 //! Every folder is created private to the user (0700 on Unix). Each account
 //! has its own database; nothing is shared between accounts.
@@ -20,7 +20,7 @@ pub struct AppDirs {
 
 impl AppDirs {
     pub fn discover() -> Self {
-        match directories::ProjectDirs::from("", "", "Wren") {
+        match directories::ProjectDirs::from("", "", "Chaat") {
             Some(dirs) => Self {
                 config: dirs.config_dir().to_path_buf(),
                 data: dirs.data_local_dir().to_path_buf(),
@@ -29,7 +29,7 @@ impl AppDirs {
                     .unwrap_or_else(|| dirs.data_local_dir())
                     .to_path_buf(),
             },
-            None => Self::under(&std::env::temp_dir().join("wren")),
+            None => Self::under(&std::env::temp_dir().join("chaat")),
         }
     }
 
@@ -54,13 +54,13 @@ impl AppDirs {
     }
 
     pub fn log_file(&self) -> PathBuf {
-        self.state.join("wren.log")
+        self.state.join("chaat.log")
     }
 
     /// The last run's log, kept so a problem seen before a restart can still
     /// be read.
     pub fn previous_log_file(&self) -> PathBuf {
-        self.state.join("wren.log.1")
+        self.state.join("chaat.log.1")
     }
 
     /// Moves the last run's log aside before this run starts a new one.
@@ -79,7 +79,7 @@ impl AppDirs {
     }
 
     pub fn database(&self, account: &str) -> PathBuf {
-        self.account(account).join("wren.db")
+        self.account(account).join("chaat.db")
     }
 }
 

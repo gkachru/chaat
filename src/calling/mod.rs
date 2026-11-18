@@ -147,7 +147,7 @@ pub const CAPABILITIES: &[Capability] = &[
     Capability {
         name: "Join meetings",
         status: "Works",
-        detail: "Opens the meeting in Teams on the web, in its own window beside Wren, with the meeting chat in Wren.",
+        detail: "Opens the meeting in Teams on the web, in its own window beside Chaat, with the meeting chat in Chaat.",
     },
     Capability {
         name: "Start audio or video calls",
@@ -157,7 +157,7 @@ pub const CAPABILITIES: &[Capability] = &[
     Capability {
         name: "Call status",
         status: "Works",
-        detail: "Wren follows your presence: the call bar shows when you are in a call and closes when it ends.",
+        detail: "Chaat follows your presence: the call bar shows when you are in a call and closes when it ends.",
     },
     Capability {
         name: "Incoming calls",
@@ -165,7 +165,7 @@ pub const CAPABILITIES: &[Capability] = &[
         detail: "Only Microsoft's clients ring. Keep Teams on the web or Teams mobile signed in to be reachable.",
     },
     Capability {
-        name: "Audio and video inside Wren's window",
+        name: "Audio and video inside Chaat's window",
         status: "Not possible",
         detail: "Free only in Microsoft's own clients: the Teams licence does not cover third-party apps, and Azure Communication Services bills per minute.",
     },

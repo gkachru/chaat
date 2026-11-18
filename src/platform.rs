@@ -4,7 +4,7 @@ use std::sync::mpsc;
 
 use crate::backend::Waker;
 
-const ICON_SVG: &[u8] = include_bytes!("../packaging/icons/wren.svg");
+const ICON_SVG: &[u8] = include_bytes!("../packaging/icons/chaat.svg");
 const TRAY_SVG: &[u8] = include_bytes!("../packaging/icons/tray-template.svg");
 
 /// Rasterizes an SVG into square RGBA pixels.
@@ -60,16 +60,16 @@ pub fn tray(waker: &Waker) -> Option<fastframe_tray::Tray> {
     let waker = waker.clone();
     Tray::spawn(
         Config {
-            id: "wren",
-            title: "Wren".into(),
+            id: "chaat",
+            title: "Chaat".into(),
             icon: icon_rgba,
             template_icon: Some(tray_template_rgba),
             themed_icon: true,
             menu_on_click: false,
             menu: vec![
-                MenuItem::action("show", "Open Wren"),
+                MenuItem::action("show", "Open Chaat"),
                 MenuItem::Separator,
-                MenuItem::action("quit", "Quit Wren"),
+                MenuItem::action("quit", "Quit Chaat"),
             ],
         },
         move || waker.wake(),
@@ -85,7 +85,7 @@ pub fn single_instance(
     use fastframe_instance::{Claim, Slot};
     let (sender, receiver) = mpsc::channel();
     let waker = waker.clone();
-    let slot = Slot::new("app.wren.Wren");
+    let slot = Slot::new("app.chaat.Chaat");
     match slot.claim("show", move |request| {
         let _ = sender.send(request.to_owned());
         waker.wake();

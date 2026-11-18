@@ -1,4 +1,4 @@
-//! `wren-relay [--listen 127.0.0.1:8787]`
+//! `chaat-relay [--listen 127.0.0.1:8787]`
 //!
 //! Serve it over HTTPS on a public hostname (Caddy, nginx, a Cloudflare
 //! tunnel, a cloud load balancer); Graph only posts to `https://` URLs.
@@ -13,7 +13,7 @@ mod notices;
 async fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let mut args = std::env::args().skip(1);
-    let mut listen: SocketAddr = std::env::var("WREN_RELAY_LISTEN")
+    let mut listen: SocketAddr = std::env::var("CHAAT_RELAY_LISTEN")
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 8787)));
@@ -32,7 +32,7 @@ async fn main() {
             },
             "--help" | "-h" => {
                 println!(
-                    "wren-relay [--listen 127.0.0.1:8787] [--licenses]\nForwards Microsoft Graph change notifications to Wren. Put it behind HTTPS."
+                    "chaat-relay [--listen 127.0.0.1:8787] [--licenses]\nForwards Microsoft Graph change notifications to Chaat. Put it behind HTTPS."
                 );
                 return;
             }
@@ -49,7 +49,7 @@ async fn main() {
             std::process::exit(1);
         }
     };
-    log::info!("wren-relay listening on {listen}");
+    log::info!("chaat-relay listening on {listen}");
     let app = wren_relay::router(wren_relay::Relay::default());
     let shutdown = async {
         let _ = tokio::signal::ctrl_c().await;
@@ -58,7 +58,7 @@ async fn main() {
         .with_graceful_shutdown(shutdown)
         .await
     {
-        eprintln!("wren-relay stopped: {error}");
+        eprintln!("chaat-relay stopped: {error}");
         std::process::exit(1);
     }
 }

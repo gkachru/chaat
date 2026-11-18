@@ -1,8 +1,8 @@
 # macOS signing and Keychain prompts
 
-Wren saves each account's refresh token in the login Keychain under
-`app.wren.Wren`. macOS decides whether to allow access by checking the app's
-code-signing designated requirement. Wren keeps using the same service and
+Chaat saves each account's refresh token in the login Keychain under
+`app.chaat.Chaat`. macOS decides whether to allow access by checking the app's
+code-signing designated requirement. Chaat keeps using the same service and
 account keys when its signing identity changes, so existing tokens remain
 available after approval.
 
@@ -28,21 +28,21 @@ builds.
 ```sh
 export CODESIGN_IDENTITY='Developer ID Application: Your Name (TEAMID)'
 cargo build --locked --release
-packaging/macos/bundle.sh target/release/wren Wren.app 0.1.0
+packaging/macos/bundle.sh target/release/chaat Chaat.app 0.1.0
 ```
 
 The bundler stops before changing the output if no identity is supplied.
 `CODESIGN_KEYCHAIN` optionally selects a separate signing keychain, as used
 by the [release workflow](updates.md). The signature keeps the default
 certificate-bound designated requirement. Do not replace it with a requirement
-that checks only Wren's bundle identifier, or allow every application to read
-Wren's Keychain entries.
+that checks only Chaat's bundle identifier, or allow every application to read
+Chaat's Keychain entries.
 
 When switching an existing installation from ad-hoc signing to a persistent
 identity, the first read of each saved account's token may still prompt.
-Choose **Always Allow** for that signed Wren. Later builds with the same
+Choose **Always Allow** for that signed Chaat. Later builds with the same
 identity retain approval. A locked login Keychain can still require unlocking.
-Wren does not collect the Keychain password or change the account's tokens
+Chaat does not collect the Keychain password or change the account's tokens
 to work around the prompt.
 
 For offline demos and disposable CI artifacts, explicitly set
@@ -53,7 +53,7 @@ lack a persistent signing identity; use the signed bundle for real accounts.
 `packaging/macos/test-signing.sh` builds two different native fixtures, signs
 them with a synthetic certificate, and verifies that each satisfies the same
 certificate-bound requirement. It also verifies that an ad-hoc replacement
-fails that check. The test uses a temporary keychain and no Wren credentials.
+fails that check. The test uses a temporary keychain and no Chaat credentials.
 On disposable GitHub-hosted runners, it temporarily adds the fixture keychain
 to the user search list and restores the original list during cleanup. Local
 and self-hosted runs leave the search list alone. No trust settings are changed.

@@ -81,14 +81,14 @@ fn classify(status: reqwest::StatusCode, body: &str) -> TokenError {
     match (parsed.error.as_str(), code.as_deref()) {
         (_, Some("AADSTS65001" | "AADSTS90094" | "AADSTS90095")) | ("consent_required", _) => {
             TokenError::ConsentRequired(format!(
-                "Consent is needed for Wren's permissions; your administrator may need to approve them{suffix}."
+                "Consent is needed for Chaat's permissions; your administrator may need to approve them{suffix}."
             ))
         }
         (_, Some("AADSTS7000218")) => TokenError::Rejected(format!(
             "The app registration does not allow public client flows. Enable 'Allow public client flows' in its Authentication settings{suffix}."
         )),
         (_, Some("AADSTS700016")) => TokenError::Rejected(format!(
-            "The application (client) ID was not found. Check Wren's app registration settings{suffix}."
+            "The application (client) ID was not found. Check Chaat's app registration settings{suffix}."
         )),
         (_, Some("AADSTS50059" | "AADSTS50194" | "AADSTS90002")) => TokenError::Rejected(format!(
             "Microsoft could not find the app registration for this tenant. For a single-tenant registration, set the tenant to your tenant ID or domain instead of 'organizations'{suffix}."
@@ -97,7 +97,7 @@ fn classify(status: reqwest::StatusCode, body: &str) -> TokenError {
             "Your Microsoft session expired. Sign in again{suffix}."
         )),
         ("invalid_client" | "unauthorized_client", _) => TokenError::Rejected(format!(
-            "Microsoft did not accept Wren's app registration{suffix}."
+            "Microsoft did not accept Chaat's app registration{suffix}."
         )),
         _ if status.is_server_error() => {
             TokenError::Unreachable(format!("server error ({status})"))

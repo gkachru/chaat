@@ -1,7 +1,7 @@
-# Registering Wren with Microsoft Entra ID
+# Registering Chaat with Microsoft Entra ID
 
-Wren signs in through an app registration in your organisation's Microsoft
-Entra ID (formerly Azure AD). Wren ships no shared client ID, for three
+Chaat signs in through an app registration in your organisation's Microsoft
+Entra ID (formerly Azure AD). Chaat ships no shared client ID, for three
 reasons:
 
 - Microsoft counts Teams throttling **per client ID across all tenants**,
@@ -14,16 +14,16 @@ reasons:
 
 The registration takes about five minutes and costs nothing. App
 registrations are part of the free tier of Entra ID that every Microsoft 365
-organisation has, and need no Azure subscription. The Graph calls Wren makes
+organisation has, and need no Azure subscription. The Graph calls Chaat makes
 are not billed either: Microsoft stopped metering the Teams APIs on
-2025-08-25. It needs no client secret, because Wren is a public client using
+2025-08-25. It needs no client secret, because Chaat is a public client using
 PKCE.
 
 ## 1. Create the registration
 
 1. Open the [Entra admin center](https://entra.microsoft.com) and go to
    **Identity → Applications → App registrations → New registration**.
-2. **Name**: `Wren` (or anything your users will recognise on the consent
+2. **Name**: `Chaat` (or anything your users will recognise on the consent
    screen).
 3. **Supported account types**: *Accounts in this organizational directory
    only* (single tenant) is the simplest. Choose *any organizational
@@ -31,7 +31,7 @@ PKCE.
    organisation, such as work and school (see
    [Accounts in several organisations](#accounts-in-several-organisations)).
 4. **Redirect URI**: platform **Public client/native (mobile & desktop)**,
-   value `http://localhost`. Entra ignores the port for `localhost`, so Wren
+   value `http://localhost`. Entra ignores the port for `localhost`, so Chaat
    can listen on any free port.
 5. Select **Register**, then copy the **Application (client) ID** and the
    **Directory (tenant) ID** from the overview page.
@@ -69,22 +69,22 @@ permissions**, add:
 | `ChannelMessage.Read.All` *(optional)* | Reading channel posts | **Yes** |
 
 `openid`, `profile` and `offline_access` are added automatically during
-sign-in. Wren requests the optional permissions only when someone first uses
+sign-in. Chaat requests the optional permissions only when someone first uses
 the feature. Add them here anyway: a tenant that blocks user consent can then
 approve everything at once.
 
 Then select **Grant admin consent for <your organisation>** if you are an
-administrator. Otherwise send your administrator the link Wren shows under
+administrator. Otherwise send your administrator the link Chaat shows under
 **Settings → App registration** (`…/adminconsent?client_id=…`).
 
 [permissions.md](permissions.md) explains each permission and the
 endpoints that use it.
 
-## 4. Point Wren at it
+## 4. Point Chaat at it
 
 Use any of these:
 
-- On Wren's welcome screen, enter the client ID and the tenant, then select
+- On Chaat's welcome screen, enter the client ID and the tenant, then select
   **Save**. For a single-tenant registration (the default above) the tenant
   **must** be your directory (tenant) ID or a verified domain such as
   `contoso.onmicrosoft.com`. `organizations` only works for multi-tenant
@@ -93,29 +93,29 @@ Use any of these:
 - Set them in the environment:
 
   ```sh
-  WREN_CLIENT_ID=00000000-0000-0000-0000-000000000000 WREN_TENANT=contoso.onmicrosoft.com wren
+  CHAAT_CLIENT_ID=00000000-0000-0000-0000-000000000000 CHAAT_TENANT=contoso.onmicrosoft.com chaat
   ```
 
-- Edit `settings.json` in Wren's config folder:
+- Edit `settings.json` in Chaat's config folder:
 
   | Platform | Config folder |
   |---|---|
-  | macOS | `~/Library/Application Support/Wren` |
-  | Windows | `%APPDATA%\Wren\config` |
-  | Linux | `~/.config/wren` |
+  | macOS | `~/Library/Application Support/Chaat` |
+  | Windows | `%APPDATA%\Chaat\config` |
+  | Linux | `~/.config/chaat` |
 
 Then select **Sign in with Microsoft**. Your browser opens Microsoft's sign-in
-page. After you approve, the browser tab says "You're signed in" and Wren
+page. After you approve, the browser tab says "You're signed in" and Chaat
 continues.
 
 ## Accounts in several organisations
 
-Wren uses one registration for all its accounts. To add accounts from more
+Chaat uses one registration for all its accounts. To add accounts from more
 than one organisation, for example a work account and a school account:
 
 - Register the app as multi-tenant (*Accounts in any organizational
   directory*; `--sign-in-audience AzureADMultipleOrgs` with the Azure CLI),
-  in whichever organisation lets you, and set Wren's tenant to
+  in whichever organisation lets you, and set Chaat's tenant to
   `organizations`.
 - Each other organisation decides whether to allow it. To them it is an app
   from another publisher. Most only let their administrator approve that,
@@ -128,7 +128,7 @@ than one organisation, for example a work account and a school account:
 ## With the Azure CLI
 
 ```sh
-az ad app create --display-name Wren \
+az ad app create --display-name Chaat \
   --sign-in-audience AzureADMyOrg \
   --public-client-redirect-uris http://localhost \
   --is-fallback-public-client true
@@ -157,4 +157,4 @@ az ad app permission admin-consent --id $APP
 | AADSTS7000218 | Device code sign-in needs *Allow public client flows*. |
 | AADSTS50173, AADSTS70043 | The session expired (password change, revoked sessions). Sign in again. |
 
-When a saved session no longer works, Wren keeps showing the cached chats with a banner: **Sign in again** opens Microsoft's page already addressed to that account, and a browser still signed in to it finishes without a click. Clicking the account in the status menu does the same.
+When a saved session no longer works, Chaat keeps showing the cached chats with a banner: **Sign in again** opens Microsoft's page already addressed to that account, and a browser still signed in to it finishes without a click. Clicking the account in the status menu does the same.

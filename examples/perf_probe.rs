@@ -346,7 +346,7 @@ fn main() -> eframe::Result<()> {
     let args = Args::parse();
     if args.native {
         eframe::run_native(
-            "Wren performance fixture",
+            "Chaat performance fixture",
             eframe::NativeOptions {
                 viewport: egui::ViewportBuilder::default().with_inner_size([1280.0, 800.0]),
                 persist_window: false,

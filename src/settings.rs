@@ -133,12 +133,12 @@ impl Settings {
             Err(_) => Self::default(),
         };
         // Environment overrides, for development and managed installs.
-        if let Ok(client_id) = std::env::var("WREN_CLIENT_ID")
+        if let Some(client_id) = std::env::var("CHAAT_CLIENT_ID").ok()
             && !client_id.trim().is_empty()
         {
             settings.client_id = client_id.trim().to_owned();
         }
-        if let Ok(tenant) = std::env::var("WREN_TENANT")
+        if let Some(tenant) = std::env::var("CHAAT_TENANT").ok()
             && !tenant.trim().is_empty()
         {
             settings.tenant = tenant.trim().to_owned();
@@ -209,7 +209,9 @@ mod tests {
         };
         settings.save(&path).unwrap();
         // Environment overrides would make this flaky if set in CI.
-        if std::env::var("WREN_CLIENT_ID").is_err() && std::env::var("WREN_TENANT").is_err() {
+        if std::env::var("CHAAT_CLIENT_ID").ok().is_none()
+            && std::env::var("CHAAT_TENANT").ok().is_none()
+        {
             assert_eq!(Settings::load(&path), settings);
         }
     }

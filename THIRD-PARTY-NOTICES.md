@@ -1,6 +1,6 @@
 # Third-party notices
 
-Wren's own code and wren-relay are MIT-licensed (see [LICENSE](LICENSE)).
+Chaat's own code and chaat-relay are MIT-licensed, based on Wren (see [LICENSE](LICENSE)).
 [licenses/dependencies.txt](licenses/dependencies.txt) contains the full
 license texts and copyright notices for the dependencies pinned in
 `Cargo.lock`, covering both workspace packages on all three packaged targets.
@@ -36,8 +36,8 @@ Regenerate the notices after dependency changes with
 `packaging/generate-notices.sh`. It uses cargo-about 0.9.2 and copies the
 supplemental font notices verbatim from the pinned egui source. CI and the
 release workflow reject stale notices. No license generator is needed to
-read the notices or install a binary. `wren --licenses` and
-`wren-relay --licenses` print the complete embedded notice set without opening
+read the notices or install a binary. `chaat --licenses` and
+`chaat-relay --licenses` print the complete embedded notice set without opening
 a window or starting a server. This keeps notices available when an updater
 or administrator copies only the executable.
 
@@ -47,8 +47,8 @@ licenses for consistency; it does not embed the interface fonts or icons.
 Architecture and engineering conventions are inspired by
 [Spotifast](https://github.com/crmne/spotifast) and
 [ZapFast](https://github.com/crmne/zapfast) (both MIT), by Carmine Paolino.
-Wren copies no Spotify- or WhatsApp-specific code.
+Chaat copies no Spotify- or WhatsApp-specific code.
 
 Microsoft, Microsoft Teams, Microsoft 365, Entra and Outlook are trademarks of
-the Microsoft group of companies. Wren is an independent project and is not
+the Microsoft group of companies. Chaat is an independent project and is not
 affiliated with, endorsed by, or sponsored by Microsoft.

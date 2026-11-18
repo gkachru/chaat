@@ -100,11 +100,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             ui.label(egui::RichText::new("Calls and meetings").font(theme::bold(24.0)).color(palette.text));
             ui.add_space(6.0);
             let place = match app.opener() {
-                crate::calling::Opener::AppWindow(browser) => format!("Teams on the web, in a {} window beside Wren", browser.kind.short()),
+                crate::calling::Opener::AppWindow(browser) => format!("Teams on the web, in a {} window beside Chaat", browser.kind.short()),
                 crate::calling::Opener::Browser => "Teams on the web, in your default browser".to_owned(),
                 crate::calling::Opener::TeamsApp => "the Microsoft Teams app".to_owned(),
             };
-            ui.label(egui::RichText::new(format!("Calls and meetings open in {place}. The call itself runs in Microsoft's own client, so it costs nothing extra; Wren shows the meeting chat and follows the call. Change this in Settings.")).color(palette.secondary));
+            ui.label(egui::RichText::new(format!("Calls and meetings open in {place}. The call itself runs in Microsoft's own client, so it costs nothing extra; Chaat shows the meeting chat and follows the call. Change this in Settings.")).color(palette.secondary));
             ui.add_space(18.0);
 
             // Join by link.

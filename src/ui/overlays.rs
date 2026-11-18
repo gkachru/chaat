@@ -488,11 +488,7 @@ fn settings(app: &mut App, ctx: &egui::Context) {
                                 ui.label(egui::RichText::new(username).color(palette.secondary));
                             });
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if app.demo {
-                                    if widgets::secondary_button(ui, &palette, "Leave demo").clicked() {
-                                        actions.push(Action::LeaveDemo);
-                                    }
-                                } else if widgets::secondary_button(ui, &palette, "Sign out").on_hover_text("Signs out and deletes this account's local cache").clicked() {
+                                if !app.demo && widgets::secondary_button(ui, &palette, "Sign out").on_hover_text("Signs out and deletes this account's local cache").clicked() {
                                     actions.push(Action::SignOut);
                                 }
                             });
@@ -506,9 +502,9 @@ fn settings(app: &mut App, ctx: &egui::Context) {
                     let accounts = app.accounts.len();
                     ui.label(
                         egui::RichText::new(if accounts == 1 {
-                            "1 account in Wren".to_owned()
+                            "1 account in Chaat".to_owned()
                         } else {
-                            format!("{accounts} accounts in Wren · switch from your picture or with ⌘⇧A")
+                            format!("{accounts} accounts in Chaat · switch from your picture or with ⌘⇧A")
                         })
                         .font(theme::regular(12.0))
                         .color(palette.dim),
@@ -546,12 +542,12 @@ fn settings(app: &mut App, ctx: &egui::Context) {
                 });
                 let current = match &app.settings.theme {
                     ThemeChoice::Palette(name) => fastframe_theme::display_name(name).to_owned(),
-                    _ => "Wren".to_owned(),
+                    _ => "Chaat".to_owned(),
                 };
                 egui::ComboBox::from_label(egui::RichText::new("Palette").color(palette.secondary))
                     .selected_text(current)
                     .show_ui(ui, |ui| {
-                        if ui.selectable_label(!matches!(app.settings.theme, ThemeChoice::Palette(_)), "Wren").clicked() {
+                        if ui.selectable_label(!matches!(app.settings.theme, ThemeChoice::Palette(_)), "Chaat").clicked() {
                             actions.push(Action::SetTheme(ThemeChoice::System));
                         }
                         for preset in theme::presets() {
@@ -580,8 +576,8 @@ fn settings(app: &mut App, ctx: &egui::Context) {
                 );
                 let mut session = app.settings.presence_session;
                 if ui
-                    .checkbox(&mut session, "Show me as available while I use Wren")
-                    .on_hover_text("Keeps a Microsoft presence session, as a Teams app does: you show Available while you use Wren, and Away a few minutes after you stop. Needs the Presence.ReadWrite permission, asked for the first time you set your status.")
+                    .checkbox(&mut session, "Show me as available while I use Chaat")
+                    .on_hover_text("Keeps a Microsoft presence session, as a Teams app does: you show Available while you use Chaat, and Away a few minutes after you stop. Needs the Presence.ReadWrite permission, asked for the first time you set your status.")
                     .changed()
                 {
                     actions.push(Action::SetPresenceSession(session));
@@ -599,7 +595,7 @@ fn settings(app: &mut App, ctx: &egui::Context) {
                     widgets::section_label(ui, &palette, "Push updates (experimental)");
                     ui.label(
                         egui::RichText::new(
-                            "With a wren-relay you run, Microsoft Graph tells Wren about new messages as they happen, also in the background. Only chat and message IDs pass through the relay.",
+                            "With a chaat-relay you run, Microsoft Graph tells Chaat about new messages as they happen, also in the background. Only chat and message IDs pass through the relay.",
                         )
                         .font(theme::regular(12.0))
                         .color(palette.dim),
@@ -668,7 +664,7 @@ fn settings(app: &mut App, ctx: &egui::Context) {
                     crate::updates::Status::Checking => { ui.label("Checking for updates…"); }
                     crate::updates::Status::Current => { ui.label("You have the latest public release."); }
                     crate::updates::Status::Available { release, reason } => {
-                        ui.label(format!("Wren {} is available.", release.version));
+                        ui.label(format!("Chaat {} is available.", release.version));
                         if let Some(reason) = reason {
                             ui.label(reason);
                         } else if ui.button("Download update").clicked() { actions.push(Action::DownloadUpdate); }
@@ -689,14 +685,14 @@ fn settings(app: &mut App, ctx: &egui::Context) {
                         actions.push(Action::CheckUpdate);
                     }
                     if ui.link("Release notes and downloads").clicked() {
-                        actions.push(Action::OpenUrl("https://github.com/gkachru/wren/releases".into()));
+                        actions.push(Action::OpenUrl("https://github.com/gkachru/chaat/releases".into()));
                     }
                 });
                 ui.add_space(8.0);
                 widgets::section_label(ui, &palette, "About");
                 ui.label(
                     egui::RichText::new(format!(
-                        "Wren {} · MIT licence · no telemetry. Not affiliated with Microsoft.",
+                        "Chaat {} · based on Wren · MIT licence · no telemetry. Not affiliated with Microsoft.",
                         env!("CARGO_PKG_VERSION")
                     ))
                     .color(palette.secondary),
@@ -1004,7 +1000,7 @@ fn status_message(app: &mut App, ctx: &egui::Context) {
             );
             ui.add_space(4.0);
             ui.label(
-                egui::RichText::new("People see it next to your name in Teams and Wren.")
+                egui::RichText::new("People see it next to your name in Teams and Chaat.")
                     .color(palette.secondary),
             );
             ui.add_space(10.0);
@@ -1081,7 +1077,7 @@ fn call_settings(
                     });
                 ui.checkbox(
                     &mut calls.dock,
-                    "Move Wren beside the call window during calls",
+                    "Move Chaat beside the call window during calls",
                 );
                 if app.accounts.len() > 1 || calls.profile_per_account {
                     ui.checkbox(&mut calls.profile_per_account, "A separate browser profile for each account")
@@ -1090,7 +1086,7 @@ fn call_settings(
                 ui.checkbox(
                     &mut calls.sign_out_browser,
                     format!(
-                        "Signing out of Wren also signs {} out of Microsoft",
+                        "Signing out of Chaat also signs {} out of Microsoft",
                         current.short()
                     ),
                 )
@@ -1099,7 +1095,7 @@ fn call_settings(
                 );
                 ui.label(
                     egui::RichText::new(format!(
-                        "Calls run in Teams on the web, Microsoft's own client, so they cost nothing extra. Wren signs in through {} too, so Teams there finds your Microsoft session. To stay signed in, sign in to Teams on the web once and choose \"Stay signed in\".",
+                        "Calls run in Teams on the web, Microsoft's own client, so they cost nothing extra. Chaat signs in through {} too, so Teams there finds your Microsoft session. To stay signed in, sign in to Teams on the web once and choose \"Stay signed in\".",
                         current.short()
                     ))
                     .font(theme::regular(12.0))
@@ -1203,7 +1199,7 @@ fn consent(app: &mut App, ctx: &egui::Context, scope: &'static str) {
             ui.add_space(6.0);
             ui.label(
                 egui::RichText::new(format!(
-                    "Wren asks for Microsoft Graph's {scope} permission only now that you use this. Microsoft's consent page opens in your browser; some organisations need an administrator to approve it."
+                    "Chaat asks for Microsoft Graph's {scope} permission only now that you use this. Microsoft's consent page opens in your browser; some organisations need an administrator to approve it."
                 ))
                 .font(theme::regular(12.0))
                 .color(palette.secondary),

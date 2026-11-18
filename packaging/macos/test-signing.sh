@@ -1,6 +1,6 @@
 #!/bin/bash
 # Offline regression: rebuilds keep the same certificate-bound identity.
-# Only synthetic certificates in a temporary keychain are used. No Wren
+# Only synthetic certificates in a temporary keychain are used. No Chaat
 # accounts, tokens or login-keychain credentials are read.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -51,7 +51,7 @@ distinguished_name = subject
 x509_extensions = extensions
 prompt = no
 [subject]
-CN = Wren signing regression
+CN = Chaat signing regression
 [extensions]
 keyUsage = critical,digitalSignature
 extendedKeyUsage = critical,codeSigning
@@ -73,10 +73,10 @@ fi
 
 # Different Mach-O contents and versions must still satisfy each other's DR.
 for version in 1 2; do
-    app="$work/Wren-$version.app"
+    app="$work/Chaat-$version.app"
     mkdir -p "$app/Contents/MacOS"
     sed "s/__VERSION__/$version.0.0/g" "$here/Info.plist" > "$app/Contents/Info.plist"
-    printf 'int main(void) { return %s; }\n' "$version" | xcrun clang -isysroot "$(xcrun --sdk macosx --show-sdk-path)" -x c - -o "$app/Contents/MacOS/wren"
+    printf 'int main(void) { return %s; }\n' "$version" | xcrun clang -isysroot "$(xcrun --sdk macosx --show-sdk-path)" -x c - -o "$app/Contents/MacOS/chaat"
     if ! codesign --force --timestamp=none --options runtime --keychain "$keychain" --sign "$identity" "$app"; then
         # Only the synthetic fixture keychain is inspected, never real identities.
         security find-identity -p codesigning "$keychain"
@@ -86,16 +86,16 @@ for version in 1 2; do
     codesign --verify --strict "$app"
     codesign -d -r- "$app" 2>&1 | sed -n 's/^designated => /designated => /p' > "$work/requirement-$version"
     test -s "$work/requirement-$version"
-    # A bundle identifier alone would let an unrelated signer impersonate Wren.
+    # A bundle identifier alone would let an unrelated signer impersonate Chaat.
     grep -Eq 'certificate|anchor' "$work/requirement-$version"
 done
 cmp "$work/requirement-1" "$work/requirement-2"
 requirement="$(sed 's/^designated => //' "$work/requirement-1")"
-codesign --verify --strict -R "=$requirement" "$work/Wren-2.app"
+codesign --verify --strict -R "=$requirement" "$work/Chaat-2.app"
 
 # The original ad-hoc fallback must fail that identity check.
-codesign --force --sign - "$work/Wren-2.app"
-if codesign --verify --strict -R "=$requirement" "$work/Wren-2.app" >"$work/adhoc.log" 2>&1; then
+codesign --force --sign - "$work/Chaat-2.app"
+if codesign --verify --strict -R "=$requirement" "$work/Chaat-2.app" >"$work/adhoc.log" 2>&1; then
     echo 'An ad-hoc build unexpectedly satisfied the persistent identity.' >&2
     exit 1
 fi

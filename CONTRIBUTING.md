@@ -14,7 +14,6 @@ architecture rules.
 - Windows: the MSVC toolchain.
 
 ```sh
-cargo run -- --demo        # sample data, no account needed
 cargo run                  # real account (see docs/azure-app-registration.md)
 ```
 
@@ -61,21 +60,6 @@ Keep local environment files, signing keys, account databases, and logs out
 of commits. Sanitised `.env.example` files are allowed. Report suspected
 vulnerabilities through [SECURITY.md](SECURITY.md).
 
-## Screenshots
-
-```sh
-cargo run --release -- --screenshot shot.png --page channel,dark --size 1280x800
-```
-
-Pages: `chats`, `group`, `channel`, `calendar`, `calls`, `switcher`,
-`settings`, `shortcuts`, `signin`, `setup`, `perf`, `images`, `image-preview`.
-The last two show wide and tall pasted images and the preview dialog.
-Add `light` or `dark`.
-Use `--page long-draft,dark` to check a large multiline paste in the composer.
-On macOS, run the bundle (`packaging/macos/bundle.sh`) through
-`open -W -n Wren.app --args …`, because a bare binary launched over SSH
-starts slowly.
-
 Set `CODESIGN_IDENTITY` to the same Developer ID or Apple Development identity
 for every signed-in build. For offline demo screenshots only, set
 `CODESIGN_IDENTITY=-` explicitly. Ad-hoc signatures change identity on rebuild
@@ -83,15 +67,15 @@ and cause recurring Keychain prompts. See [macOS signing](docs/macos-keychain.md
 `packaging/macos/test-signing.sh` checks identity stability on macOS with
 synthetic certificates in a temporary keychain and no account credentials.
 
-Brand artwork lives in `packaging/icons/`: `wren.svg` is the bird-only app
-icon, `tray-template.svg` is the transparent monochrome bird, and
-`wren-wordmark.svg` contains the bird and name. The white wordmark variant
+Brand artwork lives in `packaging/icons/`: `chaat.svg` is the bowl-only app
+icon, `tray-template.svg` is the transparent monochrome bowl, and
+`chaat-wordmark.svg` contains the bowl and name. The white wordmark variant
 supports dark backgrounds and is tinted by the welcome screen's theme.
-After changing the bird artwork, regenerate the checked-in platform icons:
+After changing the artwork, regenerate the checked-in platform icons:
 
 ```sh
-cargo run --locked --example render-icon -- packaging/linux/wren-256.png 256
-cargo run --locked --example render-icon -- packaging/windows/wren.ico
+cargo run --locked --example render-icon -- packaging/linux/chaat-256.png 256
+cargo run --locked --example render-icon -- packaging/windows/chaat.ico
 ```
 
 The macOS bundler generates its icon from the same SVG.

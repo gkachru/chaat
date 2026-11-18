@@ -9,7 +9,7 @@ set -euo pipefail
 : "${GITHUB_ENV:?}"
 
 umask 077
-work="$(mktemp -d "$RUNNER_TEMP/wren-signing.XXXXXX")"
+work="$(mktemp -d "$RUNNER_TEMP/chaat-signing.XXXXXX")"
 certificate="$work/identity.p12"
 keychain="$work/signing.keychain-db"
 ready=0

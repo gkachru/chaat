@@ -13,9 +13,9 @@ pub fn show(title: &str, body: &str) {
         .name("wren-notify".into())
         .spawn(move || {
             let mut notification = notify_rust::Notification::new();
-            notification.summary(&title).body(&body).appname("Wren");
+            notification.summary(&title).body(&body).appname("Chaat");
             #[cfg(target_os = "linux")]
-            notification.icon("wren");
+            notification.icon("chaat");
             if let Err(error) = notification.show() {
                 log::info!("could not show a notification: {error}");
             }
@@ -32,7 +32,7 @@ fn claim_identity() {
         let bundled = std::env::current_exe()
             .map(|path| path.to_string_lossy().contains(".app/Contents/MacOS/"))
             .unwrap_or(false);
-        if bundled && let Err(error) = notify_rust::set_application("app.wren.Wren") {
+        if bundled && let Err(error) = notify_rust::set_application("app.chaat.Chaat") {
             log::info!("notifications keep the default sender: {error}");
         }
     });

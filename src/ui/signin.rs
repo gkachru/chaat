@@ -1,5 +1,4 @@
-//! The welcome screen: connect an app registration, sign in, or explore
-//! the demo. Usable with no Microsoft setup at all.
+//! The welcome screen: connect an app registration and sign in.
 
 use egui::{CornerRadius, Frame, Margin, Stroke, vec2};
 
@@ -10,7 +9,7 @@ use crate::model::Action;
 use crate::theme;
 
 pub const LOGO: &str = "bytes://wren-logo.svg";
-pub const DOCS: &str = "https://github.com/gkachru/wren/blob/main/docs/azure-app-registration.md";
+pub const DOCS: &str = "https://github.com/gkachru/chaat/blob/main/docs/azure-app-registration.md";
 
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let palette = app.palette;
@@ -22,7 +21,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 ui.vertical_centered(|ui| {
                     ui.add_space((ui.available_height() * 0.10).max(48.0));
-                    ui.add(egui::Image::new(LOGO).fit_to_exact_size(vec2(160.0, 121.0)).tint(palette.text).alt_text("Wren"));
+                    ui.add(egui::Image::new(LOGO).fit_to_exact_size(vec2(160.0, 121.0)).tint(palette.text).alt_text("Chaat"));
                     ui.add_space(10.0);
                     ui.label(
                         egui::RichText::new("A fast, native client for Microsoft Teams chats, channels and meetings.")
@@ -48,20 +47,15 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                             });
                         });
                     ui.add_space(18.0);
-                    if let Some(previous) = app.adding_from().map(|account| account.label()) {
-                        // Adding a second account: the way back.
-                        if widgets::secondary_button(ui, &palette, &format!("  Back to {previous}  ")).clicked() {
-                            app.actions.push(Action::CancelAddAccount);
-                        }
-                    } else if widgets::secondary_button(ui, &palette, "  Explore the demo  ")
-                        .on_hover_text("Sample chats, channels and meetings. Nothing leaves this computer.")
-                        .clicked()
+                    // Adding a second account: the way back.
+                    if let Some(previous) = app.adding_from().map(|account| account.label())
+                        && widgets::secondary_button(ui, &palette, &format!("  Back to {previous}  ")).clicked()
                     {
-                        app.actions.push(Action::StartDemo);
+                        app.actions.push(Action::CancelAddAccount);
                     }
                     ui.add_space(24.0);
                     ui.label(
-                        egui::RichText::new("Wren is an independent open-source project, not affiliated with Microsoft. It talks only to Microsoft's official APIs and keeps your data on this computer.")
+                        egui::RichText::new("Chaat is an independent project based on the open-source Wren app, not affiliated with Microsoft. It talks only to Microsoft's official APIs and keeps your data on this computer.")
                             .font(theme::regular(12.0))
                             .color(palette.dim),
                     );
@@ -89,7 +83,7 @@ fn card(app: &mut App, ui: &mut egui::Ui) {
                     .color(palette.text),
             );
             ui.label(
-                egui::RichText::new("Sign in with your work or school account in the browser window Wren opened. You'll come back here automatically.")
+                egui::RichText::new("Sign in with your work or school account in the browser window Chaat opened. You'll come back here automatically.")
                     .color(palette.secondary),
             );
             ui.add_space(6.0);
@@ -145,7 +139,7 @@ fn card(app: &mut App, ui: &mut egui::Ui) {
                 AuthStatus::Failed(reason) => ("Sign-in did not finish".to_owned(), reason.clone()),
                 _ => (
                     "Sign in".to_owned(),
-                    "Use your work or school Microsoft 365 account. Microsoft's sign-in page opens in your browser; Wren never sees your password.".to_owned(),
+                    "Use your work or school Microsoft 365 account. Microsoft's sign-in page opens in your browser; Chaat never sees your password.".to_owned(),
                 ),
             };
             ui.label(
@@ -166,7 +160,7 @@ fn card(app: &mut App, ui: &mut egui::Ui) {
                     app.actions.push(Action::SignIn);
                 }
                 if widgets::secondary_button(ui, &palette, "Use a code instead")
-                    .on_hover_text("Device code sign-in, for when the browser can't reach Wren. Needs 'Allow public client flows' on the app registration.")
+                    .on_hover_text("Device code sign-in, for when the browser can't reach Chaat. Needs 'Allow public client flows' on the app registration.")
                     .clicked()
                 {
                     app.actions.push(Action::SignInWithCode);
@@ -191,12 +185,12 @@ fn registration(app: &mut App, ui: &mut egui::Ui, first_run: bool) {
     let palette = app.palette;
     if first_run {
         ui.label(
-            egui::RichText::new("Connect Wren to Microsoft 365")
+            egui::RichText::new("Connect Chaat to Microsoft 365")
                 .font(theme::semibold(18.0))
                 .color(palette.text),
         );
         ui.label(
-            egui::RichText::new("Wren signs in through an Entra ID app registration that you or your administrator create. It takes about five minutes and needs no secrets.")
+            egui::RichText::new("Chaat signs in through an Entra ID app registration that you or your administrator create. It takes about five minutes and needs no secrets.")
                 .color(palette.secondary),
         );
         ui.add_space(4.0);
@@ -248,12 +242,12 @@ fn registration(app: &mut App, ui: &mut egui::Ui, first_run: bool) {
                 tenant: app.form_tenant.clone(),
             });
         }
-        if ui.link("How to register Wren").clicked() {
+        if ui.link("How to register Chaat").clicked() {
             app.actions.push(Action::OpenUrl(DOCS.into()));
         }
     });
     ui.label(
-        egui::RichText::new("Or start Wren with WREN_CLIENT_ID and WREN_TENANT set.")
+        egui::RichText::new("Or start Chaat with CHAAT_CLIENT_ID and CHAAT_TENANT set.")
             .font(theme::regular(12.0))
             .color(palette.dim),
     );

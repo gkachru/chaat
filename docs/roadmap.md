@@ -26,7 +26,7 @@ push notifications, on 17 October 2026. The completed checks are listed in
 
 ## Calling
 
-Calls run in Teams on the web beside Wren ([calling.md](calling.md)).
+Calls run in Teams on the web beside Chaat ([calling.md](calling.md)).
 Next:
 
 1. Answer the [calling open questions](calling.md#open-questions)

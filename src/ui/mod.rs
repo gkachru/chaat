@@ -182,7 +182,7 @@ fn docked(app: &mut App, ui: &mut egui::Ui) {
                 &palette,
                 Icon::Chat,
                 "No chat for this call",
-                "A meeting's chat shows here once Wren finds it. Restore the window to see all your chats.",
+                "A meeting's chat shows here once Chaat finds it. Restore the window to see all your chats.",
             ),
         });
 }
@@ -432,7 +432,7 @@ pub fn install(ctx: &egui::Context, reproducible: bool) {
     fastframe_icons::install::<theme::Icon>(ctx);
     ctx.include_bytes(
         signin::LOGO,
-        include_bytes!("../../packaging/icons/wren-wordmark-light.svg").as_slice(),
+        include_bytes!("../../packaging/icons/chaat-wordmark-light.svg").as_slice(),
     );
     theme::install_fonts(ctx, reproducible);
     fastframe_emoji::EmojiSetup::default()

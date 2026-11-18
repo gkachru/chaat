@@ -695,7 +695,7 @@ fn body(
             AttachmentKind::Card => {
                 ui.label(
                     egui::RichText::new(
-                        "A card Wren can't show yet. Open the message in Teams to see it.",
+                        "A card Chaat can't show yet. Open the message in Teams to see it.",
                     )
                     .font(theme::regular(12.0))
                     .color(palette.dim),

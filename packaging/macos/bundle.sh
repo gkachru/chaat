@@ -1,9 +1,9 @@
 #!/bin/bash
-# Builds Wren.app from a release binary.
+# Builds Chaat.app from a release binary.
 #
 #   packaging/macos/bundle.sh <binary> <output.app> <version>
 #
-# The icon is rendered from packaging/icons/wren.svg by the render-icon
+# The icon is rendered from packaging/icons/chaat.svg by the render-icon
 # example, then turned into an .icns with sips and iconutil. Set
 # CODESIGN_IDENTITY to a persistent Developer ID or Apple Development
 # identity. Ad-hoc signing is only available explicitly, with
@@ -28,31 +28,31 @@ fi
 
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-cp "$binary" "$app/Contents/MacOS/wren"
+cp "$binary" "$app/Contents/MacOS/chaat"
 "$root/packaging/copy-notices.sh" "$app/Contents/Resources"
-chmod 755 "$app/Contents/MacOS/wren"
+chmod 755 "$app/Contents/MacOS/chaat"
 sed "s/__VERSION__/$numeric_version/g" "$here/Info.plist" > "$app/Contents/Info.plist"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
-if [ -n "${WREN_ICON_PNG:-}" ]; then
+if [ -n "${CHAAT_ICON_PNG:-}" ]; then
     # The same SVG rendered on a build host, without compiling examples
     # and their dev dependencies again on a constrained signing host.
-    cp "$WREN_ICON_PNG" "$work/icon-1024.png"
+    cp "$CHAAT_ICON_PNG" "$work/icon-1024.png"
 else
     (cd "$root" && cargo run --quiet --locked --release --example render-icon -- "$work/icon-1024.png" 1024)
 fi
-iconset="$work/wren.iconset"
+iconset="$work/chaat.iconset"
 mkdir -p "$iconset"
 for size in 16 32 128 256 512; do
     sips -z $size $size "$work/icon-1024.png" --out "$iconset/icon_${size}x${size}.png" >/dev/null
     double=$((size * 2))
     sips -z $double $double "$work/icon-1024.png" --out "$iconset/icon_${size}x${size}@2x.png" >/dev/null
 done
-iconutil -c icns "$iconset" -o "$app/Contents/Resources/wren.icns"
+iconutil -c icns "$iconset" -o "$app/Contents/Resources/chaat.icns"
 
 if [ "$CODESIGN_IDENTITY" = - ]; then
-    echo 'Warning: ad-hoc Wren build. Keychain approval will not survive a rebuild. Use a persistent CODESIGN_IDENTITY for signed-in use.' >&2
+    echo 'Warning: ad-hoc Chaat build. Keychain approval will not survive a rebuild. Use a persistent CODESIGN_IDENTITY for signed-in use.' >&2
     codesign --force --sign - "$app"
 else
     signing_args=(--force --timestamp --options runtime --sign "$CODESIGN_IDENTITY")

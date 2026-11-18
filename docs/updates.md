@@ -8,38 +8,45 @@ A ready update also shows a persistent restart button below the workspace.
 Automatic checks contact GitHub at most once a day, including across app
 restarts. They use no Microsoft credentials or account data. Switching the
 setting off stops future automatic checks and downloads; manual checking remains
-available. Demo windows do not check automatically.
+available.
 
-Wren verifies an Ed25519 signature over the release's checksums, then verifies
+Chaat verifies an Ed25519 signature over the release's checksums, then verifies
 the downloaded package against its checksum. The public key is compiled from
 `packaging/update-public-key.hex`; no key supplied by a release is trusted.
-The shared `fastframe-update` helper installs the update after Wren exits,
+The shared `fastframe-update` helper installs the update after Chaat exits,
 relaunches it, and restores the previous version if the new window does not
 acknowledge a successful start. macOS replaces the whole bundle and also
 checks its identity and any existing Developer ID signing team.
 
-Wren never restarts automatically. Send or clear drafts and finish pending
+Chaat never restarts automatically. Send or clear drafts and finish pending
 sends before selecting **Restart to update**. This matters because drafts
 and failed sends currently live in memory.
 
 Package-manager installations must update through their package manager.
 The updater also refuses unmarked Linux/Windows binaries and macOS copies
 running from a disk image. Download and extract the official portable
-archive, or move Wren.app into Applications. The Linux installer adds the
+archive, or move Chaat.app into Applications. The Linux installer adds the
 portable marker beside its installed executable. Source builds and older
 CI artifacts do not opt into automatic binary replacement.
 
 Every archive and app bundle includes `LICENSE`, `THIRD-PARTY-NOTICES.md`,
 `licenses/`, and the font and icon notices under `assets/`. The relay archive
 ships the same notice set. The Linux installer preserves it under
-`$PREFIX/share/doc/wren`, or `~/.local/share/doc/wren` by default.
-Notices are also embedded in the executables. Run `wren --licenses` or
-`wren-relay --licenses` to read the current build's texts, including after a
+`$PREFIX/share/doc/chaat`, or `~/.local/share/doc/chaat` by default.
+Notices are also embedded in the executables. Run `chaat --licenses` or
+`chaat-relay --licenses` to read the current build's texts, including after a
 Linux or Windows self-update that replaces only the executable.
 
 There is no public release feed until a maintainer publishes the first
 GitHub release. A private repository or an empty release feed cannot serve
-updates to normal users; Wren reports the failed check in Settings.
+updates to normal users; Chaat reports the failed check in Settings.
+
+The `gkachru/chaat` repository is private. The update check calls GitHub
+without authentication, so it cannot see its releases, and automatic updates
+do not work while the repository stays private. Releases also need the
+maintainer's own update signing key: replace
+`packaging/update-public-key.hex` with the public half of that key, and set
+the matching `UPDATE_SIGNING_KEY` secret, before automatic updates can work.
 
 ## Making a release
 

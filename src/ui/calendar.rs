@@ -219,7 +219,7 @@ pub fn detail(app: &mut App, ui: &mut egui::Ui) {
             });
         ui.add_space(14.0);
         ui.label(
-            egui::RichText::new("Joining opens the meeting in Teams on the web beside Wren, with its chat here. Wren reminds you five minutes before online meetings start.")
+            egui::RichText::new("Joining opens the meeting in Teams on the web beside Chaat, with its chat here. Chaat reminds you five minutes before online meetings start.")
                 .font(theme::regular(12.0))
                 .color(palette.dim),
         );

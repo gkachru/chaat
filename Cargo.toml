@@ -4,11 +4,11 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.98"
 license = "MIT"
-description = "A fast, native Microsoft Teams client built with Rust and egui"
-repository = "https://github.com/gkachru/wren"
+description = "Chaat: a fast, native client that works with Microsoft Teams, built with Rust and egui"
+repository = "https://github.com/gkachru/chaat"
 keywords = ["teams", "microsoft-graph", "chat", "egui", "messaging"]
 categories = ["gui"]
-default-run = "wren"
+default-run = "chaat"
 
 [workspace]
 members = [".", "relay"]
@@ -18,7 +18,7 @@ name = "wren"
 path = "src/lib.rs"
 
 [[bin]]
-name = "wren"
+name = "chaat"
 path = "src/main.rs"
 
 [dependencies]

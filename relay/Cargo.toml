@@ -4,15 +4,15 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.98"
 license = "MIT"
-description = "Self-hostable relay that forwards Microsoft Graph change notifications to Wren"
-repository = "https://github.com/gkachru/wren"
+description = "Self-hostable relay that forwards Microsoft Graph change notifications to Chaat"
+repository = "https://github.com/gkachru/chaat"
 publish = false
 
 [lib]
 path = "src/lib.rs"
 
 [[bin]]
-name = "wren-relay"
+name = "chaat-relay"
 path = "src/main.rs"
 
 [dependencies]
