@@ -38,6 +38,7 @@ undocumented Teams endpoints.
 | [Presence sessions][presence] | Sessions expire; Chaat updates its session only on input and clears it at sign-out or exit |
 | [Calendar events][calendar] | Use `onlineMeeting.joinUrl` for meeting links; Chaat requests `Calendars.Read` |
 | [Meeting lookup][meeting] | Lookup by `JoinWebUrl` can return the meeting chat; Chaat requests `OnlineMeetings.Read` on first use |
+| [Automatic replies][auto-replies] | `GET /me/mailboxSettings/automaticRepliesSetting` and `PATCH /me/mailboxSettings` with `MailboxSettings.ReadWrite` (user-consentable). Messages are HTML; Chaat writes the schedule in UTC. Teams derives its Out of Office state from these replies; how soon Teams shows a change is not documented. Chaat treats 404 and `MailboxNotEnabledForRESTAPI` as "no Exchange Online mailbox" (error codes not tested against a real tenant) |
 | [Message search][search] | Delegated search returns messages the person sent or received, with a subset of properties and `from`/`size` paging |
 | [Resumable uploads][uploads] | Upload chunks to the returned `uploadUrl` without the Graph Authorization header |
 
@@ -94,6 +95,7 @@ and works with Microsoft Teams; names and artwork must not imply endorsement.
 [subscription-list]: https://learn.microsoft.com/en-us/graph/api/subscription-list?view=graph-rest-1.0
 [calendar]: https://learn.microsoft.com/en-us/graph/api/resources/event?view=graph-rest-1.0
 [meeting]: https://learn.microsoft.com/en-us/graph/api/onlinemeeting-get?view=graph-rest-1.0
+[auto-replies]: https://learn.microsoft.com/en-us/graph/api/user-update-mailboxsettings?view=graph-rest-1.0
 [search]: https://learn.microsoft.com/en-us/graph/search-concept-chat-messages
 [uploads]: https://learn.microsoft.com/en-us/graph/api/driveitem-createuploadsession?view=graph-rest-1.0
 [notifications]: https://learn.microsoft.com/en-us/graph/teams-changenotifications-chatmessage

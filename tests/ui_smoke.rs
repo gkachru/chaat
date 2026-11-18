@@ -1826,6 +1826,78 @@ fn setting_status_and_message() {
 }
 
 #[test]
+fn out_of_office_from_the_account_menu_and_settings() {
+    use chaat::model::{AutoReplies, ExternalAudience};
+    for width in [480.0, 720.0, 1280.0] {
+        for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+            let mut h = Harness::new();
+            h.size.x = width;
+            h.app.settings.theme = theme;
+            h.app.open_account_menu = true;
+            h.frames(3);
+            assert!(
+                painted_texts(&h).iter().any(|t| t == "Out of office…"),
+                "the account menu offers Out of Office at {width}"
+            );
+
+            h.act(Action::OpenOutOfOffice);
+            assert_eq!(h.app.settings_page, Some(SettingsPage::OutOfOffice));
+            assert_eq!(h.app.overlay, None, "the demo holds every scope");
+            let painted = painted_texts(&h);
+            assert!(painted.iter().any(|t| t == "Automatic replies are off."));
+            assert!(!painted.iter().any(|t| t == "Starts"));
+
+            // A scheduled window with a reply outside the organization.
+            let form = &mut h.app.form_out_of_office;
+            form.replies = AutoReplies::Scheduled;
+            form.internal = "Away until Monday.".into();
+            form.audience = ExternalAudience::Contacts;
+            h.frames(3);
+            let painted = painted_texts(&h);
+            for text in ["Starts", "Ends", "Save", "Discard changes"] {
+                assert!(
+                    painted.iter().any(|t| t.trim() == text),
+                    "{text} at {width}"
+                );
+            }
+            let value = h.app.form_out_of_office.value().unwrap();
+            h.act(Action::SetOutOfOffice(value));
+            let painted = painted_texts(&h);
+            assert!(
+                painted
+                    .iter()
+                    .any(|t| t.starts_with("Automatic replies are scheduled from")),
+                "the saved window shows at {width}"
+            );
+            assert!(!painted.iter().any(|t| t == "Discard changes"));
+
+            // An end before the start can't be saved.
+            h.app.form_out_of_office.end_date = "2000-01-01".into();
+            h.frames(3);
+            assert!(
+                painted_texts(&h)
+                    .iter()
+                    .any(|t| t == "The end must be after the start.")
+            );
+
+            // Accounts without the permission, or without a mailbox.
+            h.app.demo = false;
+            h.app.granted = "User.Read".into();
+            h.frames(3);
+            assert!(painted_texts(&h).iter().any(|t| t.trim() == "Allow access"));
+            h.app.granted = "User.Read MailboxSettings.ReadWrite".into();
+            h.app.no_mailbox = true;
+            h.frames(3);
+            assert!(
+                painted_texts(&h)
+                    .iter()
+                    .any(|t| t.contains("no Exchange Online mailbox"))
+            );
+        }
+    }
+}
+
+#[test]
 fn new_dialogs_draw() {
     let mut h = Harness::new();
     h.app.overlay = Some(Overlay::Consent(chaat::auth::FILES_SCOPE));

@@ -37,6 +37,41 @@ pub fn to_iso(millis: Millis) -> String {
         .unwrap_or_default()
 }
 
+/// Graph's `dateTimeTimeZone` value for `millis`, in UTC:
+/// `2026-11-24T09:00:00`.
+pub fn to_utc_civil(millis: Millis) -> String {
+    Timestamp::from_millisecond(millis)
+        .map(|t| t.strftime("%Y-%m-%dT%H:%M:%S").to_string())
+        .unwrap_or_default()
+}
+
+/// The local date and time of `millis`, as typed in forms: `2026-11-24`
+/// and `09:00`.
+pub fn local_date_time(millis: Millis) -> (String, String) {
+    local(millis)
+        .map(|z| {
+            (
+                z.strftime("%Y-%m-%d").to_string(),
+                z.strftime("%H:%M").to_string(),
+            )
+        })
+        .unwrap_or_default()
+}
+
+/// A local date and time as typed (`2026-11-24`, `09:00`).
+pub fn from_local(date: &str, time: &str) -> Option<Millis> {
+    LOCAL.with(|tz| from_civil_in(date, time, tz))
+}
+
+fn from_civil_in(date: &str, time: &str, tz: &TimeZone) -> Option<Millis> {
+    let date: civil::Date = date.trim().parse().ok()?;
+    let time: civil::Time = time.trim().parse().ok()?;
+    date.to_datetime(time)
+        .to_zoned(tz.clone())
+        .ok()
+        .map(|z| z.timestamp().as_millisecond())
+}
+
 fn zoned(millis: Millis, tz: &TimeZone) -> Option<Zoned> {
     Timestamp::from_millisecond(millis)
         .ok()
@@ -150,6 +185,20 @@ mod tests {
     fn civil_times_with_seven_fraction_digits() {
         let at = parse_civil("2026-10-11T09:00:00.0000000", Some("UTC")).unwrap();
         assert_eq!(to_iso(at), "2026-10-11T09:00:00.000Z");
+    }
+
+    #[test]
+    fn typed_local_times() {
+        let at = from_civil_in(" 2026-11-24", "09:00 ", &TimeZone::UTC).unwrap();
+        assert_eq!(to_iso(at), "2026-11-24T09:00:00.000Z");
+        assert_eq!(to_utc_civil(at), "2026-11-24T09:00:00");
+        assert_eq!(from_civil_in("2026-11-24", "9am", &TimeZone::UTC), None);
+        assert_eq!(from_civil_in("24/11/2026", "09:00", &TimeZone::UTC), None);
+        let local = from_local("2026-11-24", "09:00").unwrap();
+        assert_eq!(
+            local_date_time(local),
+            ("2026-11-24".to_owned(), "09:00".to_owned())
+        );
     }
 
     #[test]

@@ -289,6 +289,12 @@ pub struct Account {
     /// The last fetch could not reach Microsoft. Shown as a quiet marker in
     /// the sidebar until a fetch gets through.
     pub unreachable: bool,
+    /// The automatic replies (Out of Office), once fetched.
+    pub out_of_office: Option<crate::model::OutOfOffice>,
+    /// Saving the automatic replies is under way.
+    pub out_of_office_saving: bool,
+    /// The account has no Exchange Online mailbox, so no automatic replies.
+    pub no_mailbox: bool,
 
     pending_sends: HashMap<String, PendingSend>,
     next_local: u64,
@@ -332,6 +338,9 @@ impl Account {
             recent_conversations: VecDeque::new(),
             reauth: None,
             unreachable: false,
+            out_of_office: None,
+            out_of_office_saving: false,
+            no_mailbox: false,
         }
     }
 
@@ -507,6 +516,8 @@ pub struct App {
     /// to the settings file.
     pub form_relay_key: String,
     pub form_status: String,
+    /// The Out of Office page's fields, for the account on screen.
+    pub form_out_of_office: crate::model::OutOfOfficeForm,
 
     pub palette: Palette,
     applied_palette: Option<Palette>,
@@ -607,6 +618,7 @@ impl App {
             form_relay: settings.relay_url.clone().unwrap_or_default(),
             form_relay_key: String::new(),
             form_status: String::new(),
+            form_out_of_office: Default::default(),
             dirs,
             settings,
             settings_dirty: false,
@@ -758,6 +770,18 @@ impl App {
         }
         self.overlay = Some(Overlay::Consent(scope));
         false
+    }
+
+    /// The Out of Office page opened, or its account changed: the fields
+    /// show what Chaat knows, and Graph is asked when the scope is granted.
+    fn show_out_of_office(&mut self) {
+        self.form_out_of_office = crate::model::OutOfOfficeForm::new(
+            &self.out_of_office.clone().unwrap_or_default(),
+            crate::time::now(),
+        );
+        if self.has_scope(crate::auth::MAILBOX_SETTINGS_SCOPE) {
+            self.fetch(Resource::OutOfOffice, Trigger::Opened);
+        }
     }
 
     pub fn toast(&mut self, kind: ToastKind, text: impl Into<String>) {
@@ -1061,7 +1085,17 @@ impl App {
             }
             Event::Auth(status) => self.on_auth(status),
             Event::Profile(profile) => self.profile = Some(*profile),
-            Event::Granted(granted) => self.granted = granted,
+            Event::Granted(granted) => {
+                let had = self.has_scope(crate::auth::MAILBOX_SETTINGS_SCOPE);
+                self.granted = granted;
+                if !self.hidden
+                    && !had
+                    && self.settings_page == Some(SettingsPage::OutOfOffice)
+                    && self.has_scope(crate::auth::MAILBOX_SETTINGS_SCOPE)
+                {
+                    self.fetch(Resource::OutOfOffice, Trigger::Opened);
+                }
+            }
             Event::ChannelAccess(access) => self.channel_access = access,
             Event::Chats { chats, cached } => self.on_chats(chats, cached),
             Event::Teams { teams, .. } => {
@@ -1143,6 +1177,25 @@ impl App {
                 self.observe_call(presence.activity.as_deref());
                 self.my_presence = Some(presence);
             }
+            Event::OutOfOffice(value) => {
+                // The fields follow Graph unless the person changed them.
+                let follow = self.out_of_office.as_ref().is_none_or(|old| {
+                    !self.form_out_of_office.changed_from(old)
+                        || !self.form_out_of_office.changed_from(&value)
+                });
+                if follow && !self.hidden {
+                    self.form_out_of_office =
+                        crate::model::OutOfOfficeForm::new(&value, crate::time::now());
+                }
+                self.out_of_office = Some(value);
+                self.out_of_office_saving = false;
+                self.no_mailbox = false;
+            }
+            Event::OutOfOfficeUnavailable => {
+                self.no_mailbox = true;
+                self.out_of_office_saving = false;
+            }
+            Event::OutOfOfficeNotSaved => self.out_of_office_saving = false,
             Event::MeetingChat { join_url, chat } => self.on_meeting_chat(join_url, chat),
             Event::Photo { user, bytes } => {
                 let state = match bytes
@@ -1900,6 +1953,20 @@ impl App {
                     self.backend.send(Command::SetStatusMessage(text));
                 }
             }
+            Action::OpenOutOfOffice => {
+                self.apply(Action::ShowSettingsPage(SettingsPage::OutOfOffice), ctx);
+                self.ensure_scope(crate::auth::MAILBOX_SETTINGS_SCOPE);
+            }
+            Action::SetOutOfOffice(value) => {
+                if self.demo {
+                    self.form_out_of_office =
+                        crate::model::OutOfOfficeForm::new(&value, crate::time::now());
+                    self.out_of_office = Some(value);
+                } else if !self.out_of_office_saving {
+                    self.out_of_office_saving = true;
+                    self.backend.send(Command::SetOutOfOffice(value));
+                }
+            }
             Action::SetPresenceSession(on) => {
                 self.settings.presence_session = on;
                 self.mark_settings_dirty();
@@ -1916,6 +1983,9 @@ impl App {
                     self.remember_accounts();
                     self.fetch_view(Trigger::Focused);
                     self.fetch(Resource::MyPresence, Trigger::Focused);
+                    if self.settings_page == Some(SettingsPage::OutOfOffice) {
+                        self.show_out_of_office();
+                    }
                 }
             }
             Action::AddAccount => {
@@ -2048,6 +2118,9 @@ impl App {
                 self.settings_page = Some(page);
                 self.last_settings_page = page;
                 self.overlay = None;
+                if page == SettingsPage::OutOfOffice {
+                    self.show_out_of_office();
+                }
             }
             Action::CloseSettings => self.settings_page = None,
             Action::SetTheme(choice) => {
@@ -3225,6 +3298,71 @@ mod tests {
         assert_eq!(recipients, vec!["ada@contoso.com".to_owned()]);
         let shown = &app.conversations[&chat].messages[0];
         assert_eq!(shown.attachments[0].name.as_deref(), Some("plan.pdf"));
+    }
+
+    #[test]
+    fn out_of_office_asks_for_its_scope_then_fetches_and_saves() {
+        use crate::model::{AutoReplies, OutOfOffice};
+        let (mut app, mut commands) = app();
+        app.granted = "User.Read Chat.ReadWrite".into();
+        let ctx = egui::Context::default();
+        app.apply(Action::OpenOutOfOffice, &ctx);
+        assert_eq!(app.settings_page, Some(SettingsPage::OutOfOffice));
+        assert_eq!(
+            app.overlay,
+            Some(Overlay::Consent(crate::auth::MAILBOX_SETTINGS_SCOPE))
+        );
+        assert!(commands.try_recv().is_err(), "no fetch without the scope");
+
+        // Consent arrives while the page is open: look once.
+        app.handle(
+            Event::Granted("User.Read MailboxSettings.ReadWrite".into()),
+            &ctx,
+        );
+        assert!(matches!(
+            commands.try_recv(),
+            Ok(Command::Fetch {
+                resource: Resource::OutOfOffice,
+                trigger: Trigger::Opened
+            })
+        ));
+        // A later session restore with the scope already held looks no more.
+        app.handle(
+            Event::Granted("User.Read MailboxSettings.ReadWrite".into()),
+            &ctx,
+        );
+        assert!(commands.try_recv().is_err());
+        let away = OutOfOffice {
+            replies: AutoReplies::On,
+            internal: "Away".into(),
+            ..Default::default()
+        };
+        app.handle(Event::OutOfOffice(away.clone()), &ctx);
+        assert_eq!(app.form_out_of_office.internal, "Away");
+
+        // Saving shows as under way until Graph answers; a failure keeps
+        // the edit so the person can try again.
+        app.form_out_of_office.replies = AutoReplies::Off;
+        let off = app.form_out_of_office.value().unwrap();
+        app.apply(Action::SetOutOfOffice(off.clone()), &ctx);
+        assert!(app.out_of_office_saving);
+        assert!(matches!(commands.try_recv(), Ok(Command::SetOutOfOffice(v)) if v == off));
+        app.apply(Action::SetOutOfOffice(off.clone()), &ctx);
+        assert!(commands.try_recv().is_err(), "one save at a time");
+        app.handle(Event::OutOfOfficeNotSaved, &ctx);
+        assert!(!app.out_of_office_saving);
+        assert_eq!(app.form_out_of_office.replies, AutoReplies::Off);
+        assert!(app.form_out_of_office.changed_from(&away));
+
+        // A fetch while the person edits leaves the edit alone.
+        app.handle(Event::OutOfOffice(away.clone()), &ctx);
+        assert_eq!(app.form_out_of_office.replies, AutoReplies::Off);
+        app.handle(Event::OutOfOffice(off.clone()), &ctx);
+        assert_eq!(app.out_of_office, Some(off));
+        assert_eq!(app.form_out_of_office.replies, AutoReplies::Off);
+
+        app.handle(Event::OutOfOfficeUnavailable, &ctx);
+        assert!(app.no_mailbox);
     }
 
     #[test]

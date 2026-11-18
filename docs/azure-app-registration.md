@@ -66,6 +66,7 @@ permissions**, add:
 | `Files.ReadWrite` *(optional)* | Sending files (upload to your OneDrive and share) | No |
 | `Presence.ReadWrite` *(optional)* | Setting your availability and status message | No |
 | `OnlineMeetings.Read` *(optional)* | Finding a meeting's chat to show beside the call | No |
+| `MailboxSettings.ReadWrite` *(optional)* | Reading and setting your automatic replies (Out of Office) | No |
 | `ChannelMessage.Read.All` *(optional)* | Reading channel posts | **Yes** |
 
 `openid`, `profile` and `offline_access` are added automatically during
@@ -138,7 +139,8 @@ GRAPH=00000003-0000-0000-c000-000000000000
 for scope in User.Read User.ReadBasic.All Chat.ReadWrite ChatMessage.Send \
              Team.ReadBasic.All Channel.ReadBasic.All ChannelMessage.Send \
              Presence.Read.All Calendars.Read Chat.Create Files.ReadWrite \
-             Presence.ReadWrite OnlineMeetings.Read ChannelMessage.Read.All; do
+             Presence.ReadWrite OnlineMeetings.Read MailboxSettings.ReadWrite \
+             ChannelMessage.Read.All; do
   id=$(az ad sp show --id $GRAPH --query "oauth2PermissionScopes[?value=='$scope'].id" -o tsv)
   az ad app permission add --id $APP --api $GRAPH --api-permissions "$id=Scope"
 done

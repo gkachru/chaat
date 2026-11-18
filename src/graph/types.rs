@@ -202,6 +202,21 @@ pub struct DateTimeTimeZone {
     pub time_zone: Option<String>,
 }
 
+/// `mailboxSettings/automaticRepliesSetting`.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AutomaticRepliesSetting {
+    /// `disabled`, `alwaysEnabled` or `scheduled`.
+    pub status: Option<String>,
+    /// `none`, `contactsOnly` or `all`.
+    pub external_audience: Option<String>,
+    pub scheduled_start_date_time: Option<DateTimeTimeZone>,
+    pub scheduled_end_date_time: Option<DateTimeTimeZone>,
+    /// HTML.
+    pub internal_reply_message: Option<String>,
+    pub external_reply_message: Option<String>,
+}
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Location {

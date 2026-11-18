@@ -132,6 +132,8 @@ pub enum Command {
     /// Sets (`Some`) or resets (`None`) the person's preferred availability.
     SetAvailability(Option<Availability>),
     SetStatusMessage(String),
+    /// Saves the automatic replies (Out of Office).
+    SetOutOfOffice(crate::model::OutOfOffice),
     /// The person is using Chaat: keep the presence session Available.
     PresenceActive,
     /// Whether Chaat keeps a presence session at all.
@@ -270,6 +272,12 @@ pub enum Event {
     ChatCreated(Box<Chat>),
     /// The signed-in person's own presence.
     MyPresence(Presence),
+    /// The automatic replies, as Graph has them after a fetch or a save.
+    OutOfOffice(crate::model::OutOfOffice),
+    /// The account has no Exchange Online mailbox, so no automatic replies.
+    OutOfOfficeUnavailable,
+    /// Saving the automatic replies failed (the reason went out as an error).
+    OutOfOfficeNotSaved,
     /// The chat of a meeting, looked up by its join link (`None`: not found).
     MeetingChat {
         join_url: String,

@@ -3,8 +3,9 @@
 use super::types as g;
 use crate::html;
 use crate::model::{
-    Attachment, AttachmentKind, Availability, Channel, ChannelKind, Chat, ChatKind, ConversationId,
-    Meeting, Member, Message, Presence, Preview, Profile, Reaction, Team, reaction_emoji,
+    Attachment, AttachmentKind, AutoReplies, Availability, Channel, ChannelKind, Chat, ChatKind,
+    ConversationId, ExternalAudience, Meeting, Member, Message, OutOfOffice, Presence, Preview,
+    Profile, Reaction, Team, reaction_emoji,
 };
 use crate::time::{parse_civil, parse_iso};
 
@@ -407,6 +408,36 @@ pub fn meeting(event: g::Event) -> Option<Meeting> {
         preview: event.body_preview.filter(|p| !p.trim().is_empty()),
         id: event.id,
     })
+}
+
+/// Automatic replies, with their HTML messages as plain text.
+pub fn out_of_office(raw: g::AutomaticRepliesSetting) -> OutOfOffice {
+    let when = |at: Option<&g::DateTimeTimeZone>| {
+        at.filter(|at| !at.date_time.is_empty())
+            .and_then(|at| parse_civil(&at.date_time, at.time_zone.as_deref()))
+    };
+    let text = |message: Option<String>| {
+        html::parse(message.as_deref().unwrap_or_default())
+            .to_plain()
+            .trim()
+            .to_owned()
+    };
+    OutOfOffice {
+        replies: match raw.status.as_deref() {
+            Some("alwaysEnabled") => AutoReplies::On,
+            Some("scheduled") => AutoReplies::Scheduled,
+            _ => AutoReplies::Off,
+        },
+        start: when(raw.scheduled_start_date_time.as_ref()),
+        end: when(raw.scheduled_end_date_time.as_ref()),
+        internal: text(raw.internal_reply_message),
+        external: text(raw.external_reply_message),
+        audience: match raw.external_audience.as_deref() {
+            Some("all") => ExternalAudience::All,
+            Some("contactsOnly") => ExternalAudience::Contacts,
+            _ => ExternalAudience::None,
+        },
+    }
 }
 
 #[cfg(test)]

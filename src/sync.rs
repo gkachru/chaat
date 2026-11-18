@@ -32,6 +32,8 @@ pub enum Resource {
     Presence,
     /// The signed-in person's own presence.
     MyPresence,
+    /// The signed-in person's automatic replies (Out of Office).
+    OutOfOffice,
 }
 
 /// Why a fetch is being considered.
@@ -69,6 +71,7 @@ impl Resource {
             Self::Channels(_) => Duration::from_secs(30 * 60),
             Self::Calendar => Duration::from_secs(5 * 60),
             Self::Presence | Self::MyPresence => Duration::from_secs(60),
+            Self::OutOfOffice => Duration::from_secs(30),
         }
     }
 }

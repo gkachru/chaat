@@ -28,6 +28,7 @@ It does not request `Files.ReadWrite` or create a OneDrive sharing link.
 | `Files.ReadWrite` | First file sent | `PUT /me/drive/root:/Microsoft Teams Chat Files/{name}:/content`, `POST …:/createUploadSession` (above 4 MiB), `GET /me/drive/items/{id}`, `POST /me/drive/items/{id}/invite` (chats), `POST …/createLink` (channels) | No |
 | `Presence.ReadWrite` | First status change, or the presence session | `POST /users/{id}/presence/setUserPreferredPresence`, `clearUserPreferredPresence`, `setStatusMessage`, `setPresence`, `clearPresence` | No |
 | `OnlineMeetings.Read` | First "Meeting chat" during a call | `GET /me/onlineMeetings?$filter=JoinWebUrl eq '…'` (finds a meeting's chat from its join link) | No |
+| `MailboxSettings.ReadWrite` | First visit to Settings › Out of office, or "Out of office…" in the account menu | `GET /me/mailboxSettings/automaticRepliesSetting`, `PATCH /me/mailboxSettings` (automatic replies only) | No |
 | `ChannelMessage.Read.All` | First channel opened | `GET /teams/{id}/channels/{id}/messages`, `…/replies` | **Yes** |
 
 ## Not requested

@@ -389,6 +389,40 @@ fn account_menu(app: &mut App, avatar: &egui::Response) {
                 actions.push(Action::OpenStatusMessage);
                 ui.close();
             }
+            let away = app
+                .out_of_office
+                .as_ref()
+                .is_some_and(|o| o.active(crate::time::now()));
+            let out_of_office = menu_row(
+                ui,
+                &palette,
+                if away {
+                    "Out of office: on"
+                } else {
+                    "Out of office…"
+                },
+                if away {
+                    palette.text
+                } else {
+                    palette.secondary
+                },
+                |ui, at| {
+                    paint_icon(
+                        ui,
+                        Icon::Calendar,
+                        at,
+                        if away {
+                            palette.accent
+                        } else {
+                            palette.secondary
+                        },
+                    )
+                },
+            );
+            if out_of_office.clicked() {
+                actions.push(Action::OpenOutOfOffice);
+                ui.close();
+            }
         });
     app.actions.extend(actions);
 }

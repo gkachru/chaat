@@ -50,6 +50,7 @@ the rename, when the app still had a demo mode:
 | App updates | ✅ Daily checks and verified downloads from GitHub releases; restart when ready ([details](docs/updates.md)) |
 | Real-time updates | ✅ On open, focus and refresh. 🧪 Push through a self-hostable `chaat-relay` (experimental), since Microsoft forbids polling ([why](docs/realtime.md)) |
 | Multiple accounts, setting your availability and status message | ✅ Implemented |
+| Out of office (automatic replies) | ✅ In Settings and the account menu, for accounts with an Exchange Online mailbox |
 | Audio and video inside Chaat's own window, incoming calls | ❌ No free official way: Microsoft's licence covers call media only in its own clients ([why](docs/calling.md)) |
 
 The full matrix, including what was verified and how, is in

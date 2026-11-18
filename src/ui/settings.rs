@@ -8,7 +8,9 @@ use crate::app::App;
 use crate::backend::AuthStatus;
 use crate::calling::CallsOpenIn;
 use crate::calling::browser::BrowserKind;
-use crate::model::{Access, Action, SettingsPage};
+use crate::model::{
+    Access, Action, AutoReplies, ExternalAudience, Millis, OutOfOfficeForm, SettingsPage,
+};
 use crate::settings::ThemeChoice;
 use crate::theme::{self, Icon, Palette};
 
@@ -29,6 +31,7 @@ fn pages(app: &App) -> impl Iterator<Item = SettingsPage> + '_ {
 fn icon(page: SettingsPage) -> Icon {
     match page {
         SettingsPage::Account => Icon::User,
+        SettingsPage::OutOfOffice => Icon::Calendar,
         SettingsPage::General => Icon::Settings,
         SettingsPage::Appearance => Icon::Sun,
         SettingsPage::Calls => Icon::Phone,
@@ -230,6 +233,7 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
                             ui.spacing_mut().item_spacing.y = 8.0;
                             match page {
                                 SettingsPage::Account => account(app, ui, &mut actions),
+                                SettingsPage::OutOfOffice => out_of_office(app, ui, &mut actions),
                                 SettingsPage::General => general(app, ui, &mut actions),
                                 SettingsPage::Appearance => appearance(app, ui, &mut actions),
                                 SettingsPage::Calls => calls(app, ui, &mut actions),
@@ -340,6 +344,181 @@ fn account(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
             ),
         );
     }
+}
+
+/// Automatic replies (Out of Office), kept in the Exchange mailbox.
+fn out_of_office(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+    let palette = app.palette;
+    note(
+        ui,
+        &palette,
+        "Automatic replies answer people while you're away. Teams shows you as out of office while they're on, and Outlook sends the same replies by email.",
+    );
+    if !app.has_scope(crate::auth::MAILBOX_SETTINGS_SCOPE) {
+        group(ui, &palette, "Permission");
+        note(
+            ui,
+            &palette,
+            "Chaat needs the MailboxSettings.ReadWrite permission to read and set your automatic replies.",
+        );
+        if widgets::primary_button(ui, &palette, "  Allow access  ").clicked() {
+            actions.push(Action::OpenOutOfOffice);
+        }
+        return;
+    }
+    if app.no_mailbox {
+        ui.add_space(8.0);
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(
+                    "This account has no Exchange Online mailbox, so it has no automatic replies to set.",
+                )
+                .color(palette.warning),
+            )
+            .wrap(),
+        );
+        return;
+    }
+    let Some(saved) = app.out_of_office.clone() else {
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            widgets::loading(ui, palette.dim, 16.0);
+            ui.label(
+                egui::RichText::new("Loading your automatic replies…").color(palette.secondary),
+            );
+        });
+        return;
+    };
+    let saving = app.out_of_office_saving;
+    let now = crate::time::now();
+    let form = &mut app.form_out_of_office;
+
+    group(ui, &palette, "Automatic replies");
+    ui.add_enabled_ui(!saving, |ui| {
+        ui.horizontal_wrapped(|ui| {
+            for (replies, label) in [
+                (AutoReplies::Off, "Off"),
+                (AutoReplies::On, "On"),
+                (AutoReplies::Scheduled, "On during a time range"),
+            ] {
+                ui.radio_value(&mut form.replies, replies, label);
+                ui.add_space(8.0);
+            }
+        });
+        if form.replies == AutoReplies::Scheduled {
+            egui::Grid::new("out-of-office-window")
+                .num_columns(3)
+                .spacing(vec2(10.0, 8.0))
+                .show(ui, |ui| {
+                    for (label, date, time) in [
+                        ("Starts", &mut form.start_date, &mut form.start_time),
+                        ("Ends", &mut form.end_date, &mut form.end_time),
+                    ] {
+                        ui.label(egui::RichText::new(label).color(palette.secondary));
+                        ui.add(
+                            widgets::text_field(date, "YYYY-MM-DD", theme::regular(14.0))
+                                .desired_width(120.0),
+                        );
+                        egui::ComboBox::from_id_salt(("out-of-office-time", label))
+                            .selected_text(time.as_str())
+                            .width(80.0)
+                            .show_ui(ui, |ui| {
+                                for slot in
+                                    (0..48).map(|n| format!("{:02}:{:02}", n / 2, n % 2 * 30))
+                                {
+                                    let on = *time == slot;
+                                    if ui.selectable_label(on, &slot).clicked() {
+                                        *time = slot;
+                                    }
+                                }
+                            });
+                        ui.end_row();
+                    }
+                });
+            note(ui, &palette, "Times are in this computer's time zone.");
+        }
+
+        group(ui, &palette, "Inside your organization");
+        ui.add(
+            egui::TextEdit::multiline(&mut form.internal)
+                .hint_text("Away until Monday. I'll reply when I'm back.")
+                .desired_rows(3)
+                .desired_width(f32::INFINITY)
+                .margin(Margin::symmetric(10, 8)),
+        );
+
+        group(ui, &palette, "Outside your organization");
+        egui::ComboBox::from_id_salt("out-of-office-audience")
+            .selected_text(form.audience.label())
+            .width(300.0)
+            .show_ui(ui, |ui| {
+                for audience in ExternalAudience::ALL {
+                    ui.selectable_value(&mut form.audience, audience, audience.label());
+                }
+            });
+        if form.audience != ExternalAudience::None {
+            ui.add(
+                egui::TextEdit::multiline(&mut form.external)
+                    .hint_text("Away until Monday. I'll reply when I'm back.")
+                    .desired_rows(3)
+                    .desired_width(f32::INFINITY)
+                    .margin(Margin::symmetric(10, 8)),
+            );
+        }
+    });
+
+    ui.add_space(10.0);
+    let value = form.value();
+    let changed = form.changed_from(&saved);
+    ui.horizontal(|ui| {
+        let ready = changed && value.is_ok() && !saving;
+        let save = ui
+            .add_enabled_ui(ready, |ui| {
+                widgets::primary_button(
+                    ui,
+                    &palette,
+                    if saving { "  Saving…  " } else { "  Save  " },
+                )
+            })
+            .inner;
+        if let (true, Ok(value)) = (save.clicked(), &value) {
+            actions.push(Action::SetOutOfOffice(value.clone()));
+        }
+        if changed
+            && !saving
+            && widgets::secondary_button(ui, &palette, "Discard changes").clicked()
+        {
+            *form = OutOfOfficeForm::new(&saved, now);
+        }
+    });
+    if let Err(reason) = value {
+        ui.label(
+            egui::RichText::new(reason)
+                .font(theme::regular(13.0))
+                .color(palette.warning),
+        );
+    }
+    let state = match saved.replies {
+        AutoReplies::Off => "Automatic replies are off.".to_owned(),
+        AutoReplies::On => "Automatic replies are on.".to_owned(),
+        AutoReplies::Scheduled => {
+            let at = |millis: Option<Millis>| {
+                millis
+                    .map(|at| {
+                        let (date, time) = crate::time::local_date_time(at);
+                        format!("{date} {time}")
+                    })
+                    .unwrap_or_else(|| "?".into())
+            };
+            format!(
+                "Automatic replies are scheduled from {} to {}{}.",
+                at(saved.start),
+                at(saved.end),
+                if saved.active(now) { " (on now)" } else { "" }
+            )
+        }
+    };
+    note(ui, &palette, state);
 }
 
 fn general(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {

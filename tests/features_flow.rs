@@ -1,17 +1,20 @@
 //! The 0.2 features end to end through the real backend, against a local
 //! stand-in for Graph: people search, a new chat, a message with a mention
 //! and a file (upload, share, reference), availability, the presence
-//! session, the status message, and finding a meeting's chat from its join
-//! link. Each request's shape is checked against what Microsoft documents.
+//! session, the status message, automatic replies (Out of Office), and finding a
+//! meeting's chat from its join link. Each request's shape is checked against what Microsoft documents.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use chaat::auth::session::AccountRecord;
 use chaat::backend::{AuthStatus, Backend, BackendOptions, Command, Event, Waker};
-use chaat::model::{Availability, ConversationId, MentionRef};
+use chaat::model::{
+    AutoReplies, Availability, ConversationId, ExternalAudience, MentionRef, OutOfOffice,
+};
 use chaat::paths::AppDirs;
 use chaat::secrets::{MemoryStore, SecretStore};
+use chaat::sync::{Resource, Trigger};
 use wiremock::matchers::{body_json, header, method, path, query_param};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
@@ -150,6 +153,23 @@ async fn chats_mentions_files_and_status() {
             "id": "u-me", "availability": "DoNotDisturb", "activity": "DoNotDisturb",
             "statusMessage": {"message": {"content": "Heads down", "contentType": "text"}}
         })))
+        .mount(&server)
+        .await;
+    // Automatic replies: read, then saved and read back.
+    Mock::given(method("GET"))
+        .and(path("/v1.0/me/mailboxSettings/automaticRepliesSetting"))
+        .respond_with(ok(serde_json::json!({
+            "status": "alwaysEnabled", "externalAudience": "none",
+            "scheduledStartDateTime": {"dateTime": "2026-11-01T00:00:00.0000000", "timeZone": "UTC"},
+            "scheduledEndDateTime": {"dateTime": "2026-11-02T00:00:00.0000000", "timeZone": "UTC"},
+            "internalReplyMessage": "<p>Away</p>", "externalReplyMessage": ""
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path("/v1.0/me/mailboxSettings"))
+        .respond_with(ok(serde_json::json!({})))
+        .expect(1)
         .mount(&server)
         .await;
     // Anything Chaat fetches on its own after a send.
@@ -314,6 +334,47 @@ async fn chats_mentions_files_and_status() {
     backend.send(Command::SetStatusMessage("Heads down".into()));
     wait_for(&backend, 5, |e| {
         matches!(e, Event::MyPresence(_)).then_some(())
+    });
+
+    backend.send(Command::Fetch {
+        resource: Resource::OutOfOffice,
+        trigger: Trigger::Opened,
+    });
+    let replies = wait_for(&backend, 5, |e| match e {
+        Event::OutOfOffice(value) => Some(value),
+        _ => None,
+    });
+    assert_eq!(replies.replies, AutoReplies::On);
+    assert_eq!(replies.internal, "Away");
+    let saved = OutOfOffice {
+        replies: AutoReplies::Scheduled,
+        start: chaat::time::parse_iso("2026-11-24T08:00:00Z"),
+        end: chaat::time::parse_iso("2026-11-28T17:00:00Z"),
+        internal: "Back on the 30th.".into(),
+        external: String::new(),
+        audience: ExternalAudience::None,
+    };
+    // A read-back within a second of the last fetch counts as the same look.
+    std::thread::sleep(Duration::from_millis(1100));
+    backend.send(Command::SetOutOfOffice(saved.clone()));
+    let shown = wait_for(&backend, 5, |e| match e {
+        Event::OutOfOffice(value) => Some(value),
+        _ => None,
+    });
+    assert_eq!(shown, saved);
+    let patch = &requests_to(&server, "/v1.0/me/mailboxSettings").await[0];
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&patch.body).unwrap(),
+        serde_json::json!({"automaticRepliesSetting": {
+            "status": "scheduled", "externalAudience": "none",
+            "internalReplyMessage": "Back on the 30th.", "externalReplyMessage": "",
+            "scheduledStartDateTime": {"dateTime": "2026-11-24T08:00:00", "timeZone": "UTC"},
+            "scheduledEndDateTime": {"dateTime": "2026-11-28T17:00:00", "timeZone": "UTC"}
+        }})
+    );
+    // The person's own change is read back.
+    wait_for(&backend, 5, |e| {
+        matches!(e, Event::OutOfOffice(_)).then_some(())
     });
 
     // Joining a meeting whose chat Chaat has not seen: look it up.

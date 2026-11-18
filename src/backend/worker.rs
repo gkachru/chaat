@@ -74,6 +74,8 @@ enum Internal {
     FetchFailed(Resource),
     /// Confirms the person's own change with a date-ranged refresh.
     Refetch(ConversationId),
+    /// Reads back a resource the person just changed.
+    Confirm(Resource),
     /// Graph said a chat changed.
     Pushed(String),
     /// Graph lost notifications: refresh the chat list.
@@ -348,6 +350,7 @@ impl Worker {
             Command::CreateChat { others, topic } => self.create_chat(others, topic),
             Command::SetAvailability(availability) => self.set_availability(availability),
             Command::SetStatusMessage(text) => self.set_status_message(text),
+            Command::SetOutOfOffice(value) => self.set_out_of_office(value),
             Command::PresenceActive => self.presence_active(),
             Command::SignInBrowser(browser) => self.sign_in_browser = browser,
             Command::FindMeetingChat(join_url) => self.find_meeting_chat(join_url),
@@ -423,6 +426,7 @@ impl Worker {
             Internal::Refetch(conversation) => {
                 self.fetch(Resource::Messages(conversation), Trigger::AfterAction)
             }
+            Internal::Confirm(resource) => self.fetch(resource, Trigger::AfterAction),
             Internal::Pushed(chat) => {
                 self.fetch(
                     Resource::Messages(ConversationId::Chat(chat)),
@@ -1163,6 +1167,30 @@ impl Worker {
         });
     }
 
+    /// Saves the automatic replies, shows them as saved, and reads them back.
+    fn set_out_of_office(&mut self, value: crate::model::OutOfOffice) {
+        let Some(account) = &self.account else { return };
+        let graph = Arc::clone(&account.graph);
+        let out = self.out.clone();
+        let internal = self.internal.clone();
+        tokio::spawn(async move {
+            match graph.set_out_of_office(&value).await {
+                Ok(()) => {
+                    out.send(Event::OutOfOffice(value));
+                    let _ = internal.send(Internal::Confirm(Resource::OutOfOffice));
+                }
+                Err(error) => {
+                    if crate::graph::mailbox::no_mailbox(&error) {
+                        out.send(Event::OutOfOfficeUnavailable);
+                    } else {
+                        out.error("Saving your automatic replies", &error);
+                    }
+                    out.send(Event::OutOfOfficeNotSaved);
+                }
+            }
+        });
+    }
+
     /// The person is using Chaat. An Available presence session turns
     /// inactive five minutes after its last refresh and Away five minutes
     /// later, so Chaat refreshes it only while someone is at the keyboard;
@@ -1553,6 +1581,7 @@ fn describe(resource: &Resource) -> &'static str {
         Resource::Calendar => "Loading the calendar",
         Resource::Presence => "Loading presence",
         Resource::MyPresence => "Loading your status",
+        Resource::OutOfOffice => "Loading your automatic replies",
     }
 }
 
@@ -1891,6 +1920,13 @@ async fn fetch_resource(
             let presence = graph.my_presence().await?;
             out.send(Event::MyPresence(presence));
         }
+        Resource::OutOfOffice => match graph.out_of_office().await {
+            Ok(value) => out.send(Event::OutOfOffice(value)),
+            Err(error) if crate::graph::mailbox::no_mailbox(&error) => {
+                out.send(Event::OutOfOfficeUnavailable);
+            }
+            Err(error) => return Err(error),
+        },
     }
     Ok(())
 }

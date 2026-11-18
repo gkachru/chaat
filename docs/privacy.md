@@ -56,6 +56,9 @@
   session when you quit or sign out; otherwise it expires after an hour.
   Nothing is sent until you grant Presence.ReadWrite by setting your status
   once.
+- **Automatic replies** (Out of Office) are read from your mailbox settings
+  only when you open their settings page, and changed only when you save
+  them there. Chaat keeps them in memory, not in its cache.
 - **Call status** comes from your own presence: fetched when you return to
   Chaat and, with the relay, announced by a presence notification that
   carries no presence data.

@@ -236,6 +236,7 @@ pub fn populate(app: &mut App) {
         status_message: None,
     });
     app.channel_access = Access::Granted;
+    app.out_of_office = Some(Default::default());
 
     let mut conversations = Vec::new();
     let mut chats = Vec::new();
@@ -881,6 +882,7 @@ fn populate_second(app: &mut App, now: i64) {
         availability: Availability::Available,
         ..Default::default()
     });
+    app.out_of_office = Some(Default::default());
     app.presence.insert(
         "u-alex2".into(),
         Presence {

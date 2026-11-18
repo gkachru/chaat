@@ -398,6 +398,150 @@ impl Presence {
     }
 }
 
+/// Whether the mailbox sends automatic replies.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum AutoReplies {
+    #[default]
+    Off,
+    On,
+    /// Only between [`OutOfOffice::start`] and [`OutOfOffice::end`].
+    Scheduled,
+}
+
+/// Who outside the organization gets the external reply.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum ExternalAudience {
+    #[default]
+    None,
+    Contacts,
+    All,
+}
+
+impl ExternalAudience {
+    pub const ALL: [Self; 3] = [Self::None, Self::Contacts, Self::All];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::None => "Don't reply outside my organization",
+            Self::Contacts => "Reply to my contacts only",
+            Self::All => "Reply to everyone outside my organization",
+        }
+    }
+}
+
+/// The mailbox's automatic replies (Out of Office). Teams shows the person
+/// as out of office while they are on; Outlook sends the same replies.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct OutOfOffice {
+    pub replies: AutoReplies,
+    /// The scheduled window, when Exchange has one.
+    pub start: Option<Millis>,
+    pub end: Option<Millis>,
+    /// Replies as plain text.
+    pub internal: String,
+    pub external: String,
+    pub audience: ExternalAudience,
+}
+
+impl OutOfOffice {
+    /// Whether replies go out at `now`.
+    pub fn active(&self, now: Millis) -> bool {
+        match self.replies {
+            AutoReplies::Off => false,
+            AutoReplies::On => true,
+            AutoReplies::Scheduled => {
+                self.start.is_some_and(|start| start <= now)
+                    && self.end.is_some_and(|end| now < end)
+            }
+        }
+    }
+
+    /// What the form edits: the window only when scheduled (Exchange keeps
+    /// an unused one), to the minute.
+    fn normalized(&self) -> Self {
+        let minute = |at: Option<Millis>| at.map(|at| at - at.rem_euclid(60_000));
+        let scheduled = self.replies == AutoReplies::Scheduled;
+        Self {
+            start: if scheduled { minute(self.start) } else { None },
+            end: if scheduled { minute(self.end) } else { None },
+            internal: self.internal.trim().to_owned(),
+            external: self.external.trim().to_owned(),
+            ..self.clone()
+        }
+    }
+}
+
+/// The Out of Office settings page's fields: dates and times as typed, in
+/// the computer's time zone.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct OutOfOfficeForm {
+    pub replies: AutoReplies,
+    pub audience: ExternalAudience,
+    pub internal: String,
+    pub external: String,
+    /// `2026-11-24`.
+    pub start_date: String,
+    /// `09:00`.
+    pub start_time: String,
+    pub end_date: String,
+    pub end_time: String,
+}
+
+impl OutOfOfficeForm {
+    /// The fields for `value`. Without a window, a scheduled one would start
+    /// at the next half hour and last a day.
+    pub fn new(value: &OutOfOffice, now: Millis) -> Self {
+        const HALF_HOUR: Millis = 30 * 60_000;
+        let next = now - now.rem_euclid(HALF_HOUR) + HALF_HOUR;
+        let start = value.start.unwrap_or(next);
+        let end = value.end.unwrap_or(start + 24 * 60 * 60_000);
+        let (start_date, start_time) = crate::time::local_date_time(start);
+        let (end_date, end_time) = crate::time::local_date_time(end);
+        Self {
+            replies: value.replies,
+            audience: value.audience,
+            internal: value.internal.clone(),
+            external: value.external.clone(),
+            start_date,
+            start_time,
+            end_date,
+            end_time,
+        }
+    }
+
+    /// The settings to save, or why they can't be.
+    pub fn value(&self) -> Result<OutOfOffice, &'static str> {
+        let (start, end) = if self.replies == AutoReplies::Scheduled {
+            let start = crate::time::from_local(&self.start_date, &self.start_time);
+            let end = crate::time::from_local(&self.end_date, &self.end_time);
+            let (Some(start), Some(end)) = (start, end) else {
+                return Err("Enter dates like 2026-11-24 and times like 09:00.");
+            };
+            if end <= start {
+                return Err("The end must be after the start.");
+            }
+            (Some(start), Some(end))
+        } else {
+            (None, None)
+        };
+        Ok(OutOfOffice {
+            replies: self.replies,
+            start,
+            end,
+            internal: self.internal.trim().to_owned(),
+            external: self.external.trim().to_owned(),
+            audience: self.audience,
+        })
+    }
+
+    /// Whether the fields differ from `saved`.
+    pub fn changed_from(&self, saved: &OutOfOffice) -> bool {
+        !self
+            .value()
+            .is_ok_and(|value| value.normalized() == saved.normalized())
+    }
+}
+
 /// An upcoming calendar event.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Meeting {
@@ -451,6 +595,7 @@ pub struct SearchHit {
 pub enum SettingsPage {
     #[default]
     Account,
+    OutOfOffice,
     General,
     Appearance,
     Calls,
@@ -461,8 +606,9 @@ pub enum SettingsPage {
 }
 
 impl SettingsPage {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Account,
+        Self::OutOfOffice,
         Self::General,
         Self::Appearance,
         Self::Calls,
@@ -475,6 +621,7 @@ impl SettingsPage {
     pub fn label(self) -> &'static str {
         match self {
             Self::Account => "Account",
+            Self::OutOfOffice => "Out of office",
             Self::General => "General",
             Self::Appearance => "Appearance",
             Self::Calls => "Calls and meetings",
@@ -600,6 +747,10 @@ pub enum Action {
     SetAvailability(Option<Availability>),
     SetStatusMessage(String),
     OpenStatusMessage,
+    /// Settings, on the Out of Office page, asking for the scope it needs.
+    OpenOutOfOffice,
+    /// Saves the automatic replies (Out of Office).
+    SetOutOfOffice(OutOfOffice),
     /// Whether Chaat keeps a presence session (shows you available while it
     /// runs).
     SetPresenceSession(bool),
@@ -773,6 +924,59 @@ mod tests {
         chat.last_read = None;
         chat.preview.as_mut().unwrap().author_id = Some("me".into());
         assert!(!chat.is_unread("me"));
+    }
+
+    #[test]
+    fn out_of_office_form_round_trips_and_validates() {
+        let now = crate::time::from_local("2026-11-19", "10:10").unwrap();
+        let off = OutOfOffice::default();
+        let mut form = OutOfOfficeForm::new(&off, now);
+        assert!(!form.changed_from(&off));
+        assert_eq!(
+            (form.start_date.as_str(), form.start_time.as_str()),
+            ("2026-11-19", "10:30")
+        );
+        assert_eq!(
+            (form.end_date.as_str(), form.end_time.as_str()),
+            ("2026-11-20", "10:30")
+        );
+
+        form.replies = AutoReplies::Scheduled;
+        form.internal = " Back Monday \n".into();
+        assert!(form.changed_from(&off));
+        let value = form.value().unwrap();
+        assert_eq!(value.internal, "Back Monday");
+        assert_eq!(value.end.unwrap() - value.start.unwrap(), 24 * 60 * 60_000);
+        assert!(!value.active(now));
+        assert!(value.active(value.start.unwrap()));
+        // The saved value, with seconds and the same text, is unchanged.
+        let mut saved = value.clone();
+        saved.start = saved.start.map(|s| s + 7_000);
+        assert!(!OutOfOfficeForm::new(&saved, now).changed_from(&saved));
+        assert!(!form.changed_from(&saved));
+
+        form.end_time = "10:00".into();
+        form.end_date = form.start_date.clone();
+        assert_eq!(form.value(), Err("The end must be after the start."));
+        assert!(form.changed_from(&saved));
+        form.end_date = "next week".into();
+        assert!(form.value().unwrap_err().starts_with("Enter dates"));
+
+        // Turning replies on ignores the unused window Exchange keeps.
+        let on = OutOfOffice {
+            replies: AutoReplies::On,
+            ..saved.clone()
+        };
+        let mut form = OutOfOfficeForm::new(&on, now);
+        form.start_date = "garbage".into();
+        assert!(!form.changed_from(&on));
+        assert!(on.active(0));
+        // A schedule without a window (unreadable times) is not shown as on.
+        let unknown = OutOfOffice {
+            replies: AutoReplies::Scheduled,
+            ..Default::default()
+        };
+        assert!(!unknown.active(now));
     }
 
     #[test]

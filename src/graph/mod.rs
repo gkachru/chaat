@@ -17,6 +17,7 @@
 pub mod api;
 pub mod convert;
 pub mod files;
+pub mod mailbox;
 pub mod people;
 pub mod types;
 

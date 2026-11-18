@@ -54,6 +54,10 @@ pub const PRESENCE_WRITE_SCOPE: &str = "Presence.ReadWrite";
 /// User-consentable; asked for on first use.
 pub const ONLINE_MEETINGS_SCOPE: &str = "OnlineMeetings.Read";
 
+/// Reading and setting the person's automatic replies (Out of Office).
+/// User-consentable; asked for on first use.
+pub const MAILBOX_SETTINGS_SCOPE: &str = "MailboxSettings.ReadWrite";
+
 /// The scopes Chaat may ask for beyond sign-in, each when a feature first
 /// needs it (incremental consent).
 pub const OPTIONAL_SCOPES: &[&str] = &[
@@ -62,6 +66,7 @@ pub const OPTIONAL_SCOPES: &[&str] = &[
     FILES_SCOPE,
     PRESENCE_WRITE_SCOPE,
     ONLINE_MEETINGS_SCOPE,
+    MAILBOX_SETTINGS_SCOPE,
 ];
 
 /// Why a feature needs an optional scope, for the consent prompt.
@@ -77,6 +82,9 @@ pub fn scope_reason(scope: &str) -> &'static str {
         PRESENCE_WRITE_SCOPE => "Setting your availability and status message.",
         ONLINE_MEETINGS_SCOPE => {
             "Finding a meeting's chat from its join link, to show it beside the call."
+        }
+        MAILBOX_SETTINGS_SCOPE => {
+            "Reading and setting your automatic replies (Out of Office). Outlook sends the same replies."
         }
         _ => "This feature.",
     }
