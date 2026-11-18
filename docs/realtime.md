@@ -101,7 +101,7 @@ relay.example.com {
 ```
 
 A Cloudflare tunnel (`cloudflared tunnel --url http://127.0.0.1:8787`) or
-any cloud load balancer works too. One relay serves any number of people.
+any cloud load balancer works too. One relay serves many people.
 Routes:
 
 | Route | Who calls it |
@@ -110,6 +110,17 @@ Routes:
 | `GET /ws/{channel}` (WebSocket) | Chaat |
 | `POST /graph/{channel}` | Microsoft Graph: change notifications and validation |
 | `POST /lifecycle/{channel}` | Microsoft Graph: lifecycle notifications |
+
+Safeguards, so one relay can serve many people:
+
+- At most 1,000 connected clients by default (`--max-clients N` or
+  `CHAAT_RELAY_MAX_CLIENTS`). Beyond that, new clients get `503`; a client
+  reconnecting on its own channel is always let back in.
+- Chaat pings the relay every 30 seconds. A client silent for 90 seconds is
+  disconnected and its channel freed, so sleeping laptops and dropped
+  networks don't hold channels.
+- Clients may send messages of at most 4 KiB (they only ping). Graph's
+  posts may be at most 512 KiB.
 
 ### Limits
 

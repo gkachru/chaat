@@ -20,6 +20,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use axum::Router;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -34,13 +35,43 @@ use tokio::sync::mpsc;
 const BODY_LIMIT: usize = 512 * 1024;
 /// How many notifications may wait for a slow client before new ones drop.
 const QUEUE: usize = 256;
+/// Clients only send pings, so their messages are tiny.
+const CLIENT_MESSAGE_LIMIT: usize = 4 * 1024;
+
+/// How many clients a relay serves at once, and how long a silent one keeps
+/// its channel.
+#[derive(Clone, Copy, Debug)]
+pub struct Limits {
+    /// Connections beyond this are refused with `503`.
+    pub max_clients: usize,
+    /// Chaat pings every 30 seconds; a client silent this long is gone
+    /// (a sleeping laptop, a dropped network) and its channel is freed.
+    pub idle: Duration,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            max_clients: 1000,
+            idle: Duration::from_secs(90),
+        }
+    }
+}
 
 #[derive(Clone, Default)]
 pub struct Relay {
     channels: Arc<Mutex<HashMap<String, mpsc::Sender<String>>>>,
+    limits: Limits,
 }
 
 impl Relay {
+    pub fn new(limits: Limits) -> Self {
+        Self {
+            channels: Arc::default(),
+            limits,
+        }
+    }
+
     pub fn connected(&self) -> usize {
         self.channels
             .lock()
@@ -76,7 +107,18 @@ async fn connect(
     if !valid_channel(&channel) {
         return StatusCode::BAD_REQUEST.into_response();
     }
-    ws.on_upgrade(move |socket| serve_client(socket, channel, relay))
+    let full = {
+        let channels = relay.channels.lock().unwrap_or_else(|p| p.into_inner());
+        // A reconnect replaces its own channel, so it never counts as new.
+        channels.len() >= relay.limits.max_clients && !channels.contains_key(&channel)
+    };
+    if full {
+        log::warn!("refused a client: {} connected", relay.limits.max_clients);
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
+    ws.max_message_size(CLIENT_MESSAGE_LIMIT)
+        .max_frame_size(CLIENT_MESSAGE_LIMIT)
+        .on_upgrade(move |socket| serve_client(socket, channel, relay))
 }
 
 async fn serve_client(mut socket: WebSocket, channel: String, relay: Relay) {
@@ -87,8 +129,14 @@ async fn serve_client(mut socket: WebSocket, channel: String, relay: Relay) {
         .unwrap_or_else(|p| p.into_inner())
         .insert(channel.clone(), sender.clone());
     log::info!("client connected ({} connected)", relay.connected());
+    let idle = tokio::time::sleep(relay.limits.idle);
+    tokio::pin!(idle);
     loop {
         tokio::select! {
+            () = &mut idle => {
+                log::info!("client went silent; closing");
+                break;
+            }
             forwarded = receiver.recv() => {
                 let Some(body) = forwarded else { break };
                 if socket.send(Message::Text(body.into())).await.is_err() {
@@ -96,9 +144,11 @@ async fn serve_client(mut socket: WebSocket, channel: String, relay: Relay) {
                 }
             }
             incoming = socket.recv() => match incoming {
-                // Clients only ping; anything else is ignored.
+                // Clients only ping; anything else just shows they are there.
                 Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
-                Some(Ok(_)) => {}
+                Some(Ok(_)) => idle
+                    .as_mut()
+                    .reset(tokio::time::Instant::now() + relay.limits.idle),
             },
         }
     }
@@ -167,7 +217,11 @@ mod tests {
     const CHANNEL: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
     async fn start() -> (String, Relay) {
-        let relay = Relay::default();
+        start_with(Limits::default()).await
+    }
+
+    async fn start_with(limits: Limits) -> (String, Relay) {
+        let relay = Relay::new(limits);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let app = router(relay.clone());
@@ -233,5 +287,92 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(unknown.status(), 202);
+    }
+
+    async fn wait_for(relay: &Relay, connected: usize) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while relay.connected() != connected {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "never reached {connected} connected"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn clients_beyond_the_limit_are_refused_but_reconnects_are_not() {
+        let (host, relay) = start_with(Limits {
+            max_clients: 1,
+            ..Limits::default()
+        })
+        .await;
+        let (_first, _) = tokio_tungstenite::connect_async(format!("ws://{host}/ws/{CHANNEL}"))
+            .await
+            .unwrap();
+        wait_for(&relay, 1).await;
+        let other = "b".repeat(40);
+        match tokio_tungstenite::connect_async(format!("ws://{host}/ws/{other}")).await {
+            Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+                assert_eq!(response.status(), 503)
+            }
+            other => panic!("expected 503, got {:?}", other.map(|_| ())),
+        }
+        // The same channel reconnecting (Chaat after a network change) still works.
+        let (_again, _) = tokio_tungstenite::connect_async(format!("ws://{host}/ws/{CHANNEL}"))
+            .await
+            .unwrap();
+        assert_eq!(relay.connected(), 1);
+    }
+
+    #[tokio::test]
+    async fn silent_clients_are_closed_and_pinging_ones_stay() {
+        use futures_util::SinkExt;
+        use tokio_tungstenite::tungstenite::Message as Frame;
+        let (host, relay) = start_with(Limits {
+            idle: Duration::from_millis(300),
+            ..Limits::default()
+        })
+        .await;
+        let (mut pinging, _) =
+            tokio_tungstenite::connect_async(format!("ws://{host}/ws/{CHANNEL}"))
+                .await
+                .unwrap();
+        let silent_channel = "c".repeat(40);
+        let (mut silent, _) =
+            tokio_tungstenite::connect_async(format!("ws://{host}/ws/{silent_channel}"))
+                .await
+                .unwrap();
+        wait_for(&relay, 2).await;
+        for _ in 0..8 {
+            pinging.send(Frame::Ping(Vec::new().into())).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        wait_for(&relay, 1).await;
+        // The silent socket ends; the pinging one is still registered.
+        let ended = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match silent.next().await {
+                    Some(Ok(Frame::Close(_))) | None | Some(Err(_)) => break,
+                    Some(Ok(_)) => {}
+                }
+            }
+        })
+        .await;
+        assert!(ended.is_ok());
+        assert!(relay.channels.lock().unwrap().contains_key(CHANNEL));
+    }
+
+    #[tokio::test]
+    async fn oversized_client_messages_close_the_socket() {
+        use futures_util::SinkExt;
+        use tokio_tungstenite::tungstenite::Message as Frame;
+        let (host, relay) = start().await;
+        let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{host}/ws/{CHANNEL}"))
+            .await
+            .unwrap();
+        wait_for(&relay, 1).await;
+        let _ = socket.send(Frame::Text("x".repeat(64 * 1024).into())).await;
+        wait_for(&relay, 0).await;
     }
 }

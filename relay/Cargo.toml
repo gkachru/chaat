@@ -18,7 +18,7 @@ path = "src/main.rs"
 [dependencies]
 # HTTP routes for Graph's webhooks and the WebSocket clients connect to.
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "query", "ws"] }
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "net", "macros", "signal"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "net", "macros", "signal", "time"] }
 serde = { version = "1", features = ["derive"] }
 log = "0.4"
 env_logger = { version = "0.11", default-features = false, features = ["auto-color", "humantime"] }
