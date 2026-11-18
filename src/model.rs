@@ -151,13 +151,16 @@ impl Chat {
         if let Some(topic) = self.topic.as_deref().filter(|t| !t.trim().is_empty()) {
             return topic.to_owned();
         }
-        let others: Vec<&str> = self
+        let mut others: Vec<&str> = self
             .members
             .iter()
             .filter(|member| member.user_id != me)
             .map(|member| member.display_name.as_str())
             .filter(|name| !name.is_empty())
             .collect();
+        // Graph lists members in no promised order, and different requests
+        // for the same chat disagree; sorting keeps the title from changing.
+        others.sort_by_cached_key(|name| name.to_lowercase());
         match others.len() {
             0 => "Just you".to_owned(),
             1..=3 => others.join(", "),
@@ -678,9 +681,29 @@ mod tests {
             member("c", "Katherine"),
             member("d", "Dorothy"),
         ]);
-        assert_eq!(chat.title("me"), "Ada, Grace and 2 others");
+        assert_eq!(chat.title("me"), "Ada, Dorothy and 2 others");
         chat.topic = Some("Launch".into());
         assert_eq!(chat.title("me"), "Launch");
+    }
+
+    #[test]
+    fn chat_titles_do_not_depend_on_graphs_member_order() {
+        let chat = |members| Chat {
+            members,
+            ..Default::default()
+        };
+        let one = chat(vec![
+            member("me", "Me"),
+            member("a", "Person A"),
+            member("b", "person B"),
+        ]);
+        let other = chat(vec![
+            member("b", "person B"),
+            member("me", "Me"),
+            member("a", "Person A"),
+        ]);
+        assert_eq!(one.title("me"), "Person A, person B");
+        assert_eq!(other.title("me"), one.title("me"));
     }
 
     #[test]
