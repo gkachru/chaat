@@ -156,3 +156,5 @@ az ad app permission admin-consent --id $APP
 | AADSTS65001, AADSTS90094 | Consent is missing; an administrator must grant it. |
 | AADSTS7000218 | Device code sign-in needs *Allow public client flows*. |
 | AADSTS50173, AADSTS70043 | The session expired (password change, revoked sessions). Sign in again. |
+
+When a saved session no longer works, Wren keeps showing the cached chats with a banner: **Sign in again** opens Microsoft's page already addressed to that account, and a browser still signed in to it finishes without a click. Clicking the account in the status menu does the same.

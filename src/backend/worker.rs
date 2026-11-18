@@ -90,6 +90,9 @@ struct Worker {
     internal: mpsc::UnboundedSender<Internal>,
     config: Option<AuthConfig>,
     account: Option<Account>,
+    /// The account whose stored session did not restore, so signing in
+    /// again can name it to Microsoft and keep its permissions.
+    expired: Option<AccountRecord>,
     cancel_sign_in: Option<watch::Sender<bool>>,
     freshness: Freshness,
     presence_seen: HashMap<String, Instant>,
@@ -138,6 +141,7 @@ pub(super) async fn run(
         internal: internal_tx,
         config: None,
         account: None,
+        expired: None,
         cancel_sign_in: None,
         freshness: Freshness::default(),
         presence_seen: HashMap::new(),
@@ -381,6 +385,7 @@ impl Worker {
             return;
         }
         self.account = None;
+        self.expired = None;
         let Some(id) = account else {
             self.out.send(Event::Auth(AuthStatus::SignedOut));
             return;
@@ -432,14 +437,20 @@ impl Worker {
                 }));
                 self.restart_push().await;
             }
-            Ok(None) => self.out.send(Event::Auth(AuthStatus::Expired {
-                username: record.username.clone(),
-                reason: "Sign in again to continue.".into(),
-            })),
-            Err(error) => self.out.send(Event::Auth(AuthStatus::Expired {
-                username: record.username.clone(),
-                reason: format!("Wren could not read its saved session: {error}."),
-            })),
+            Ok(None) => {
+                self.out.send(Event::Auth(AuthStatus::Expired {
+                    username: record.username.clone(),
+                    reason: "Sign in again to get new messages.".into(),
+                }));
+                self.expired = Some(record);
+            }
+            Err(error) => {
+                self.out.send(Event::Auth(AuthStatus::Expired {
+                    username: record.username.clone(),
+                    reason: format!("Wren could not read its saved session: {error}."),
+                }));
+                self.expired = Some(record);
+            }
         }
     }
 
@@ -453,22 +464,35 @@ impl Worker {
         }
         let (cancel, cancelled) = watch::channel(false);
         self.cancel_sign_in = Some(cancel);
-        // Keep the scopes already granted when asking for more.
+        // Only scopes asked for now need a consent screen.
+        let consent = !extra_scopes.is_empty();
+        // Keep the scopes already granted when asking for more, and when
+        // signing an expired account in again.
+        let granted = match (&self.account, &self.expired) {
+            (Some(account), _) => account.graph.session().granted(),
+            (None, Some(record)) => record.granted.clone(),
+            (None, None) => String::new(),
+        };
         let mut extra = extra_scopes;
-        if let Some(account) = &self.account {
-            for scope in auth::OPTIONAL_SCOPES {
-                if account.graph.session().has_scope(scope) && !extra.iter().any(|s| s == scope) {
-                    extra.push((*scope).to_owned());
-                }
+        for scope in auth::OPTIONAL_SCOPES {
+            if auth::has_scope(&granted, scope) && !extra.iter().any(|s| s == scope) {
+                extra.push((*scope).to_owned());
             }
         }
-        let hint = self.account.as_ref().map(|a| a.record.username.clone());
+        let hint = self
+            .account
+            .as_ref()
+            .map(|a| &a.record)
+            .or(self.expired.as_ref())
+            .map(|r| r.username.clone())
+            .filter(|u| !u.is_empty());
         let http = self.http.clone();
         let secrets = Arc::clone(&self.secrets);
         let out = self.out.clone();
         let internal = self.internal.clone();
         let open_browser = self.options.open_browser;
         let sign_in_browser = self.sign_in_browser.clone();
+        let stopped = cancelled.clone();
         tokio::spawn(async move {
             let result = if device_code {
                 device_code_sign_in(&http, &config, &extra, &out, cancelled).await
@@ -476,8 +500,11 @@ impl Worker {
                 browser_sign_in(
                     &http,
                     &config,
-                    &extra,
-                    hint.as_deref(),
+                    Ask {
+                        extra: &extra,
+                        hint: hint.as_deref(),
+                        consent,
+                    },
                     &out,
                     cancelled,
                     open_browser.then_some(sign_in_browser),
@@ -491,6 +518,11 @@ impl Worker {
                     .unwrap_or_else(|error| Internal::SignInFailed(error.to_string())),
                 Err(reason) => Internal::SignInFailed(reason),
             };
+            // A cancelled or replaced attempt reports nothing: the interface
+            // has already moved on.
+            if *stopped.borrow() {
+                return;
+            }
             let _ = internal.send(outcome);
         });
     }
@@ -524,6 +556,7 @@ impl Worker {
                 }
             },
         };
+        let saved = session.token_saved();
         let session = Arc::new(session);
         self.out.send(Event::Granted(session.granted()));
         self.out
@@ -537,6 +570,7 @@ impl Worker {
             record: record.clone(),
             store: Arc::clone(&store),
         });
+        self.expired = None;
         self.freshness.clear();
         emit_cache(&store, &self.out).await;
         self.out.send(Event::Auth(AuthStatus::SignedIn {
@@ -544,6 +578,11 @@ impl Worker {
             name: record.display_name,
             username: record.username,
         }));
+        if !saved {
+            self.out.send(Event::Error(
+                "Wren could not save this sign-in to the system credential store, so it will ask you to sign in again next time.".into(),
+            ));
+        }
         self.restart_push().await;
     }
 
@@ -1745,18 +1784,26 @@ async fn push_loop(
     }
 }
 
+/// What a browser sign-in asks Microsoft for.
+struct Ask<'a> {
+    extra: &'a [String],
+    /// The account signing in again, if any.
+    hint: Option<&'a str>,
+    /// New scopes are requested, so show the consent screen.
+    consent: bool,
+}
+
 async fn browser_sign_in(
     http: &reqwest::Client,
     config: &AuthConfig,
-    extra: &[String],
-    hint: Option<&str>,
+    ask: Ask<'_>,
     out: &Outbox,
     cancelled: watch::Receiver<bool>,
     // `None`: don't open a browser (tests); `Some(None)`: the default one.
     open_browser: Option<Option<crate::calling::browser::BrowserProfile>>,
 ) -> Result<token::TokenResponse, String> {
     let loopback = Loopback::bind().await.map_err(|e| e.to_string())?;
-    let flow = auth::begin_browser(config, loopback.port(), extra, hint, !extra.is_empty());
+    let flow = auth::begin_browser(config, loopback.port(), ask.extra, ask.hint, ask.consent);
     out.send(Event::Auth(AuthStatus::WaitingForBrowser {
         url: flow.url.clone(),
     }));

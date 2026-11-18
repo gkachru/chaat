@@ -5,6 +5,7 @@
 //! tokens: each new one replaces the stored one in the OS credential store.
 //! One refresh runs at a time; callers waiting on it share its result.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -55,6 +56,9 @@ pub struct Session {
     tokens: tokio::sync::Mutex<Tokens>,
     /// The granted scopes, readable without awaiting the token lock.
     granted: Mutex<String>,
+    /// False once the credential store refused the refresh token: this run
+    /// works, the next start will not.
+    saved: AtomicBool,
 }
 
 impl std::fmt::Debug for Session {
@@ -96,6 +100,7 @@ impl Session {
                 granted: granted.clone(),
             }),
             granted: Mutex::new(granted),
+            saved: AtomicBool::new(true),
         };
         session
             .accept(&mut *session.tokens.lock().await, response)
@@ -130,6 +135,7 @@ impl Session {
                 granted: record.granted.clone(),
             }),
             granted: Mutex::new(record.granted.clone()),
+            saved: AtomicBool::new(true),
         }))
     }
 
@@ -138,6 +144,12 @@ impl Session {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .clone()
+    }
+
+    /// Whether the refresh token is in the credential store, so the next
+    /// start stays signed in.
+    pub fn token_saved(&self) -> bool {
+        self.saved.load(Ordering::Relaxed)
     }
 
     pub fn has_scope(&self, scope: &str) -> bool {
@@ -196,13 +208,21 @@ impl Session {
             tokens.refresh = Some(refresh.clone());
             let key = refresh_key(&self.account);
             let store = Arc::clone(&self.secrets);
-            match tokio::task::spawn_blocking(move || store.write(&key, &refresh)).await {
-                Ok(Ok(())) => {}
+            let saved = match tokio::task::spawn_blocking(move || store.write(&key, &refresh)).await
+            {
+                Ok(Ok(())) => true,
                 // The session still works for this run; the next start asks
                 // to sign in again.
-                Ok(Err(error)) => log::warn!("could not store the refresh token: {error}"),
-                Err(_) => log::warn!("could not store the refresh token"),
-            }
+                Ok(Err(error)) => {
+                    log::warn!("could not store the refresh token: {error}");
+                    false
+                }
+                Err(_) => {
+                    log::warn!("could not store the refresh token");
+                    false
+                }
+            };
+            self.saved.store(saved, Ordering::Relaxed);
         }
         Ok(response.access_token)
     }

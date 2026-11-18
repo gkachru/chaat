@@ -39,6 +39,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 });
             });
     }
+    if app.shows_workspace() && !app.demo {
+        session_banner(app, ui);
+    }
     if app.shows_workspace() && app.docked.is_some() {
         docked(app, ui);
     } else if app.shows_workspace() {
@@ -60,6 +63,61 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     if !app.demo {
         widgets::request_photos(app, &ctx);
     }
+}
+
+/// Above the cached workspace while its account needs to sign in again: why,
+/// and the way back.
+fn session_banner(app: &mut App, ui: &mut egui::Ui) {
+    use crate::backend::AuthStatus;
+    let username = app.username();
+    let (text, buttons): (String, &[&str]) = match (&app.auth, app.reauth.is_some()) {
+        (AuthStatus::Expired { reason, .. }, _) => (
+            if username.is_empty() {
+                reason.clone()
+            } else {
+                format!("{username}: {reason}")
+            },
+            &["Sign in again"],
+        ),
+        (AuthStatus::WaitingForBrowser { .. }, true) => (
+            "Finish signing in in your browser. New messages arrive once you do.".into(),
+            &["Open the page again", "Cancel"],
+        ),
+        (AuthStatus::DeviceCode { .. } | AuthStatus::Finishing, true) => {
+            ("Signing in…".into(), &["Cancel"])
+        }
+        _ => return,
+    };
+    let palette = app.palette;
+    egui::Panel::top("session-banner")
+        .frame(
+            Frame::new()
+                .fill(palette.surface)
+                .inner_margin(Margin::symmetric(16, 8)),
+        )
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                theme::icon(ui, Icon::Alert, 16.0, palette.warning);
+                ui.label(egui::RichText::new(text).color(palette.text));
+                for label in buttons {
+                    let clicked = if *label == "Sign in again" {
+                        widgets::primary_button(ui, &palette, label).clicked()
+                    } else {
+                        widgets::secondary_button(ui, &palette, label).clicked()
+                    };
+                    if !clicked {
+                        continue;
+                    }
+                    match (*label, &app.auth) {
+                        ("Sign in again", _) => app.actions.push(Action::SignIn),
+                        ("Open the page again", AuthStatus::WaitingForBrowser { url }) => {
+                            app.actions.push(Action::OpenUrl(url.clone()));
+                        }
+                        _ => app.actions.push(Action::CancelSignIn),
+                    }
+                }
+            });
+        });
 }
 
 /// Files dropped on the window go to the open conversation's draft; while
@@ -161,21 +219,21 @@ fn sidebar(app: &mut App, ui: &mut egui::Ui) {
                         );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             let refresh =
-                                widgets::icon_button(ui, &palette, Icon::Refresh, "Refresh (⌘R)");
+                                widgets::icon_button(ui, &palette, Icon::Refresh, "Refresh (âR)");
                             widgets::on_click(&refresh, &mut app.actions, Action::Refresh);
                             if app.section == Section::Chats {
                                 let search = widgets::icon_button(
                                     ui,
                                     &palette,
                                     Icon::Search,
-                                    "Search and jump (⌘K)",
+                                    "Search and jump (âK)",
                                 );
                                 widgets::on_click(&search, &mut app.actions, Action::OpenSwitcher);
                                 let new_chat = widgets::icon_button(
                                     ui,
                                     &palette,
                                     Icon::Compose,
-                                    "New chat (⌘N)",
+                                    "New chat (âN)",
                                 );
                                 widgets::on_click(&new_chat, &mut app.actions, Action::OpenNewChat);
                             }
@@ -226,7 +284,7 @@ fn main(app: &mut App, ui: &mut egui::Ui) {
                     let (title, text) = if app.section == Section::Chats {
                         (
                             "No chat open",
-                            "Pick a chat on the left, or press ⌘K to jump to anyone.",
+                            "Pick a chat on the left, or press âK to jump to anyone.",
                         )
                     } else {
                         ("No channel open", "Pick a channel on the left.")
@@ -337,9 +395,9 @@ fn perf(app: &App, ctx: &egui::Context) {
     let first = app
         .perf
         .first_frame
-        .map_or_else(|| "–".into(), |d| format!("{} ms", d.as_millis()));
+        .map_or_else(|| "â".into(), |d| format!("{} ms", d.as_millis()));
     let text = format!(
-        "frame {:.2} ms avg · {:.2} ms max · {} frames · first frame {} · {} chats · {} messages loaded",
+        "frame {:.2} ms avg Â· {:.2} ms max Â· {} frames Â· first frame {} Â· {} chats Â· {} messages loaded",
         app.perf.average_ms(),
         max,
         app.perf.frames,

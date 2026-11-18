@@ -85,7 +85,7 @@ account already open is retired.
 | Cache: chats, messages, teams, channels, meetings, photos | data folder, `accounts/<account>/wren.db` (0600) |
 | Account record (name, granted scopes; no tokens) | `accounts/<account>/account.json` |
 | Signed-in accounts, in order | `settings.json`, `accounts` |
-| Refresh token | OS credential store, service `app.wren.Wren` |
+| Refresh token | OS credential store, service `app.wren.Wren` (on Windows, split across entries when longer than one holds) |
 | Logs (no message contents, tokens or URLs with queries) | state folder, `wren.log`, `panic.log` |
 
 Signing out deletes that account's refresh token and folder.

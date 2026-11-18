@@ -181,8 +181,9 @@ pub fn challenge(verifier: &str) -> String {
 
 /// Builds the authorize request for a loopback redirect on `port`.
 ///
-/// `login_hint` pre-fills the account picker when re-authenticating an
-/// account whose session expired.
+/// `login_hint` names the account when signing an existing one in again.
+/// Microsoft then skips its account picker, and a browser that is still
+/// signed in to that account finishes without a click.
 pub fn begin_browser(
     config: &AuthConfig,
     port: u16,
@@ -210,7 +211,7 @@ pub fn begin_browser(
     }
     if prompt_consent {
         url.push_str("&prompt=consent");
-    } else {
+    } else if login_hint.is_none() {
         url.push_str("&prompt=select_account");
     }
     BrowserFlow {
@@ -306,6 +307,17 @@ mod tests {
         assert!(flow.url.contains("ChannelMessage.Read.All"));
         assert!(flow.url.contains("login_hint=ada%40contoso.com"));
         assert!(!flow.url.contains(&flow.verifier));
+    }
+
+    #[test]
+    fn signing_in_again_skips_the_account_picker() {
+        let config = AuthConfig::new("6731de76-14a6-49ae-97bc-6eba6914391e", "organizations");
+        let again = begin_browser(&config, 1, &[], Some("ada@contoso.com"), false);
+        assert!(!again.url.contains("prompt="));
+        let new = begin_browser(&config, 1, &[], None, false);
+        assert!(new.url.contains("prompt=select_account"));
+        let more = begin_browser(&config, 1, &[], Some("ada@contoso.com"), true);
+        assert!(more.url.contains("prompt=consent"));
     }
 
     #[test]

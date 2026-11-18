@@ -275,6 +275,9 @@ pub struct Account {
     /// The browser profile folder for this account's calls, when each
     /// account has its own (`settings.calls.profile_per_account`).
     pub browser_profile: String,
+    /// The expired status, while this account signs in again. The cached
+    /// workspace stays on screen meanwhile, and cancelling returns to it.
+    pub reauth: Option<AuthStatus>,
 
     pending_sends: HashMap<String, PendingSend>,
     next_local: u64,
@@ -312,6 +315,7 @@ impl Account {
             next_local: 0,
             reminded: HashSet::new(),
             recent_conversations: VecDeque::new(),
+            reauth: None,
         }
     }
 
@@ -681,10 +685,12 @@ impl App {
     /// Whether the main interface (rather than the sign-in screen) shows.
     pub fn shows_workspace(&self) -> bool {
         self.is_signed_in()
-            || (matches!(
-                self.auth,
-                AuthStatus::Restoring | AuthStatus::Expired { .. }
-            ) && !self.chats.is_empty())
+            || ((self.reauth.is_some()
+                || matches!(
+                    self.auth,
+                    AuthStatus::Restoring | AuthStatus::Expired { .. }
+                ))
+                && !self.chats.is_empty())
     }
 
     /// Unread chats in accounts other than the one on screen.
@@ -1171,6 +1177,7 @@ impl App {
                     return;
                 }
                 self.id = Some(account.clone());
+                self.reauth = None;
                 self.remember_browser_profile();
                 if !self.hidden {
                     self.adding_from = None;
@@ -1178,6 +1185,17 @@ impl App {
             }
             AuthStatus::SignedOut => {
                 self.clear_data();
+            }
+            AuthStatus::Failed(reason) => {
+                // Signing in again did not finish: back to the cached
+                // workspace, with the reason.
+                if let Some(AuthStatus::Expired { username, .. }) = self.reauth.take() {
+                    self.auth = AuthStatus::Expired {
+                        username,
+                        reason: reason.clone(),
+                    };
+                    return;
+                }
             }
             AuthStatus::Expired { username, reason } => {
                 // Keep the name the account had when Graph does not repeat it.
@@ -1716,17 +1734,22 @@ impl App {
                     }
                 }
             }
-            Action::SignIn => self.backend.send(Command::SignIn {
-                extra_scopes: Vec::new(),
-                device_code: false,
-            }),
+            Action::SignIn => {
+                if matches!(self.auth, AuthStatus::Expired { .. }) {
+                    self.reauth = Some(self.auth.clone());
+                }
+                self.backend.send(Command::SignIn {
+                    extra_scopes: Vec::new(),
+                    device_code: false,
+                });
+            }
             Action::SignInWithCode => self.backend.send(Command::SignIn {
                 extra_scopes: Vec::new(),
                 device_code: true,
             }),
             Action::CancelSignIn => {
                 self.backend.send(Command::CancelSignIn);
-                self.auth = AuthStatus::SignedOut;
+                self.auth = self.reauth.take().unwrap_or(AuthStatus::SignedOut);
             }
             Action::SignOut => self.sign_out(),
             Action::RequestScope(scope) => {
@@ -3101,5 +3124,49 @@ mod tests {
         app.apply_actions(&ctx);
         assert_eq!(app.accounts.len(), 1);
         assert_eq!(app.active, 0);
+    }
+
+    #[test]
+    fn an_expired_account_signs_in_again_over_its_cached_chats() {
+        let (mut app, mut commands) = app();
+        app.chats = vec![Chat {
+            id: "19:a".into(),
+            ..Default::default()
+        }];
+        let expired = AuthStatus::Expired {
+            username: "me@contoso.com".into(),
+            reason: "Sign in again to get new messages.".into(),
+        };
+        app.on_auth(expired.clone());
+        assert!(app.shows_workspace());
+        let ctx = egui::Context::default();
+
+        // Cancelling goes back to the cached workspace.
+        app.apply(Action::SignIn, &ctx);
+        assert!(matches!(commands.try_recv(), Ok(Command::SignIn { .. })));
+        app.on_auth(AuthStatus::WaitingForBrowser { url: "u".into() });
+        assert!(app.shows_workspace());
+        app.apply(Action::CancelSignIn, &ctx);
+        assert_eq!(app.auth, expired);
+        assert!(app.reauth.is_none());
+
+        // A failure keeps the workspace and says why.
+        app.apply(Action::SignIn, &ctx);
+        app.on_auth(AuthStatus::Failed("declined".into()));
+        assert!(matches!(
+            &app.auth,
+            AuthStatus::Expired { username, reason }
+                if username == "me@contoso.com" && reason == "declined"
+        ));
+        assert!(app.shows_workspace());
+
+        app.apply(Action::SignIn, &ctx);
+        app.on_auth(AuthStatus::SignedIn {
+            account: "u-me.t1".into(),
+            name: "Me".into(),
+            username: "me@contoso.com".into(),
+        });
+        assert!(app.reauth.is_none());
+        assert!(app.is_signed_in());
     }
 }

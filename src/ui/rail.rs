@@ -224,8 +224,12 @@ fn account_menu(app: &mut App, avatar: &egui::Response) {
                         );
                     }
                 });
-                if response.clicked() && !active {
-                    actions.push(Action::SwitchAccount(index));
+                if response.clicked() {
+                    if !active {
+                        actions.push(Action::SwitchAccount(index));
+                    } else if matches!(account.auth, crate::backend::AuthStatus::Expired { .. }) {
+                        actions.push(Action::SignIn);
+                    }
                     ui.close();
                 }
             }

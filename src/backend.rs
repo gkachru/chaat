@@ -288,7 +288,7 @@ impl Default for BackendOptions {
         Self {
             authority: crate::auth::DEFAULT_AUTHORITY.to_owned(),
             graph_base: crate::graph::GRAPH_BASE.to_owned(),
-            secrets: std::sync::Arc::new(crate::secrets::NativeStore::default()),
+            secrets: crate::secrets::native(),
             open_browser: true,
         }
     }
