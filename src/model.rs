@@ -453,7 +453,8 @@ impl Section {
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::Chats => "Chat",
+            // The chat list carries the app's name, like its rail logo.
+            Self::Chats => "Chaat",
             Self::Teams => "Teams",
             Self::Calendar => "Calendar",
             Self::Calls => "Calls",
