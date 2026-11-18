@@ -59,7 +59,7 @@ How it works:
    hostname and enter its URL in **Settings → Push updates**.
 2. Chaat opens a WebSocket to `{relay}/ws/{channel}`, with a random channel
    per run. If you saved an access key, it goes in the `X-Chaat-Relay-Key`
-   header. A WebSocket that isn't open within 20 seconds counts as a relay
+   header. A WebSocket that isn't open within 8 seconds counts as a relay
    that can't be reached, and Chaat tries again (5 seconds, then doubling,
    up to 5 minutes). Log lines for push carry `push[…]` with the start of
    the account's id, so two accounts' lines can be told apart.
@@ -195,8 +195,17 @@ A named tunnel gives the relay a stable hostname:
 ```sh
 cloudflared tunnel create chaat-relay
 cloudflared tunnel route dns chaat-relay relay.example.com
-cloudflared tunnel run --url http://127.0.0.1:8787 chaat-relay
+cloudflared tunnel run --protocol http2 --url http://127.0.0.1:8787 chaat-relay
 ```
+
+Use `--protocol http2` (or `protocol: http2` in the tunnel's config file).
+With `cloudflared`'s default, QUIC, the WebSocket of the second of two
+accounts starting together stalled on every start in testing (3 of 3, 18
+Nov 2026): the relay answered `101` at once, but the answer never reached
+Chaat, which gave up and retried. Over HTTP/2 the same starts were clean (4
+of 4). The relay's debug log (`RUST_LOG=chaat_relay=debug`) shows each
+WebSocket request and its answer, without the channel or key, which tells
+a stall in front of the relay from one behind it.
 
 Cloudflare's bot and WAF rules apply to the relay's routes. In testing,
 Cloudflare answered `403` to POSTs whose user agent was Python's
