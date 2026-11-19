@@ -1226,6 +1226,8 @@ fn body(
         } else {
             palette.secondary
         },
+        // Quotes, files and cards make it an ordinary message.
+        jumbo: message.attachments.is_empty() && rich::body_is_emoji_only(&message.body),
     };
     rich::show(ui, app, &message.body, &look, width, actions);
     for attachment in &message.attachments {

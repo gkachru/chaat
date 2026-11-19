@@ -15,6 +15,8 @@ use crate::theme::{self, Palette};
 pub struct Look {
     pub size: f32,
     pub color: Color32,
+    /// A message of nothing but a few emoji: they draw at 30 points.
+    pub jumbo: bool,
 }
 
 impl Look {
@@ -22,6 +24,7 @@ impl Look {
         Self {
             size: 14.0,
             color: palette.text,
+            jumbo: false,
         }
     }
 }
@@ -33,6 +36,51 @@ const TYPE_SCALE: [f32; 9] = [11.0, 12.0, 13.0, 14.0, 15.0, 18.0, 20.0, 24.0, 30
 /// Teams does, so they read at the same weight as letters.
 fn emoji_size(size: f32) -> f32 {
     TYPE_SCALE.into_iter().find(|s| *s > size).unwrap_or(size)
+}
+
+/// Size of emoji in a message that holds nothing else.
+const JUMBO_EMOJI: f32 = 30.0;
+
+/// Most emoji a message can hold and still draw large.
+const JUMBO_LIMIT: usize = 10;
+
+/// Whether the text is one to ten emoji and nothing but whitespace besides.
+pub fn is_emoji_only(text: &str) -> bool {
+    let chars: Vec<char> = text.chars().collect();
+    let (mut i, mut count) = (0, 0);
+    while i < chars.len() {
+        if chars[i].is_whitespace() {
+            i += 1;
+        } else if let Some(n) = emoji_at(&chars, i) {
+            i += n;
+            count += 1;
+        } else {
+            return false;
+        }
+    }
+    (1..=JUMBO_LIMIT).contains(&count)
+}
+
+/// Whether a body is only emoji: plain paragraphs without links, mentions,
+/// code or images.
+pub fn body_is_emoji_only(body: &RichText) -> bool {
+    let mut text = String::new();
+    for block in &body.blocks {
+        match block {
+            Block::Paragraph(spans)
+                if spans
+                    .iter()
+                    .all(|s| s.style.link.is_none() && !s.style.mention && !s.style.code) =>
+            {
+                for span in spans {
+                    text.push_str(&span.text);
+                }
+                text.push('\n');
+            }
+            _ => return false,
+        }
+    }
+    is_emoji_only(&text)
 }
 
 fn is_regional_indicator(c: char) -> bool {
@@ -92,6 +140,7 @@ fn emoji_at(chars: &[char], i: usize) -> Option<usize> {
         })
     };
     let mut end = i;
+    // One emoji: a pictograph with its marks, then more after each joiner.
     while starts(end) {
         end += 1;
         // Selector, skin tone, keycap mark, tags.
@@ -103,6 +152,8 @@ fn emoji_at(chars: &[char], i: usize) -> Option<usize> {
         // A joiner continues the sequence only into another emoji.
         if at(end) == Some(ZWJ) && starts(end + 1) {
             end += 1;
+        } else {
+            break;
         }
     }
     (end > i).then_some(end - i)
@@ -186,9 +237,19 @@ fn job(
             links.push((chars, chars + count, link.clone()));
         }
         chars += count;
+        let size = if look.jumbo {
+            JUMBO_EMOJI
+        } else {
+            emoji_size(look.size)
+        };
         let emoji_format = TextFormat {
-            font_id: egui::FontId::new(emoji_size(look.size), format.font_id.family.clone()),
+            font_id: egui::FontId::new(size, format.font_id.family.clone()),
             valign: Align::Center,
+            line_height: if look.jumbo {
+                Some(size * 1.2)
+            } else {
+                format.line_height
+            },
             ..format.clone()
         };
         for (range, emoji) in emoji_runs(&span.text) {
@@ -264,6 +325,7 @@ pub fn show(
                 let heading = Look {
                     size: look.size + 1.0,
                     color: look.color,
+                    jumbo: false,
                 };
                 let bold: Vec<Span> = spans
                     .iter()
@@ -288,6 +350,7 @@ pub fn show(
                         let quote = Look {
                             size: look.size,
                             color: palette.secondary,
+                            jumbo: false,
                         };
                         paragraph(ui, spans, &quote, palette, width - 14.0, actions);
                         let bar = egui::Rect::from_min_max(
@@ -542,6 +605,27 @@ mod tests {
         assert_eq!(runs("© 2025 ™ ® ❤ ✔"), [("© 2025 ™ ® ❤ ✔", false)]);
         let tm = "™\u{FE0F}";
         assert_eq!(runs(&format!("a{tm}")), [("a", false), (tm, true)]);
+    }
+
+    #[test]
+    fn messages_of_only_a_few_emoji_are_jumbo() {
+        assert!(is_emoji_only("🚀"));
+        assert!(is_emoji_only("👍👍 🎉"));
+        assert!(is_emoji_only("❤\u{FE0F}"));
+        assert!(is_emoji_only(" 🇮🇳 "));
+        assert!(!is_emoji_only("🚀 ok"));
+        assert!(!is_emoji_only("1"));
+        assert!(!is_emoji_only(""));
+        assert!(!is_emoji_only("  "));
+        assert!(is_emoji_only(&"🎉".repeat(10)));
+        assert!(!is_emoji_only(&"🎉".repeat(11)));
+        assert!(!body_is_emoji_only(&RichText::plain("ok 🚀")));
+        assert!(body_is_emoji_only(&RichText::plain("🚀\n\n🎉")));
+        let mut link = RichText::plain("🚀");
+        if let Block::Paragraph(spans) = &mut link.blocks[0] {
+            spans[0].style.link = Some("https://example.com".into());
+        }
+        assert!(!body_is_emoji_only(&link));
     }
 
     #[test]

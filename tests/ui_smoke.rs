@@ -2073,6 +2073,50 @@ fn emoji_draw_one_step_larger_than_the_text_around_them() {
 }
 
 #[test]
+fn messages_of_only_emoji_draw_large_inside_their_bubble() {
+    let ada = ConversationId::Chat("19:demo-ada@unq.gbl.spaces".into());
+    for width in [720.0, 1280.0] {
+        let mut h = Harness::new();
+        h.size.x = width;
+        h.act(Action::OpenConversation(ada.clone()));
+        h.frames(3);
+        let me = h.app.me().to_owned();
+        let view = h.app.conversations.get_mut(&ada).unwrap();
+        let last = view.messages.last().expect("a message").created;
+        view.messages.push(chaat::model::Message {
+            id: "jumbo-1".into(),
+            author_id: Some(me),
+            author: "Me".into(),
+            created: last + 1,
+            body: chaat::html::RichText::plain("🎉🎉"),
+            ..Default::default()
+        });
+        view.layout.invalidate();
+        h.act(Action::OpenConversation(ada.clone()));
+        h.frames(10);
+        let sizes = section_sizes(&h, "🎉🎉");
+        assert!(
+            sizes.iter().any(|(t, s)| t == "🎉🎉" && *s == 30.0),
+            "emoji-only messages draw at 30 ({width}): {sizes:?}"
+        );
+        let (own, _) = bubbles(&h);
+        let text = painted_shapes(&h)
+            .into_iter()
+            .find_map(|shape| match shape {
+                egui::epaint::Shape::Text(text) if text.galley.job.text == "🎉🎉" => {
+                    Some(egui::Rect::from_min_size(text.pos, text.galley.size()))
+                }
+                _ => None,
+            })
+            .expect("the message is on screen");
+        assert!(
+            own.iter().any(|bubble| bubble.contains_rect(text)),
+            "the emoji fit inside their bubble ({width}): {text:?} in {own:?}"
+        );
+    }
+}
+
+#[test]
 fn single_reactions_show_only_the_emoji() {
     let mut h = Harness::new();
     h.act(Action::OpenConversation(ConversationId::Chat(
