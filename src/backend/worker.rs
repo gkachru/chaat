@@ -696,7 +696,7 @@ impl Worker {
         self.restart_push().await;
     }
 
-    // -- Push (experimental) ------------------------------------------------
+    // -- Push ---------------------------------------------------------------
 
     /// Stops any running push loop and, when a relay is set and an account is
     /// signed in, starts a new one.

@@ -756,7 +756,7 @@ fn push(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
     note(
         ui,
         &palette,
-        "Experimental. With a chaat-relay you run, Microsoft Graph tells Chaat about new messages as they happen, also in the background. Only chat and message IDs pass through the relay.",
+        "With a chaat-relay you run, Microsoft Graph tells Chaat about new messages as they happen, also in the background. Only chat and message IDs pass through the relay.",
     );
     group(ui, &palette, "Relay");
     ui.horizontal(|ui| {

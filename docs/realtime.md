@@ -46,12 +46,12 @@ What this means in practice:
   notifications. Meeting reminders still work, because they come from the
   cached calendar.
 
-## With a relay: push updates (experimental)
+## With a relay: push updates
 
 **Status:** implemented and tested end to end against a local relay and a
 simulated Graph (`tests/push_flow.rs`). The maintainer confirmed real push
 notifications during live-account acceptance on 17 October 2026. See the
-[verification record](features.md#verification). Push remains experimental.
+[verification record](features.md#verification).
 
 How it works:
 

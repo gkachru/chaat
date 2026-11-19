@@ -48,7 +48,7 @@ pub struct Settings {
     /// instead of the system's window frame.
     pub custom_titlebar: bool,
     pub window: Option<WindowGeometry>,
-    /// A chaat-relay for push updates (experimental), `https://…`.
+    /// A chaat-relay for push updates, `https://…`.
     pub relay_url: Option<String>,
     /// Whether the relay's access key is in the credential store. The key
     /// itself never goes in this file.

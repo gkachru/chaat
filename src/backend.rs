@@ -169,7 +169,7 @@ pub enum Command {
         on: bool,
     },
     MarkRead(String),
-    /// The push relay to use, or none (experimental, docs/realtime.md).
+    /// The push relay to use, or none (docs/realtime.md).
     Relay(Option<String>),
     /// Stores the relay's access key in the credential store, or removes it
     /// (`None`). Sent to the service backend; answered with `RelayKeySaved`.

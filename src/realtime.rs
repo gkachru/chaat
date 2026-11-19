@@ -1,4 +1,4 @@
-//! Push updates through a chaat-relay (experimental).
+//! Push updates through a chaat-relay.
 //!
 //! When a relay is configured, Chaat:
 //!
