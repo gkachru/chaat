@@ -1939,6 +1939,27 @@ fn emoji_draw_one_step_larger_than_the_text_around_them() {
         pill.iter().any(|(t, s)| t == "👍" && *s == 18.0),
         "reaction pills draw at 18: {pill:?}"
     );
+    // The pill sits snug around the emoji: as tall as the 18-point line,
+    // not the old 30-point minimum.
+    let shapes = painted_shapes(&h);
+    let emoji = shapes
+        .iter()
+        .find_map(|shape| match shape {
+            egui::epaint::Shape::Text(text) if text.galley.job.text.starts_with("👍") => {
+                Some(egui::Rect::from_min_size(text.pos, text.galley.size()).center())
+            }
+            _ => None,
+        })
+        .expect("a 👍 pill");
+    let frame = shapes
+        .iter()
+        .filter_map(|shape| match shape {
+            egui::epaint::Shape::Rect(rect) if rect.rect.contains(emoji) => Some(rect.rect),
+            _ => None,
+        })
+        .min_by(|a, b| a.area().total_cmp(&b.area()))
+        .expect("the pill frame");
+    assert!(frame.height() <= 28.0, "pill height {}", frame.height());
     let me = h.app.me().to_owned();
     let view = h.app.conversations.get_mut(&ada).unwrap();
     let last = view.messages.last().expect("a message").created;

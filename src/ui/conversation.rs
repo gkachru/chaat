@@ -1378,8 +1378,8 @@ fn reactions(
                         palette.outline
                     },
                 ))
-                .corner_radius(CornerRadius::same(14))
-                .min_size(vec2(38.0, 30.0));
+                .corner_radius(CornerRadius::same(13))
+                .min_size(vec2(32.0, 26.0));
             let names: Vec<String> = reaction
                 .users
                 .iter()
@@ -1397,6 +1397,9 @@ fn reactions(
                 })
                 .collect();
             let response = widgets::with_fills(ui, palette.bubble(), palette.surface_hover, |ui| {
+                // Snug around the emoji: a little room at the sides, almost
+                // none above and below.
+                ui.spacing_mut().button_padding = vec2(6.0, 0.0);
                 ui.add(button)
             })
             .on_hover_text(names.join(", "));
@@ -1413,8 +1416,8 @@ fn reactions(
             ui.add(
                 egui::Button::image(Icon::Smile.image(palette.secondary, 16.0))
                     .stroke(Stroke::new(1.0, palette.outline))
-                    .corner_radius(CornerRadius::same(14))
-                    .min_size(vec2(38.0, 28.0)),
+                    .corner_radius(CornerRadius::same(13))
+                    .min_size(vec2(34.0, 26.0)),
             )
         })
         .on_hover_text("Add a reaction");
