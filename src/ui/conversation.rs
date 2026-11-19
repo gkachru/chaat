@@ -965,6 +965,8 @@ fn message_row(
                 },
             );
             if !message.reactions.is_empty() {
+                // The pills tuck 1 point into the bubble's bottom edge.
+                ui.add_space(-(ui.spacing().item_spacing.y + REACTION_OVERLAP));
                 right_aligned(
                     ui,
                     egui::Id::new(("chaat-reactions", &message.id)),
@@ -1012,6 +1014,8 @@ fn message_row(
                         actions,
                     );
                     if !message.reactions.is_empty() {
+                        // The pills tuck 1 point into the bubble's bottom edge.
+                        ui.add_space(-(ui.spacing().item_spacing.y + REACTION_OVERLAP));
                         reactions(ui, app, conversation, message, me, actions);
                     }
                 });
@@ -1324,6 +1328,9 @@ fn file_chip(
         actions.push(Action::OpenUrl(url.clone()));
     }
 }
+
+/// How far reaction pills overlap the bottom edge of a chat bubble.
+const REACTION_OVERLAP: f32 = 1.0;
 
 /// Reactions under a message: the emoji, with a count when more than one
 /// person reacted, the person's own outlined in the accent; then a button

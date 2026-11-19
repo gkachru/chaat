@@ -1932,6 +1932,19 @@ fn emoji_draw_one_step_larger_than_the_text_around_them() {
     let ada = ConversationId::Chat("19:demo-ada@unq.gbl.spaces".into());
     let mut h = Harness::new();
     h.act(Action::OpenConversation(ada.clone()));
+    // A reaction on the newest message, whose bubble is in view.
+    h.app
+        .conversations
+        .get_mut(&ada)
+        .unwrap()
+        .messages
+        .last_mut()
+        .unwrap()
+        .reactions
+        .push(chaat::model::Reaction {
+            emoji: "👍".into(),
+            users: vec!["u-ada".into()],
+        });
     h.frames(5);
     // Reaction pills are 18 points.
     let pill = section_sizes(&h, "👍");
@@ -1944,12 +1957,16 @@ fn emoji_draw_one_step_larger_than_the_text_around_them() {
     let shapes = painted_shapes(&h);
     let emoji = shapes
         .iter()
-        .find_map(|shape| match shape {
-            egui::epaint::Shape::Text(text) if text.galley.job.text.starts_with("👍") => {
+        .filter_map(|shape| match shape {
+            egui::epaint::Shape::Text(text)
+                if text.galley.job.text.starts_with("👍")
+                    && text.galley.job.sections[0].format.font_id.size == 18.0 =>
+            {
                 Some(egui::Rect::from_min_size(text.pos, text.galley.size()).center())
             }
             _ => None,
         })
+        .max_by(|a, b| a.y.total_cmp(&b.y))
         .expect("a 👍 pill");
     let frame = shapes
         .iter()
@@ -1960,6 +1977,29 @@ fn emoji_draw_one_step_larger_than_the_text_around_them() {
         .min_by(|a, b| a.area().total_cmp(&b.area()))
         .expect("the pill frame");
     assert!(frame.height() <= 28.0, "pill height {}", frame.height());
+    // It tucks 1 point into the bottom edge of the bubble above it.
+    let bubble = shapes
+        .iter()
+        .filter_map(|shape| match shape {
+            // Bubbles are rounded; the header panel above them is not.
+            egui::epaint::Shape::Rect(rect)
+                if rect.corner_radius != egui::CornerRadius::ZERO
+                    && rect.rect.bottom() > frame.top()
+                    && rect.rect.top() < frame.top() - 10.0
+                    && rect.rect.x_range().intersects(frame.x_range()) =>
+            {
+                Some(rect.rect)
+            }
+            _ => None,
+        })
+        .min_by(|a, b| a.area().total_cmp(&b.area()))
+        .expect("the bubble above the pill");
+    assert!(
+        (bubble.bottom() - frame.top() - 1.0).abs() < 0.6,
+        "pill top {} vs bubble bottom {}",
+        frame.top(),
+        bubble.bottom()
+    );
     let me = h.app.me().to_owned();
     let view = h.app.conversations.get_mut(&ada).unwrap();
     let last = view.messages.last().expect("a message").created;
