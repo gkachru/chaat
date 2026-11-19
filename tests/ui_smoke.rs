@@ -799,6 +799,38 @@ fn clicking_received_images_opens_the_shared_viewer_at_their_original_size() {
                     egui::vec2(1200.0, 800.0)
                 );
                 assert!(painted_shapes(&h).iter().any(|shape| matches!(shape, egui::epaint::Shape::Text(text) if text.galley.job.text == "1200 × 800")));
+                // At 100% the picture is larger than the window: an open hand
+                // offers to drag it, and dragging pans it.
+                let before = cached_image_shapes(&h, &uri).last().unwrap().rect;
+                let start = h.ctx.content_rect().center();
+                h.frame_with(vec![egui::Event::PointerMoved(start)]);
+                h.frames(1);
+                assert_eq!(h.cursor, egui::CursorIcon::Grab);
+                h.frame_with(vec![egui::Event::PointerButton {
+                    pos: start,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                }]);
+                for step in 1..=10 {
+                    h.frame_with(vec![egui::Event::PointerMoved(
+                        start - egui::vec2(10.0, 5.0) * step as f32,
+                    )]);
+                }
+                assert_eq!(h.cursor, egui::CursorIcon::Grabbing);
+                let end = start - egui::vec2(100.0, 50.0);
+                h.frame_with(vec![egui::Event::PointerButton {
+                    pos: end,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                }]);
+                h.frames(3);
+                let after = cached_image_shapes(&h, &uri).last().unwrap().rect;
+                assert!(
+                    after.left() < before.left() && after.top() < before.top(),
+                    "dragging pans the picture: {before:?} -> {after:?}"
+                );
                 h.frame_with(vec![egui::Event::Key {
                     key: egui::Key::Escape,
                     physical_key: None,
@@ -1754,7 +1786,7 @@ fn the_hover_bar_keeps_edit_delete_and_copy_in_a_menu() {
     assert!(!texts.iter().any(|t| t == "Edit"), "Edit waits in the menu");
     // The bar sits on the bubble's top edge from its left end (wider than
     // the bar here), its More button last.
-    let bar = 6.0 * 28.0 + 9.0 + 2.0 * 28.0 + 6.0;
+    let bar = 6.0 * 32.0 + 9.0 + 2.0 * 28.0 + 6.0;
     assert!(bubble.width() > bar);
     h.click(egui::pos2(bubble.left() + bar - 17.0, bubble.top() - 16.0));
     let texts = painted_texts(&h);
@@ -1853,7 +1885,7 @@ fn pointing_at_a_quick_reaction_dims_the_others() {
     h.frames(25); // past the hover delay
     // The bar starts at your bubble's left edge; its second button is the heart.
     let bar_left = bubble.left();
-    let heart = egui::pos2(bar_left + 3.0 + 28.0 + 14.0, bubble.top() - 16.0);
+    let heart = egui::pos2(bar_left + 3.0 + 32.0 + 16.0, bubble.top() - 16.0);
     h.frame_with(vec![egui::Event::PointerMoved(heart)]);
     h.frames(2);
     let color_of = |emoji: &str| {
@@ -1862,7 +1894,7 @@ fn pointing_at_a_quick_reaction_dims_the_others() {
             .find_map(|shape| match shape {
                 egui::epaint::Shape::Text(text)
                     if text.galley.job.text == emoji
-                        && (bubble.top() - 34.0..bubble.top()).contains(&text.pos.y) =>
+                        && (bubble.top() - 38.0..bubble.top()).contains(&text.pos.y) =>
                 {
                     text.galley.job.sections.first().map(|s| s.format.color)
                 }
@@ -1873,6 +1905,110 @@ fn pointing_at_a_quick_reaction_dims_the_others() {
     let text = h.app.palette.text;
     assert_eq!(color_of("❤️"), text, "the pointed reaction stays bright");
     assert_eq!(color_of("👍"), text.gamma_multiply(0.35), "the others dim");
+}
+
+/// The sizes (in points) of the sections of every painted text galley that
+/// contains `needle`, as (section text, size) pairs.
+fn section_sizes(h: &Harness, needle: &str) -> Vec<(String, f32)> {
+    let mut sizes = Vec::new();
+    for shape in painted_shapes(h) {
+        if let egui::epaint::Shape::Text(text) = shape
+            && text.galley.job.text.contains(needle)
+        {
+            for section in &text.galley.job.sections {
+                sizes.push((
+                    text.galley.job.text[section.byte_range.start.0..section.byte_range.end.0]
+                        .to_owned(),
+                    section.format.font_id.size,
+                ));
+            }
+        }
+    }
+    sizes
+}
+
+#[test]
+fn emoji_draw_one_step_larger_than_the_text_around_them() {
+    let ada = ConversationId::Chat("19:demo-ada@unq.gbl.spaces".into());
+    let mut h = Harness::new();
+    h.act(Action::OpenConversation(ada.clone()));
+    h.frames(5);
+    // Reaction pills are 18 points.
+    let pill = section_sizes(&h, "👍");
+    assert!(
+        pill.iter().any(|(t, s)| t == "👍" && *s == 18.0),
+        "reaction pills draw at 18: {pill:?}"
+    );
+    let me = h.app.me().to_owned();
+    let view = h.app.conversations.get_mut(&ada).unwrap();
+    let last = view.messages.last().expect("a message").created;
+    view.messages.push(chaat::model::Message {
+        id: "emoji-1".into(),
+        author_id: Some(me),
+        author: "Me".into(),
+        created: last + 1,
+        body: chaat::html::RichText::plain("Ship it 🚀"),
+        ..Default::default()
+    });
+    view.layout.invalidate();
+    h.act(Action::OpenConversation(ada.clone()));
+    h.frames(10);
+    let sizes = section_sizes(&h, "Ship it");
+    assert!(
+        sizes.iter().any(|(t, s)| t == "Ship it " && *s == 14.0),
+        "text stays at 14: {sizes:?}"
+    );
+    assert!(
+        sizes.iter().any(|(t, s)| t == "🚀" && *s == 15.0),
+        "emoji draw at 15: {sizes:?}"
+    );
+
+    // The hover bar: 18 points.
+    let (own, _) = bubbles(&h);
+    let bubble = *own.last().expect("an own bubble is on screen");
+    h.frame_with(vec![egui::Event::PointerMoved(bubble.center())]);
+    h.frames(25);
+    let bar: Vec<f32> = painted_shapes(&h)
+        .into_iter()
+        .filter_map(|shape| match shape {
+            egui::epaint::Shape::Text(text)
+                if text.galley.job.text == "😡"
+                    && (bubble.top() - 38.0..bubble.top()).contains(&text.pos.y) =>
+            {
+                Some(text.galley.job.sections[0].format.font_id.size)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(bar, [18.0], "quick reactions in the hover bar draw at 18");
+
+    // The Add a reaction popup: 20 points.
+    let message = h
+        .app
+        .conversations
+        .get(&ada)
+        .unwrap()
+        .messages
+        .iter()
+        .find(|m| !m.reactions.is_empty())
+        .expect("a reacted message")
+        .id
+        .clone();
+    egui::Popup::open_id(&h.ctx, egui::Id::new(("chaat-add-reaction", &message)));
+    h.frames(3);
+    let popup: Vec<f32> = painted_shapes(&h)
+        .into_iter()
+        .filter_map(|shape| match shape {
+            egui::epaint::Shape::Text(text)
+                if text.galley.job.text == "😡"
+                    && text.galley.job.sections[0].format.font_id.size != 18.0 =>
+            {
+                Some(text.galley.job.sections[0].format.font_id.size)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(popup, [20.0], "the Add a reaction popup draws at 20");
 }
 
 #[test]

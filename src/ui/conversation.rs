@@ -1346,7 +1346,7 @@ fn reactions(
                 &reaction.emoji,
                 0.0,
                 egui::TextFormat {
-                    font_id: theme::regular(15.0),
+                    font_id: theme::regular(18.0),
                     color: palette.text,
                     valign: Align::Center,
                     ..Default::default()
@@ -1379,7 +1379,7 @@ fn reactions(
                     },
                 ))
                 .corner_radius(CornerRadius::same(14))
-                .min_size(vec2(38.0, 28.0));
+                .min_size(vec2(38.0, 30.0));
             let names: Vec<String> = reaction
                 .users
                 .iter()
@@ -1432,8 +1432,8 @@ fn reactions(
                             ui,
                             palette,
                             emoji,
-                            vec2(32.0, 30.0),
-                            18.0,
+                            vec2(36.0, 34.0),
+                            20.0,
                             palette.text,
                             on,
                         );
@@ -1476,8 +1476,8 @@ fn hover_toolbar(
     let can_edit =
         mine && (!conversation.is_channel() || app.has_scope("ChannelMessage.ReadWrite"));
     let size = vec2(
-        QUICK_REACTIONS.len() as f32 * 28.0 + 9.0 + 2.0 * 28.0 + 6.0,
-        34.0,
+        QUICK_REACTIONS.len() as f32 * 32.0 + 9.0 + 2.0 * 28.0 + 6.0,
+        36.0,
     );
     let clip = ui.clip_rect();
     let row = placement.row;
@@ -1507,7 +1507,7 @@ fn hover_toolbar(
     let pointed = ui
         .input(|i| i.pointer.hover_pos())
         .filter(|p| rect.contains(*p))
-        .map(|p| ((p.x - rect.left() - 3.0) / 28.0).floor())
+        .map(|p| ((p.x - rect.left() - 3.0) / 32.0).floor())
         .filter(|i| (0.0..QUICK_REACTIONS.len() as f32).contains(i))
         .map(|i| i as usize);
     let reacted = |emoji: &str| {
@@ -1541,7 +1541,7 @@ fn hover_toolbar(
                             palette.text.gamma_multiply(0.35)
                         };
                         let response =
-                            emoji_button(ui, palette, emoji, vec2(28.0, 26.0), 15.0, color, on)
+                            emoji_button(ui, palette, emoji, vec2(32.0, 30.0), 18.0, color, on)
                                 .on_hover_text(QUICK_REACTION_NAMES[index]);
                         if response.clicked() {
                             actions.push(Action::React {
@@ -1552,7 +1552,7 @@ fn hover_toolbar(
                             });
                         }
                     }
-                    let (separator, _) = ui.allocate_exact_size(vec2(9.0, 26.0), Sense::hover());
+                    let (separator, _) = ui.allocate_exact_size(vec2(9.0, 30.0), Sense::hover());
                     ui.painter().vline(
                         separator.center().x,
                         separator.y_range().shrink(5.0),

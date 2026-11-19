@@ -68,6 +68,9 @@ fn image_preview(app: &mut App, ctx: &egui::Context, uri: &str) {
                 .id_salt(("image-preview-scroll", uri, actual_size))
                 .max_height(height)
                 .auto_shrink([false, false])
+                // Drag the picture to pan around it, as image viewers do; egui
+                // only drags to scroll on touch screens by default.
+                .scroll_source(egui::scroll_area::ScrollSource::ALL)
                 .show_viewport(ui, |ui, viewport| {
                     let available = viewport.size();
                     let Ok(egui::load::TexturePoll::Ready { texture }) = &loaded else {
@@ -94,7 +97,21 @@ fn image_preview(app: &mut App, ctx: &egui::Context, uri: &str) {
                             .min(1.0)
                     };
                     let size = natural * scale;
-                    let (canvas, _) = ui.allocate_exact_size(size.max(available), Sense::hover());
+                    let (canvas, response) =
+                        ui.allocate_exact_size(size.max(available), Sense::hover());
+                    // A hand shows the picture can be dragged when it is
+                    // larger than the window, and closes while dragging.
+                    // `contains_pointer`, not `hovered`: while the scroll
+                    // area drags, egui reports nothing else as hovered.
+                    if response.contains_pointer() && (size.x > available.x || size.y > available.y)
+                    {
+                        ui.ctx()
+                            .set_cursor_icon(if ui.input(|i| i.pointer.primary_down()) {
+                                egui::CursorIcon::Grabbing
+                            } else {
+                                egui::CursorIcon::Grab
+                            });
+                    }
                     ui.painter().rect_filled(canvas, 6, palette.window);
                     egui::Image::from_texture(*texture)
                         .paint_at(ui, egui::Rect::from_center_size(canvas.center(), size));

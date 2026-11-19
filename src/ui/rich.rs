@@ -3,7 +3,9 @@
 //! Links are found under the pointer from the galley's character positions.
 
 use egui::text::{LayoutJob, TextFormat, TextWrapping};
-use egui::{Color32, CornerRadius, Margin, Sense, Stroke, Ui, vec2};
+use std::ops::Range;
+
+use egui::{Align, Color32, CornerRadius, Margin, Sense, Stroke, Ui, vec2};
 
 use crate::app::{App, Image};
 use crate::html::{Block, RichText, Span};
@@ -22,6 +24,111 @@ impl Look {
             color: palette.text,
         }
     }
+}
+
+/// The sizes the interface uses (see AGENTS.md).
+const TYPE_SCALE: [f32; 9] = [11.0, 12.0, 13.0, 14.0, 15.0, 18.0, 20.0, 24.0, 30.0];
+
+/// Emoji draw one step up the type scale from the text around them, as
+/// Teams does, so they read at the same weight as letters.
+fn emoji_size(size: f32) -> f32 {
+    TYPE_SCALE.into_iter().find(|s| *s > size).unwrap_or(size)
+}
+
+fn is_regional_indicator(c: char) -> bool {
+    ('\u{1F1E6}'..='\u{1F1FF}').contains(&c)
+}
+
+/// Characters shown as emoji without a variation selector.
+fn is_emoji_default(c: char) -> bool {
+    matches!(c as u32,
+        0x1F000..=0x1F1E5 | 0x1F200..=0x1FAFF
+        | 0x231A..=0x231B | 0x23E9..=0x23EC | 0x23F0 | 0x23F3
+        | 0x25FD..=0x25FE | 0x2614..=0x2615 | 0x2648..=0x2653 | 0x267F
+        | 0x2693 | 0x26A1 | 0x26AA..=0x26AB | 0x26BD..=0x26BE
+        | 0x26C4..=0x26C5 | 0x26CE | 0x26D4 | 0x26EA | 0x26F2..=0x26F3
+        | 0x26F5 | 0x26FA | 0x26FD | 0x2705 | 0x270A..=0x270B | 0x2728
+        | 0x274C | 0x274E | 0x2753..=0x2755 | 0x2757 | 0x2795..=0x2797
+        | 0x27B0 | 0x27BF | 0x2B1B..=0x2B1C | 0x2B50 | 0x2B55)
+}
+
+/// Characters that are emoji only when a variation selector (FE0F) follows.
+fn is_emoji_text_default(c: char) -> bool {
+    matches!(c as u32,
+        0xA9 | 0xAE | 0x203C | 0x2049 | 0x2122 | 0x2139 | 0x2194..=0x21AA
+        | 0x2328 | 0x23CF | 0x23ED..=0x23EF | 0x23F1..=0x23F2 | 0x23F8..=0x23FA
+        | 0x24C2 | 0x25AA..=0x25AB | 0x25B6 | 0x25C0 | 0x25FB..=0x25FC
+        | 0x2600..=0x27BF | 0x2934..=0x2935 | 0x2B05..=0x2B07
+        | 0x3030 | 0x303D | 0x3297 | 0x3299)
+}
+
+/// Length in characters of the emoji starting at `chars[i]`, or None when
+/// none starts there: pictographs with their selector and skin tone,
+/// keycaps, flags and ZWJ sequences.
+fn emoji_at(chars: &[char], i: usize) -> Option<usize> {
+    const VS16: char = '\u{FE0F}';
+    const ZWJ: char = '\u{200D}';
+    const KEYCAP: char = '\u{20E3}';
+    let at = |n: usize| chars.get(n).copied();
+    let first = chars[i];
+    if first.is_ascii_digit() || first == '#' || first == '*' {
+        // The key, an optional FE0F, then the combining keycap.
+        let mut n = i + 1;
+        if at(n) == Some(VS16) {
+            n += 1;
+        }
+        return (at(n) == Some(KEYCAP)).then_some(n + 1 - i);
+    }
+    if is_regional_indicator(first) {
+        return Some(if at(i + 1).is_some_and(is_regional_indicator) {
+            2
+        } else {
+            1
+        });
+    }
+    let starts = |n: usize| {
+        at(n).is_some_and(|c| {
+            is_emoji_default(c) || (is_emoji_text_default(c) && at(n + 1) == Some(VS16))
+        })
+    };
+    let mut end = i;
+    while starts(end) {
+        end += 1;
+        // Selector, skin tone, keycap mark, tags.
+        while at(end).is_some_and(
+            |m| matches!(m, VS16 | KEYCAP | '\u{1F3FB}'..='\u{1F3FF}' | '\u{E0020}'..='\u{E007F}'),
+        ) {
+            end += 1;
+        }
+        // A joiner continues the sequence only into another emoji.
+        if at(end) == Some(ZWJ) && starts(end + 1) {
+            end += 1;
+        }
+    }
+    (end > i).then_some(end - i)
+}
+
+/// Splits text into runs, each flagged whether it is emoji. The ranges are
+/// byte offsets that cover the whole string.
+pub fn emoji_runs(text: &str) -> Vec<(Range<usize>, bool)> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut offsets: Vec<usize> = text.char_indices().map(|(b, _)| b).collect();
+    offsets.push(text.len());
+    let mut runs: Vec<(Range<usize>, bool)> = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let (len, emoji) = match emoji_at(&chars, i) {
+            Some(n) => (n, true),
+            None => (1, false),
+        };
+        let range = offsets[i]..offsets[i + len];
+        match runs.last_mut() {
+            Some((last, flag)) if *flag == emoji => last.end = range.end,
+            _ => runs.push((range, emoji)),
+        }
+        i += len;
+    }
+    runs
 }
 
 /// Lays out spans into a job, returning the link of each character range.
@@ -79,7 +186,15 @@ fn job(
             links.push((chars, chars + count, link.clone()));
         }
         chars += count;
-        job.append(&span.text, 0.0, format);
+        let emoji_format = TextFormat {
+            font_id: egui::FontId::new(emoji_size(look.size), format.font_id.family.clone()),
+            valign: Align::Center,
+            ..format.clone()
+        };
+        for (range, emoji) in emoji_runs(&span.text) {
+            let format = if emoji { &emoji_format } else { &format };
+            job.append(&span.text[range], 0.0, format.clone());
+        }
     }
     job.wrap = TextWrapping {
         max_width: width,
@@ -374,4 +489,67 @@ pub fn quote_block(
             );
         })
         .response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The runs of `text`, as (text, is_emoji).
+    fn runs(text: &str) -> Vec<(&str, bool)> {
+        emoji_runs(text)
+            .into_iter()
+            .map(|(range, emoji)| (&text[range], emoji))
+            .collect()
+    }
+
+    #[test]
+    fn plain_text_is_one_run() {
+        assert_eq!(runs("Ship it"), [("Ship it", false)]);
+        assert!(runs("").is_empty());
+    }
+
+    #[test]
+    fn emoji_between_words_split_the_text() {
+        assert_eq!(runs("🚀"), [("🚀", true)]);
+        assert_eq!(
+            runs("Ship it 🚀 now"),
+            [("Ship it ", false), ("🚀", true), (" now", false)]
+        );
+        assert_eq!(runs("😀😀"), [("😀😀", true)]);
+    }
+
+    #[test]
+    fn joined_tinted_and_flag_sequences_stay_whole() {
+        let family = "👨\u{200D}👩\u{200D}👧";
+        assert_eq!(runs(family), [(family, true)]);
+        let wave = "👋\u{1F3FD}";
+        assert_eq!(
+            runs(&format!("a{wave}b")),
+            [("a", false), (wave, true), ("b", false)]
+        );
+        assert_eq!(runs("🇮🇳🇺🇸"), [("🇮🇳🇺🇸", true)]);
+        let heart = "❤\u{FE0F}";
+        assert_eq!(runs(heart), [(heart, true)]);
+        assert_eq!(runs("a\u{200D}b"), [("a\u{200D}b", false)]);
+    }
+
+    #[test]
+    fn keycaps_count_but_bare_digits_and_symbols_do_not() {
+        let one = "1\u{FE0F}\u{20E3}";
+        assert_eq!(runs(&format!("x {one}")), [("x ", false), (one, true)]);
+        assert_eq!(runs("#1 * 2"), [("#1 * 2", false)]);
+        assert_eq!(runs("© 2025 ™ ® ❤ ✔"), [("© 2025 ™ ® ❤ ✔", false)]);
+        let tm = "™\u{FE0F}";
+        assert_eq!(runs(&format!("a{tm}")), [("a", false), (tm, true)]);
+    }
+
+    #[test]
+    fn emoji_are_one_step_up_the_type_scale() {
+        assert_eq!(emoji_size(12.0), 13.0);
+        assert_eq!(emoji_size(13.0), 14.0);
+        assert_eq!(emoji_size(14.0), 15.0);
+        assert_eq!(emoji_size(15.0), 18.0);
+        assert_eq!(emoji_size(30.0), 30.0);
+    }
 }
