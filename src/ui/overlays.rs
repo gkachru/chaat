@@ -3,7 +3,7 @@
 
 use egui::{CornerRadius, Frame, Key, Margin, Modifiers, Sense, Stroke, vec2};
 
-use super::widgets;
+use super::widgets::{self, PointerControls as _};
 use crate::app::{App, Overlay};
 use crate::model::{Action, ConversationId, Member, SearchHit};
 use crate::theme::{self, Icon};
@@ -499,16 +499,13 @@ fn new_chat(app: &mut App, ctx: &egui::Context) {
                     1 => format!("Chat with {}", picked[0].display_name),
                     n => format!("Start a group chat with {n} people"),
                 };
-                let button = ui.add_enabled(
+                let button = widgets::accent_button(
+                    ui,
+                    &palette,
                     !picked.is_empty(),
-                    egui::Button::new(
-                        egui::RichText::new(label)
-                            .font(theme::semibold(13.0))
-                            .color(palette.on_accent),
-                    )
-                    .fill(palette.accent)
-                    .corner_radius(CornerRadius::same(8))
-                    .min_size(vec2(0.0, 32.0)),
+                    &label,
+                    theme::semibold(13.0),
+                    32.0,
                 );
                 if button.clicked() {
                     start = true;
@@ -659,6 +656,7 @@ fn people_picker(
     ui.add_space(6.0);
     for (index, person) in found.iter().enumerate() {
         let (rect, row) = ui.allocate_exact_size(vec2(ui.available_width(), 44.0), Sense::click());
+        let row = row.on_hover_cursor(egui::CursorIcon::PointingHand);
         if index == *selected || row.hovered() {
             ui.painter()
                 .rect_filled(rect, CornerRadius::same(8), palette.surface_active);
@@ -754,8 +752,8 @@ fn add_people(app: &mut App, ctx: &egui::Context, chat: &str) {
                     egui::RichText::new("What can the new people see?").color(palette.secondary),
                 );
                 ui.add_space(6.0);
-                ui.radio_value(&mut history, false, "Don't include chat history");
-                ui.radio_value(&mut history, true, "Include all chat history");
+                ui.radio_hand(&mut history, false, "Don't include chat history");
+                ui.radio_hand(&mut history, true, "Include all chat history");
             } else if people_picker(ui, app, &mut query, &mut picked, &mut selected, &exclude) {
                 next = true;
             }
@@ -779,16 +777,13 @@ fn add_people(app: &mut App, ctx: &egui::Context, chat: &str) {
                         });
                     }
                 } else {
-                    let button = ui.add_enabled(
+                    let button = widgets::accent_button(
+                        ui,
+                        &palette,
                         !picked.is_empty(),
-                        egui::Button::new(
-                            egui::RichText::new("Next")
-                                .font(theme::semibold(14.0))
-                                .color(palette.on_accent),
-                        )
-                        .fill(palette.accent)
-                        .corner_radius(CornerRadius::same(8))
-                        .min_size(vec2(0.0, 34.0)),
+                        "Next",
+                        theme::semibold(14.0),
+                        34.0,
                     );
                     if button.clicked() {
                         next = true;

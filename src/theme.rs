@@ -363,6 +363,9 @@ pub fn apply(ctx: &egui::Context, palette: &Palette) {
         visuals.hyperlink_color = palette.link;
         visuals.selection.bg_fill = palette.accent.gamma_multiply(0.35);
         visuals.selection.stroke = Stroke::new(1.0, palette.accent);
+        // Every egui button (also selectable labels and menu entries) shows
+        // the pointing hand; checkboxes and radios add it themselves.
+        visuals.interact_cursor = Some(egui::CursorIcon::PointingHand);
         visuals.override_text_color = Some(palette.text);
         visuals.warn_fg_color = palette.warning;
         visuals.error_fg_color = palette.danger;

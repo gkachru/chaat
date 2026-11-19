@@ -3,7 +3,7 @@
 
 use egui::{CornerRadius, Frame, Margin, Sense, Stroke, vec2};
 
-use super::widgets;
+use super::widgets::{self, PointerControls as _};
 use crate::app::App;
 use crate::backend::AuthStatus;
 use crate::calling::CallsOpenIn;
@@ -401,7 +401,7 @@ fn out_of_office(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
                 (AutoReplies::On, "On"),
                 (AutoReplies::Scheduled, "On during a time range"),
             ] {
-                ui.radio_value(&mut form.replies, replies, label);
+                ui.radio_hand(&mut form.replies, replies, label);
                 ui.add_space(8.0);
             }
         });
@@ -431,7 +431,9 @@ fn out_of_office(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
                                         *time = slot;
                                     }
                                 }
-                            });
+                            })
+                            .response
+                            .on_hover_cursor(egui::CursorIcon::PointingHand);
                         ui.end_row();
                     }
                 });
@@ -455,7 +457,9 @@ fn out_of_office(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
                 for audience in ExternalAudience::ALL {
                     ui.selectable_value(&mut form.audience, audience, audience.label());
                 }
-            });
+            })
+            .response
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
         if form.audience != ExternalAudience::None {
             ui.add(
                 egui::TextEdit::multiline(&mut form.external)
@@ -527,7 +531,7 @@ fn general(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
     if cfg!(any(windows, target_os = "linux")) {
         let mut own = app.settings.custom_titlebar;
         if ui
-            .checkbox(&mut own, "Use Chaat's own title bar")
+            .checkbox_hand(&mut own, "Use Chaat's own title bar")
             .on_hover_text(
                 "Draws minimize, maximize and close in Chaat's header. Off: the system's window frame.",
             )
@@ -538,7 +542,7 @@ fn general(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
     }
     let mut keep = app.settings.keep_running;
     if ui
-        .checkbox(&mut keep, "Keep running in the tray when the window closes")
+        .checkbox_hand(&mut keep, "Keep running in the tray when the window closes")
         .changed()
     {
         actions.push(Action::SetKeepRunning(keep));
@@ -547,7 +551,7 @@ fn general(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
     group(ui, &palette, "Notifications");
     let mut notifications = app.settings.notifications;
     if ui
-        .checkbox(
+        .checkbox_hand(
             &mut notifications,
             "Desktop notifications for new messages and meeting reminders",
         )
@@ -559,7 +563,7 @@ fn general(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
     group(ui, &palette, "Presence");
     let mut session = app.settings.presence_session;
     if ui
-        .checkbox(&mut session, "Show me as available while I use Chaat")
+        .checkbox_hand(&mut session, "Show me as available while I use Chaat")
         .changed()
     {
         actions.push(Action::SetPresenceSession(session));
@@ -625,7 +629,9 @@ fn appearance(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
                     )));
                 }
             }
-        });
+        })
+        .response
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
 
     group(ui, &palette, "Zoom");
     ui.label(egui::RichText::new(format!("{:.0}%", app.settings.zoom * 100.0)).color(palette.text));
@@ -649,7 +655,9 @@ fn calls(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
             for choice in CallsOpenIn::ALL {
                 ui.selectable_value(&mut calls.open_in, choice, choice.label());
             }
-        });
+        })
+        .response
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
     let app_window = calls.open_in == CallsOpenIn::AppWindow;
     if !browsers.is_empty() && (app_window || calls.links_in_browser) {
         let current = calls
@@ -664,14 +672,16 @@ fn calls(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
                         calls.browser = Some(*kind);
                     }
                 }
-            });
+            })
+            .response
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
     }
     if let [first, ..] = browsers.as_slice() {
         let current = calls
             .browser
             .filter(|b| browsers.contains(b))
             .unwrap_or(*first);
-        ui.checkbox(
+        ui.checkbox_hand(
             &mut calls.links_in_browser,
             format!("Open all links in {}", current.short()),
         )
@@ -694,18 +704,18 @@ fn calls(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
                     .filter(|b| found.contains(b))
                     .unwrap_or(found[0]);
                 group(ui, &palette, "Call window");
-                ui.checkbox(
+                ui.checkbox_hand(
                     &mut calls.dock,
                     "Move Chaat beside the call window during calls",
                 );
                 if app.accounts.len() > 1 || calls.profile_per_account {
-                    ui.checkbox(
+                    ui.checkbox_hand(
                         &mut calls.profile_per_account,
                         "A separate browser profile for each account",
                     )
                     .on_hover_text("Each account signs in to Microsoft in its own browser profile, so Teams on the web never asks which account to use.");
                 }
-                ui.checkbox(
+                ui.checkbox_hand(
                     &mut calls.sign_out_browser,
                     format!(
                         "Signing out of Chaat also signs {} out of Microsoft",
@@ -887,7 +897,7 @@ fn advanced(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
     group(ui, &palette, "Diagnostics");
     let mut perf = app.settings.perf_overlay;
     if ui
-        .checkbox(
+        .checkbox_hand(
             &mut perf,
             super::keys::platform("Show the performance overlay (⌘⇧P)"),
         )
@@ -922,7 +932,7 @@ fn about(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
     group(ui, &palette, "Updates");
     let mut automatic = app.settings.automatic_updates;
     if ui
-        .checkbox(
+        .checkbox_hand(
             &mut automatic,
             "Automatically check for and download app updates",
         )

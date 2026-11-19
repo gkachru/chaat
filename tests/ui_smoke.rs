@@ -17,6 +17,7 @@ struct Harness {
     size: egui::Vec2,
     shapes: Vec<egui::epaint::ClippedShape>,
     repaint_after: std::time::Duration,
+    cursor: egui::CursorIcon,
     #[cfg(not(target_os = "macos"))]
     viewport_commands: Vec<egui::ViewportCommand>,
     _dir: tempfile::TempDir,
@@ -40,6 +41,7 @@ impl Harness {
             size: egui::vec2(1280.0, 820.0),
             shapes: Vec::new(),
             repaint_after: std::time::Duration::MAX,
+            cursor: egui::CursorIcon::Default,
             #[cfg(not(target_os = "macos"))]
             viewport_commands: Vec::new(),
             _dir: dir,
@@ -66,6 +68,7 @@ impl Harness {
         // No renderer here: drop the texture uploads on purpose.
         output.textures_delta.clear();
         let count = output.shapes.len();
+        self.cursor = output.platform_output.cursor_icon;
         self.repaint_after = output.viewport_output[&egui::ViewportId::ROOT].repaint_delay;
         #[cfg(not(target_os = "macos"))]
         {
@@ -2795,4 +2798,136 @@ fn escape_closes_the_people_panel() {
     assert!(painted_texts(&h).iter().any(|t| t == "People (5)"));
     press(&mut h, egui::Key::Escape);
     assert!(!painted_texts(&h).iter().any(|t| t == "People (5)"));
+}
+
+// -- Hover feedback -----------------------------------------------------------
+
+/// Whether `a` is `b`, allowing for a popup's fade (it scales every channel).
+fn same_fill(a: egui::Color32, b: egui::Color32) -> bool {
+    let scale = f32::from(a.a()) / f32::from(b.a().max(1));
+    a.a() > 128
+        && [(a.r(), b.r()), (a.g(), b.g()), (a.b(), b.b())]
+            .into_iter()
+            .all(|(x, y)| (f32::from(x) - f32::from(y) * scale).abs() <= 3.0)
+}
+
+/// Whether a small rect filled with `color` is painted under `point`.
+fn filled_under(h: &Harness, point: egui::Pos2, color: egui::Color32) -> bool {
+    painted_shapes(h).into_iter().any(|shape| match shape {
+        egui::epaint::Shape::Rect(rect) => {
+            same_fill(rect.fill, color)
+                && rect.rect.contains(point)
+                && rect.rect.width() < 400.0
+                && rect.rect.height() < 60.0
+        }
+        _ => false,
+    })
+}
+
+#[test]
+fn people_panel_rows_light_up_on_hover() {
+    for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+        let mut h = Harness::new();
+        h.app.settings.theme = theme.clone();
+        open_people_panel(&mut h);
+        for label in ["Add people", "Leave"] {
+            let row = painted_shapes(&h)
+                .into_iter()
+                .find_map(|shape| match shape {
+                    egui::epaint::Shape::Text(t) if t.galley.job.text == label => {
+                        Some(shape.visual_bounding_rect())
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("{label} is in the panel"));
+            let fill = h.app.palette.surface_hover;
+            // Resting: no highlight, the default arrow.
+            h.frame_with(vec![egui::Event::PointerMoved(egui::pos2(2.0, 2.0))]);
+            h.frames(2);
+            assert!(
+                !filled_under(&h, row.center(), fill),
+                "{label} rests ({theme:?})"
+            );
+            h.frame_with(vec![egui::Event::PointerMoved(row.center())]);
+            h.frames(2);
+            assert!(
+                filled_under(&h, row.center(), fill),
+                "{label} lights up under the pointer ({theme:?})"
+            );
+            assert_eq!(
+                h.cursor,
+                egui::CursorIcon::PointingHand,
+                "{label} ({theme:?})"
+            );
+        }
+    }
+}
+
+#[test]
+fn quick_reactions_light_up_on_hover() {
+    for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+        let mut h = Harness::new();
+        h.app.settings.theme = theme.clone();
+        h.act(Action::OpenConversation(ConversationId::Chat(
+            "19:demo-ada@unq.gbl.spaces".into(),
+        )));
+        h.frames(5);
+        let (own, _) = bubbles(&h);
+        let bubble = *own.last().expect("an own bubble is on screen");
+        h.frame_with(vec![egui::Event::PointerMoved(bubble.center())]);
+        h.frames(25);
+        let heart = egui::pos2(bubble.left() + 3.0 + 28.0 + 14.0, bubble.top() - 16.0);
+        let fill = h.app.palette.surface_hover;
+        assert!(!filled_under(&h, heart, fill), "resting ({theme:?})");
+        h.frame_with(vec![egui::Event::PointerMoved(heart)]);
+        h.frames(2);
+        assert!(
+            filled_under(&h, heart, fill),
+            "the emoji lights up under the pointer ({theme:?})"
+        );
+        assert_eq!(h.cursor, egui::CursorIcon::PointingHand, "{theme:?}");
+    }
+}
+
+#[test]
+fn dialog_buttons_change_fill_and_cursor_on_hover() {
+    for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+        let mut h = Harness::new();
+        h.app.settings.theme = theme.clone();
+        open_launch(&mut h);
+        h.act(Action::OpenLeaveChat(LAUNCH.into()));
+        let palette = h.app.palette;
+        // (label, the fill it rests in, the fill under the pointer)
+        for (label, rest, hover) in [
+            ("  Leave  ", palette.accent, palette.accent_hover),
+            ("Cancel", palette.surface, palette.surface_hover),
+        ] {
+            let text = painted_shapes(&h)
+                .into_iter()
+                .find_map(|shape| match shape {
+                    egui::epaint::Shape::Text(t) if t.galley.job.text == label => {
+                        Some(shape.visual_bounding_rect())
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("{label} is in the dialog"));
+            h.frame_with(vec![egui::Event::PointerMoved(egui::pos2(2.0, 2.0))]);
+            h.frames(2);
+            assert!(
+                filled_under(&h, text.center(), rest),
+                "{label} rests ({theme:?})"
+            );
+            h.frame_with(vec![egui::Event::PointerMoved(text.center())]);
+            h.frames(2);
+            assert!(
+                filled_under(&h, text.center(), hover),
+                "{label} hovers ({theme:?})"
+            );
+            assert_eq!(
+                h.cursor,
+                egui::CursorIcon::PointingHand,
+                "{label} ({theme:?})"
+            );
+        }
+    }
 }

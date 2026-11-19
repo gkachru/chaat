@@ -272,6 +272,7 @@ fn image(
                 )
                 .on_hover_cursor(egui::CursorIcon::PointingHand)
                 .on_hover_text("Open image preview");
+            super::widgets::hover_wash(ui, palette, &response, 6);
             if response.clicked() {
                 actions.push(Action::PreviewImage(uri.clone()));
             }

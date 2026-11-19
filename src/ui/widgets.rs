@@ -131,33 +131,102 @@ pub fn icon_button_sized(
         .on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
+/// Adds a button whose fill is `normal`, and `hover` while the pointer is on
+/// it or it is pressed. (A `Button::fill` would stay the same in every state.)
+pub fn with_fills<R>(
+    ui: &mut Ui,
+    normal: Color32,
+    hover: Color32,
+    add: impl FnOnce(&mut Ui) -> R,
+) -> R {
+    ui.scope(|ui| {
+        let widgets = &mut ui.visuals_mut().widgets;
+        widgets.inactive.weak_bg_fill = normal;
+        widgets.hovered.weak_bg_fill = hover;
+        widgets.active.weak_bg_fill = hover;
+        add(ui)
+    })
+    .inner
+}
+
+/// A filled accent button, possibly disabled.
+pub fn accent_button(
+    ui: &mut Ui,
+    palette: &Palette,
+    enabled: bool,
+    text: &str,
+    font: egui::FontId,
+    min_height: f32,
+) -> Response {
+    with_fills(ui, palette.accent, palette.accent_hover, |ui| {
+        let button = egui::Button::new(
+            egui::RichText::new(text)
+                .color(palette.on_accent)
+                .font(font),
+        )
+        .corner_radius(CornerRadius::same(8))
+        .min_size(vec2(0.0, min_height));
+        ui.add_enabled(enabled, button)
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+    })
+}
+
 /// A filled accent button.
 pub fn primary_button(ui: &mut Ui, palette: &Palette, text: &str) -> Response {
-    let button = egui::Button::new(
-        egui::RichText::new(text)
-            .color(palette.on_accent)
-            .font(theme::semibold(14.0)),
-    )
-    .fill(palette.accent)
-    .corner_radius(CornerRadius::same(8))
-    .min_size(vec2(0.0, 34.0));
-    ui.add(button)
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
+    accent_button(ui, palette, true, text, theme::semibold(14.0), 34.0)
 }
 
 /// An outlined secondary button.
 pub fn secondary_button(ui: &mut Ui, palette: &Palette, text: &str) -> Response {
-    let button = egui::Button::new(
-        egui::RichText::new(text)
-            .color(palette.text)
-            .font(theme::medium(13.0)),
-    )
-    .fill(palette.surface)
-    .stroke(Stroke::new(1.0, palette.outline))
-    .corner_radius(CornerRadius::same(8))
-    .min_size(vec2(0.0, 32.0));
-    ui.add(button)
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
+    with_fills(ui, palette.surface, palette.surface_hover, |ui| {
+        let button = egui::Button::new(
+            egui::RichText::new(text)
+                .color(palette.text)
+                .font(theme::medium(13.0)),
+        )
+        .stroke(Stroke::new(1.0, palette.outline))
+        .corner_radius(CornerRadius::same(8))
+        .min_size(vec2(0.0, 32.0));
+        ui.add(button)
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+    })
+}
+
+/// A faint wash over content that is already drawn (an image, a card) while
+/// the pointer is on `response`.
+pub fn hover_wash(ui: &Ui, palette: &Palette, response: &Response, radius: u8) {
+    if response.hovered() {
+        ui.painter().rect_filled(
+            response.rect,
+            CornerRadius::same(radius),
+            palette.text.gamma_multiply(0.07),
+        );
+    }
+}
+
+/// A borderless text button: dim text that brightens under the pointer.
+pub fn text_button(ui: &mut Ui, palette: &Palette, text: &str, font: egui::FontId) -> Response {
+    let galley = ui
+        .ctx()
+        .fonts_mut(|f| f.layout_no_wrap(text.to_owned(), font, palette.secondary));
+    let size = vec2(
+        galley.size().x,
+        galley.size().y.max(ui.spacing().interact_size.y),
+    );
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    if ui.is_rect_visible(rect) {
+        let color = if response.hovered() || response.has_focus() {
+            palette.text
+        } else {
+            palette.secondary
+        };
+        ui.painter().galley(
+            egui::pos2(rect.left(), rect.center().y - galley.size().y / 2.0),
+            galley,
+            color,
+        );
+    }
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 /// An outlined toggle chip (list filters such as Unread). Filled with the
@@ -346,6 +415,34 @@ pub fn window_drag(ui: &mut Ui, rect: egui::Rect, id: &str) {
             ui.ctx()
                 .send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
         }
+    }
+}
+
+/// egui's checkbox and radio button do not show a pointing hand; these do.
+pub trait PointerControls {
+    fn checkbox_hand(&mut self, checked: &mut bool, text: impl Into<egui::WidgetText>) -> Response;
+    fn radio_hand<V: PartialEq>(
+        &mut self,
+        current: &mut V,
+        value: V,
+        text: impl Into<egui::WidgetText>,
+    ) -> Response;
+}
+
+impl PointerControls for Ui {
+    fn checkbox_hand(&mut self, checked: &mut bool, text: impl Into<egui::WidgetText>) -> Response {
+        self.checkbox(checked, text)
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+    }
+
+    fn radio_hand<V: PartialEq>(
+        &mut self,
+        current: &mut V,
+        value: V,
+        text: impl Into<egui::WidgetText>,
+    ) -> Response {
+        self.radio_value(current, value, text)
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
     }
 }
 

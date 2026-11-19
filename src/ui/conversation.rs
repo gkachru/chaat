@@ -1204,7 +1204,11 @@ fn body(
         } = &quote.kind
     {
         let response = rich::quote_block(ui, palette, author.as_deref(), preview, width.min(560.0));
-        if response.interact(Sense::click()).clicked() {
+        let response = response
+            .interact(Sense::click())
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+        widgets::hover_wash(ui, palette, &response, 6);
+        if response.clicked() {
             actions.push(Action::OpenMessage {
                 conversation: conversation.clone(),
                 message: message_id.clone(),
@@ -1313,6 +1317,7 @@ fn file_chip(
         .interact(Sense::click())
         .on_hover_cursor(egui::CursorIcon::PointingHand)
         .on_hover_text("Open in your browser");
+    widgets::hover_wash(ui, palette, &response, 8);
     if response.clicked()
         && let Some(url) = &attachment.url
     {
@@ -1365,7 +1370,6 @@ fn reactions(
                 );
             }
             let button = egui::Button::new(job)
-                .fill(palette.bubble())
                 .stroke(Stroke::new(
                     1.0,
                     if mine {
@@ -1392,7 +1396,10 @@ fn reactions(
                     }
                 })
                 .collect();
-            let response = ui.add(button).on_hover_text(names.join(", "));
+            let response = widgets::with_fills(ui, palette.bubble(), palette.surface_hover, |ui| {
+                ui.add(button)
+            })
+            .on_hover_text(names.join(", "));
             if response.clicked() {
                 actions.push(Action::React {
                     conversation: conversation.clone(),
@@ -1402,15 +1409,15 @@ fn reactions(
                 });
             }
         }
-        let add = ui
-            .add(
+        let add = widgets::with_fills(ui, palette.window, palette.surface_hover, |ui| {
+            ui.add(
                 egui::Button::image(Icon::Smile.image(palette.secondary, 16.0))
-                    .fill(palette.window)
                     .stroke(Stroke::new(1.0, palette.outline))
                     .corner_radius(CornerRadius::same(14))
                     .min_size(vec2(38.0, 28.0)),
             )
-            .on_hover_text("Add a reaction");
+        })
+        .on_hover_text("Add a reaction");
         egui::Popup::menu(&add)
             .id(egui::Id::new(("chaat-add-reaction", &message.id)))
             .show(|ui| {
@@ -1421,11 +1428,14 @@ fn reactions(
                             .reactions
                             .iter()
                             .any(|r| r.emoji == emoji && r.users.iter().any(|u| u == me));
-                        let response = ui.add_sized(
+                        let response = emoji_button(
+                            ui,
+                            palette,
+                            emoji,
                             vec2(32.0, 30.0),
-                            egui::Button::new(egui::RichText::new(emoji).size(18.0))
-                                .frame(on)
-                                .fill(palette.highlight),
+                            18.0,
+                            palette.text,
+                            on,
                         );
                         if response.clicked() {
                             actions.push(Action::React {
@@ -1530,16 +1540,9 @@ fn hover_toolbar(
                         } else {
                             palette.text.gamma_multiply(0.35)
                         };
-                        let response = ui
-                            .add_sized(
-                                vec2(28.0, 26.0),
-                                egui::Button::new(
-                                    egui::RichText::new(emoji).size(15.0).color(color),
-                                )
-                                .frame(on)
-                                .fill(palette.highlight),
-                            )
-                            .on_hover_text(QUICK_REACTION_NAMES[index]);
+                        let response =
+                            emoji_button(ui, palette, emoji, vec2(28.0, 26.0), 15.0, color, on)
+                                .on_hover_text(QUICK_REACTION_NAMES[index]);
                         if response.clicked() {
                             actions.push(Action::React {
                                 conversation: conversation.clone(),
@@ -1604,19 +1607,86 @@ fn hover_toolbar(
     rect
 }
 
-/// One entry in a message's More menu. Returns whether it was clicked.
+/// One entry in a menu (a message's More menu, the people panel): a full
+/// width row that lights up under the pointer. Returns whether it was clicked.
 fn menu_item(ui: &mut egui::Ui, palette: &theme::Palette, icon: Icon, text: &str) -> bool {
-    ui.add(
-        egui::Button::image_and_text(
-            icon.image(palette.secondary, 16.0),
-            egui::RichText::new(text)
-                .font(theme::regular(13.0))
-                .color(palette.text),
-        )
-        .frame(false)
-        .min_size(vec2(0.0, 28.0)),
-    )
-    .clicked()
+    let text_width = ui
+        .painter()
+        .layout_no_wrap(text.to_owned(), theme::regular(13.0), palette.text)
+        .size()
+        .x;
+    let width = ui.available_width().max(text_width + 44.0);
+    let (rect, response) = ui.allocate_exact_size(vec2(width, 28.0), Sense::click());
+    if ui.is_rect_visible(rect) {
+        let hovered = response.hovered() || response.has_focus();
+        if hovered {
+            ui.painter()
+                .rect_filled(rect, CornerRadius::same(6), palette.surface_hover);
+        }
+        let tint = if hovered {
+            palette.text
+        } else {
+            palette.secondary
+        };
+        icon.image(tint, 16.0).paint_at(
+            ui,
+            egui::Rect::from_center_size(
+                egui::pos2(rect.left() + 16.0, rect.center().y),
+                egui::Vec2::splat(16.0),
+            ),
+        );
+        ui.painter().text(
+            egui::pos2(rect.left() + 32.0, rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            text,
+            theme::regular(13.0),
+            palette.text,
+        );
+    }
+    response
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .clicked()
+}
+
+/// A quick-reaction emoji: highlighted when the person has reacted with it,
+/// and lit up under the pointer.
+fn emoji_button(
+    ui: &mut egui::Ui,
+    palette: &theme::Palette,
+    emoji: &str,
+    size: egui::Vec2,
+    font_size: f32,
+    color: egui::Color32,
+    on: bool,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    if ui.is_rect_visible(rect) {
+        let hovered = response.hovered() || response.has_focus();
+        let fill = match (on, hovered) {
+            (true, _) => Some(palette.highlight),
+            (false, true) => Some(palette.surface_hover),
+            (false, false) => None,
+        };
+        if let Some(fill) = fill {
+            ui.painter().rect_filled(rect, CornerRadius::same(6), fill);
+        }
+        if on && hovered {
+            ui.painter().rect_stroke(
+                rect,
+                CornerRadius::same(6),
+                Stroke::new(1.0, palette.outline),
+                egui::StrokeKind::Inside,
+            );
+        }
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            emoji,
+            egui::FontId::proportional(font_size),
+            color,
+        );
+    }
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1803,14 +1873,7 @@ fn thread_card(
                 } else {
                     "Reply"
                 };
-                let response = ui.add(
-                    egui::Button::new(
-                        egui::RichText::new(label)
-                            .font(theme::medium(12.0))
-                            .color(palette.secondary),
-                    )
-                    .frame(false),
-                );
+                let response = widgets::text_button(ui, palette, label, theme::medium(12.0));
                 if response.clicked() {
                     actions.push(Action::StartReply(root.id.clone()));
                 }
@@ -2066,6 +2129,7 @@ fn composer(app: &mut App, ui: &mut egui::Ui, conversation: &ConversationId) {
                                                 .sense(Sense::click())
                                                 .alt_text("Preview pasted image"),
                                         ).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("Preview image");
+                                        widgets::hover_wash(ui, &palette, &response, 6);
                                         if response.clicked() {
                                             actions.push(Action::PreviewImage(image.uri()));
                                         }
@@ -2329,6 +2393,7 @@ fn composer(app: &mut App, ui: &mut egui::Ui, conversation: &ConversationId) {
                         for (index, person) in candidates.iter().enumerate() {
                             let (rect, response) =
                                 ui.allocate_exact_size(vec2(300.0, 38.0), Sense::click());
+                            let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
                             if index == selected || response.hovered() {
                                 ui.painter().rect_filled(
                                     rect,

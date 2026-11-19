@@ -175,7 +175,9 @@ fn card(app: &mut App, ui: &mut egui::Ui) {
             )
             .id_salt("registration")
             .default_open(false)
-            .show(ui, |ui| registration(app, ui, false));
+            .show(ui, |ui| registration(app, ui, false))
+            .header_response
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
         }
     }
 }
@@ -225,17 +227,18 @@ fn registration(app: &mut App, ui: &mut egui::Ui, first_run: bool) {
     ui.add_space(4.0);
     ui.horizontal(|ui| {
         let valid = crate::settings::is_guid(app.form_client_id.trim());
-        let save = ui.add_enabled(
-            valid,
-            egui::Button::new(
-                egui::RichText::new("Save")
-                    .color(palette.on_accent)
-                    .font(theme::semibold(13.0)),
+        let save = widgets::with_fills(ui, palette.accent, palette.accent_hover, |ui| {
+            ui.add_enabled(
+                valid,
+                egui::Button::new(
+                    egui::RichText::new("Save")
+                        .color(palette.on_accent)
+                        .font(theme::semibold(13.0)),
+                )
+                .corner_radius(CornerRadius::same(8))
+                .min_size(vec2(72.0, 32.0)),
             )
-            .fill(palette.accent)
-            .corner_radius(CornerRadius::same(8))
-            .min_size(vec2(72.0, 32.0)),
-        );
+        });
         if save.clicked() {
             app.actions.push(Action::SaveAppRegistration {
                 client_id: app.form_client_id.clone(),
