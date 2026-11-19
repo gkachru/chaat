@@ -147,6 +147,23 @@ impl Palette {
         }
     }
 
+    /// Behind other people's chat messages. Derived, so shared palettes
+    /// restyle it too. Lighter than `surface_hover`, which quotes and code
+    /// inside a bubble use.
+    pub fn bubble(&self) -> Color32 {
+        if self.dark {
+            self.surface
+        } else {
+            self.window.lerp_to_gamma(self.surface_hover, 0.6)
+        }
+    }
+
+    /// Behind the person's own chat messages: a bubble tinted with the accent.
+    pub fn bubble_mine(&self) -> Color32 {
+        self.bubble()
+            .lerp_to_gamma(self.accent, if self.dark { 0.16 } else { 0.12 })
+    }
+
     pub fn presence(&self, availability: crate::model::Availability) -> Color32 {
         use crate::model::Availability::*;
         match availability {

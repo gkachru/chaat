@@ -50,9 +50,43 @@ pub struct Conversation {
     /// First visible row and its offset from the viewport top.
     pub history_anchor: Option<(String, f32)>,
     pub restore_history_anchor: bool,
+    /// The person's last read time when they opened this chat with unread
+    /// messages: the "Last read" divider goes before the first newer
+    /// message from someone else.
+    pub unread_after: Option<crate::model::Millis>,
+    /// The message the divider was last drawn above.
+    pub divider_at: Option<String>,
 }
 
 impl Conversation {
+    /// Moves or removes the "Last read" divider.
+    pub fn set_unread_after(&mut self, after: Option<crate::model::Millis>) {
+        self.unread_after = after;
+    }
+
+    /// Index of the first message after the "Last read" divider. The row
+    /// above which the divider sits measures it, so when the divider moves
+    /// (a new read time, or older history loaded), the old and new rows are
+    /// measured again.
+    pub fn place_divider(&mut self, me: &str) -> Option<usize> {
+        let index = self.unread_after.and_then(|after| {
+            let start = self.messages.partition_point(|m| m.created <= after);
+            self.messages[start..]
+                .iter()
+                .position(|m| !m.system && !m.is_from(me))
+                .map(|offset| start + offset)
+        });
+        let id = index.map(|i| self.messages[i].id.clone());
+        if id != self.divider_at {
+            for stale in [&self.divider_at, &id].into_iter().flatten() {
+                self.heights.remove(stale);
+            }
+            self.layout.invalidate();
+            self.divider_at = id;
+        }
+        index
+    }
+
     pub fn find(&self, id: &str) -> Option<&Message> {
         self.messages.iter().find(|m| m.id == id).or_else(|| {
             self.messages
@@ -922,6 +956,19 @@ impl App {
             self.fetch_view(Trigger::Focused);
             self.fetch(Resource::MyPresence, Trigger::Focused);
             if let Some(ConversationId::Chat(chat)) = self.open.clone() {
+                // Messages that arrived while away get a "Last read" divider.
+                let me = self.me().to_owned();
+                let after = self
+                    .chat(&chat)
+                    .filter(|c| c.is_unread(&me))
+                    .and_then(|c| c.last_read);
+                if after.is_some()
+                    && let Some(entry) = self
+                        .conversations
+                        .get_mut(&ConversationId::Chat(chat.clone()))
+                {
+                    entry.set_unread_after(after);
+                }
                 self.mark_read(&chat);
             }
         }
@@ -2207,6 +2254,22 @@ impl App {
             _ => None,
         };
         let needs_cache = !self.conversations.contains_key(&conversation);
+        // Before marking it read: where the "Last read" divider goes.
+        let unread_after = match &conversation {
+            ConversationId::Chat(id) => self
+                .chat(id)
+                .filter(|c| c.is_unread(&me))
+                .and_then(|c| c.last_read),
+            ConversationId::Channel { .. } => None,
+        };
+        if let Some(entry) = self.conversations.get_mut(&conversation) {
+            entry.set_unread_after(unread_after);
+        } else if unread_after.is_some() {
+            self.conversations
+                .entry(conversation.clone())
+                .or_default()
+                .set_unread_after(unread_after);
+        }
         self.recent_conversations.retain(|id| id != &conversation);
         self.recent_conversations.push_back(conversation.clone());
         self.section = match conversation {
@@ -2809,6 +2872,61 @@ mod tests {
             body: RichText::plain(id),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn the_last_read_divider_skips_own_and_system_messages() {
+        let from = |id: &str, at, author: &str, system| Message {
+            author_id: Some(author.into()),
+            system,
+            ..message(id, at)
+        };
+        let mut view = Conversation {
+            messages: vec![
+                from("a", 10, "u-ada", false),
+                from("b", 20, "u-me", false),
+                from("c", 30, "u-ada", true),
+                from("d", 40, "u-ada", false),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(view.place_divider("u-me"), None, "no divider by default");
+        view.set_unread_after(Some(10));
+        assert_eq!(view.place_divider("u-me"), Some(3));
+        view.set_unread_after(Some(40));
+        assert_eq!(view.place_divider("u-me"), None, "nothing newer");
+    }
+
+    #[test]
+    fn a_moving_divider_measures_its_old_and_new_rows_again() {
+        let from = |id: &str, at| Message {
+            author_id: Some("u-ada".into()),
+            ..message(id, at)
+        };
+        // More was unread than one page: the divider starts at the oldest
+        // loaded message.
+        let mut view = Conversation {
+            messages: vec![from("c", 30), from("d", 40)],
+            unread_after: Some(5),
+            ..Default::default()
+        };
+        assert_eq!(view.place_divider("u-me"), Some(0));
+        for id in ["c", "d"] {
+            view.heights.insert(id.into(), 50.0);
+        }
+        // Older history arrives and the divider moves up to it.
+        view.messages.splice(0..0, [from("a", 10), from("b", 20)]);
+        view.heights.insert("a".into(), 50.0);
+        assert_eq!(view.place_divider("u-me"), Some(0));
+        assert!(
+            !view.heights.contains_key("c"),
+            "the old row loses the divider"
+        );
+        assert!(!view.heights.contains_key("a"), "the new row gains it");
+        assert!(
+            view.heights.contains_key("d"),
+            "other rows keep their height"
+        );
     }
 
     fn app() -> (App, tokio::sync::mpsc::UnboundedReceiver<Command>) {

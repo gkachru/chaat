@@ -845,6 +845,9 @@ pub fn reaction_emoji(reaction: &str) -> String {
 /// The reactions offered on hover, in Teams' order.
 pub const QUICK_REACTIONS: [&str; 6] = ["👍", "❤️", "😆", "😮", "😢", "😡"];
 
+/// What the quick reactions are called, in the same order.
+pub const QUICK_REACTION_NAMES: [&str; 6] = ["Like", "Heart", "Laugh", "Surprised", "Sad", "Angry"];
+
 #[cfg(test)]
 mod tests {
     use super::*;

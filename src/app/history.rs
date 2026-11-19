@@ -30,6 +30,13 @@ impl HistoryLayout {
         self.valid = false;
     }
 
+    /// Whether rows laid out before now get a different width or font, so
+    /// `prepare` will measure them all again.
+    pub(crate) fn resized(&self, width: f32, font_revision: u64) -> bool {
+        self.width > 0.0
+            && ((self.width - width).abs() > 0.5 || self.font_revision != font_revision)
+    }
+
     pub(crate) fn prepare(
         &mut self,
         messages: &[Message],

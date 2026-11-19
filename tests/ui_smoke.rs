@@ -634,8 +634,10 @@ fn large_pasted_text_stays_scrollable_and_sendable_inside_the_composer() {
                         .into_iter()
                         .filter_map(|shape| match shape {
                             egui::epaint::Shape::Rect(rect)
+                                // Dark chat bubbles share the fill; only
+                                // the composer holds the whole editor.
                                 if rect.fill == h.app.palette.surface
-                                    && rect.rect.contains(clip.center()) =>
+                                    && rect.rect.contains_rect(clip) =>
                             {
                                 Some(rect.rect)
                             }
@@ -1230,6 +1232,47 @@ fn shift_enter_adds_a_line_and_plain_enter_sends_or_saves() {
 }
 
 #[test]
+fn resizing_keeps_the_visible_row_when_scrolled_up() {
+    let mut h = Harness::new();
+    let chat = h.app.open.clone().unwrap();
+    let now = chaat::time::now();
+    h.app.conversations.get_mut(&chat).unwrap().messages = (0..80)
+        .map(|i| chaat::model::Message {
+            id: format!("row-{i}"),
+            author_id: Some(format!("u-{}", i % 3)),
+            author: "Someone".into(),
+            created: now - (80 - i) * 60 * 60_000,
+            body: chaat::html::RichText::plain(&"Long enough to wrap when narrow. ".repeat(8)),
+            ..Default::default()
+        })
+        .collect();
+    h.frames(5);
+    h.frame_with(vec![
+        egui::Event::PointerMoved(egui::pos2(900.0, 300.0)),
+        egui::Event::MouseWheel {
+            phase: egui::TouchPhase::Move,
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, 1500.0),
+            modifiers: egui::Modifiers::NONE,
+        },
+    ]);
+    h.frames(25);
+    let before = h.app.conversations[&chat].history_anchor.clone().unwrap();
+    // Dragging the window edge: a new width every frame.
+    for width in (900..1280).rev().step_by(20) {
+        h.size.x = width as f32;
+        h.frames(1);
+    }
+    h.frames(5);
+    let after = h.app.conversations[&chat].history_anchor.clone().unwrap();
+    assert_eq!(before.0, after.0, "the same message stays first in view");
+    assert!(
+        (before.1 - after.1).abs() < 2.0,
+        "at the same place: before {before:?}, after {after:?}"
+    );
+}
+
+#[test]
 fn prepending_history_preserves_the_visible_row() {
     let mut h = Harness::new();
     let chat = h.app.open.clone().unwrap();
@@ -1613,6 +1656,246 @@ fn switcher_finds_people_and_messages() {
         Some(ConversationId::Chat("19:demo-grace@unq.gbl.spaces".into()))
     );
     assert_eq!(h.app.overlay, None);
+}
+
+/// Chat bubbles in the conversation pane: (own, other people's). Bubbles
+/// have no stroke, which tells them from code blocks and reactions.
+fn bubbles(h: &Harness) -> (Vec<egui::Rect>, Vec<egui::Rect>) {
+    let pane = h.app.settings.sidebar_width + 80.0;
+    let (mine, theirs) = (h.app.palette.bubble_mine(), h.app.palette.bubble());
+    let mut own = Vec::new();
+    let mut others = Vec::new();
+    for shape in painted_shapes(h) {
+        if let egui::epaint::Shape::Rect(rect) = shape
+            && rect.rect.left() > pane
+            && rect.stroke.width == 0.0
+        {
+            if rect.fill == mine {
+                own.push(rect.rect);
+            } else if rect.fill == theirs {
+                others.push(rect.rect);
+            }
+        }
+    }
+    (own, others)
+}
+
+#[test]
+fn chat_messages_are_bubbles_with_your_own_on_the_right() {
+    for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+        for width in [900.0, 1440.0] {
+            let mut h = Harness::new();
+            h.size.x = width;
+            h.app.settings.theme = theme.clone();
+            h.act(Action::OpenConversation(ConversationId::Chat(
+                "19:demo-ada@unq.gbl.spaces".into(),
+            )));
+            h.frames(5);
+            let (own, others) = bubbles(&h);
+            assert!(
+                !own.is_empty() && !others.is_empty(),
+                "both kinds of bubble draw ({theme:?}, {width})"
+            );
+            let right = own.iter().map(|r| r.right()).fold(f32::MIN, f32::max);
+            assert!(
+                own.iter().all(|r| (r.right() - right).abs() < 1.0),
+                "own bubbles share the right edge ({theme:?}, {width})"
+            );
+            let left = others.iter().map(|r| r.left()).fold(f32::MAX, f32::min);
+            assert!(
+                others.iter().all(|r| (r.left() - left).abs() < 1.0),
+                "other people's bubbles share the left edge ({theme:?}, {width})"
+            );
+            assert!(
+                others.iter().all(|r| r.right() < right - 20.0),
+                "other people's bubbles stay left of your own ({theme:?}, {width})"
+            );
+            assert!(right <= width, "bubbles stay inside the window");
+            h.frames(40);
+            assert!(
+                h.repaint_after > std::time::Duration::from_millis(100),
+                "measuring own bubbles settles: {:?}",
+                h.ctx.repaint_causes()
+            );
+        }
+    }
+}
+
+#[test]
+fn the_hover_bar_keeps_edit_delete_and_copy_in_a_menu() {
+    let mut h = Harness::new();
+    h.act(Action::OpenConversation(ConversationId::Chat(
+        "19:demo-ada@unq.gbl.spaces".into(),
+    )));
+    h.frames(5);
+    let (own, _) = bubbles(&h);
+    let bubble = *own.last().expect("an own bubble is on screen");
+    h.frame_with(vec![egui::Event::PointerMoved(bubble.center())]);
+    h.frames(2);
+    let texts = painted_texts(&h);
+    assert!(texts.iter().any(|t| t == "👍"), "quick reactions show");
+    assert!(!texts.iter().any(|t| t == "Edit"), "Edit waits in the menu");
+    // The bar sits on the bubble's top edge from its left end (wider than
+    // the bar here), its More button last.
+    let bar = 6.0 * 28.0 + 9.0 + 2.0 * 28.0 + 6.0;
+    assert!(bubble.width() > bar);
+    h.click(egui::pos2(bubble.left() + bar - 17.0, bubble.top() - 16.0));
+    let texts = painted_texts(&h);
+    for item in ["Edit", "Delete", "Copy text"] {
+        assert!(texts.iter().any(|t| t == item), "the menu offers {item}");
+    }
+}
+
+#[test]
+fn own_bubbles_stay_inside_a_window_narrowed_in_another_chat() {
+    let ada = ConversationId::Chat("19:demo-ada@unq.gbl.spaces".into());
+    let grace = ConversationId::Chat("19:demo-grace@unq.gbl.spaces".into());
+    // Seen before at the wide size, or opened for the first time after
+    // the window narrowed; resized at once or dragged.
+    for (seen, dragged) in [(true, false), (true, true), (false, false), (false, true)] {
+        let mut h = Harness::new();
+        h.size.x = 1440.0;
+        if seen {
+            h.act(Action::OpenConversation(ada.clone()));
+            h.frames(5);
+        }
+        h.act(Action::OpenConversation(grace.clone()));
+        h.frames(5);
+        if dragged {
+            for width in (1000..=1440).rev().step_by(20) {
+                h.size.x = width as f32;
+                h.frames(1);
+            }
+        }
+        h.size.x = 1000.0;
+        h.frames(5);
+        h.act(Action::OpenConversation(ada.clone()));
+        h.frames(5);
+        let (own, _) = bubbles(&h);
+        assert!(!own.is_empty());
+        for bubble in own {
+            assert!(
+                bubble.right() <= 1000.0 - 16.0,
+                "own bubble ends inside the window (seen {seen}, dragged {dragged}): {bubble:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_long_file_name_does_not_widen_the_history() {
+    let ada = ConversationId::Chat("19:demo-ada@unq.gbl.spaces".into());
+    let mut h = Harness::new();
+    h.size.x = 1000.0;
+    h.act(Action::OpenConversation(ada.clone()));
+    h.frames(3);
+    let me = h.app.me().to_owned();
+    let view = h.app.conversations.get_mut(&ada).unwrap();
+    let n = view.messages.len();
+    let at = view.messages[n - 2].created - 1;
+    let file = |id: &str, at: i64| chaat::model::Message {
+        id: id.into(),
+        author_id: Some(me.clone()),
+        author: "Me".into(),
+        created: at,
+        body: chaat::html::RichText::plain("The recording"),
+        attachments: vec![chaat::model::Attachment {
+            id: format!("{id}-file"),
+            kind: chaat::model::AttachmentKind::File,
+            name: Some(format!("{}.mp4", "a-very-long-recording-name-".repeat(12))),
+            content_type: None,
+            url: Some("https://example.com/file".into()),
+        }],
+        ..Default::default()
+    };
+    // Ordinary messages follow the file.
+    view.messages.insert(n - 2, file("file-1", at));
+    view.layout.invalidate();
+    h.act(Action::OpenConversation(ada));
+    h.frames(10);
+    let (own, _) = bubbles(&h);
+    assert!(own.len() > 1);
+    for bubble in &own {
+        assert!(
+            bubble.right() <= 1000.0 - 16.0,
+            "own bubbles stay inside the window: {bubble:?}"
+        );
+    }
+}
+
+#[test]
+fn pointing_at_a_quick_reaction_dims_the_others() {
+    let mut h = Harness::new();
+    h.act(Action::OpenConversation(ConversationId::Chat(
+        "19:demo-ada@unq.gbl.spaces".into(),
+    )));
+    h.frames(5);
+    let (own, _) = bubbles(&h);
+    let bubble = *own.last().expect("an own bubble is on screen");
+    h.frame_with(vec![egui::Event::PointerMoved(bubble.center())]);
+    h.frames(2);
+    // The bar starts at your bubble's left edge; its second button is the heart.
+    let bar_left = bubble.left();
+    let heart = egui::pos2(bar_left + 3.0 + 28.0 + 14.0, bubble.top() - 16.0);
+    h.frame_with(vec![egui::Event::PointerMoved(heart)]);
+    h.frames(2);
+    let color_of = |emoji: &str| {
+        painted_shapes(&h)
+            .into_iter()
+            .find_map(|shape| match shape {
+                egui::epaint::Shape::Text(text)
+                    if text.galley.job.text == emoji
+                        && (bubble.top() - 34.0..bubble.top()).contains(&text.pos.y) =>
+                {
+                    text.galley.job.sections.first().map(|s| s.format.color)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{emoji} is in the bar"))
+    };
+    let text = h.app.palette.text;
+    assert_eq!(color_of("❤️"), text, "the pointed reaction stays bright");
+    assert_eq!(color_of("👍"), text.gamma_multiply(0.35), "the others dim");
+}
+
+#[test]
+fn single_reactions_show_only_the_emoji() {
+    let mut h = Harness::new();
+    h.act(Action::OpenConversation(ConversationId::Chat(
+        "19:demo-ada@unq.gbl.spaces".into(),
+    )));
+    h.frames(5);
+    let texts = painted_texts(&h);
+    assert!(texts.iter().any(|t| t == "👍"), "one reaction: emoji only");
+    assert!(!texts.iter().any(|t| t == "👍1"));
+    assert!(
+        texts.iter().any(|t| t == "🎉2"),
+        "two reactions: with count"
+    );
+}
+
+#[test]
+fn unread_chats_open_at_a_last_read_divider() {
+    let mut h = Harness::new();
+    h.frames(2);
+    let katherine = ConversationId::Chat("19:demo-katherine@unq.gbl.spaces".into());
+    h.act(Action::OpenConversation(katherine.clone()));
+    h.frames(3);
+    assert!(
+        painted_texts(&h).iter().any(|t| t == "Last read"),
+        "an unread chat shows where reading stopped"
+    );
+    h.act(Action::OpenConversation(ConversationId::Chat(
+        "19:demo-ada@unq.gbl.spaces".into(),
+    )));
+    h.frames(3);
+    assert!(!painted_texts(&h).iter().any(|t| t == "Last read"));
+    h.act(Action::OpenConversation(katherine));
+    h.frames(3);
+    assert!(
+        !painted_texts(&h).iter().any(|t| t == "Last read"),
+        "reopening a chat that is now read shows no divider"
+    );
 }
 
 #[test]
