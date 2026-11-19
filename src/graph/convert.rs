@@ -31,7 +31,7 @@ fn body_text(body: Option<&g::ItemBody>) -> html::RichText {
     }
 }
 
-pub fn chat(chat: g::Chat) -> Chat {
+pub fn chat(chat: g::Chat, me: &str) -> Chat {
     let kind = match chat.chat_type.as_deref() {
         Some("group") => ChatKind::Group,
         Some("meeting") => ChatKind::Meeting,
@@ -52,14 +52,15 @@ pub fn chat(chat: g::Chat) -> Chat {
         .collect();
     let preview = chat.last_message_preview.map(|preview| {
         let deleted = preview.is_deleted.unwrap_or(false);
+        let system = !deleted
+            && preview
+                .message_type
+                .as_deref()
+                .is_some_and(|t| t != "message");
         let text = if deleted {
             "This message was deleted".to_owned()
-        } else if preview
-            .message_type
-            .as_deref()
-            .is_some_and(|t| t != "message")
-        {
-            system_summary(preview.event_detail.as_ref())
+        } else if system {
+            system_summary(preview.event_detail.as_ref(), me)
         } else {
             body_text(preview.body.as_ref()).summary(140)
         };
@@ -82,6 +83,10 @@ pub fn chat(chat: g::Chat) -> Chat {
                 .and_then(parse_iso)
                 .unwrap_or_default(),
             deleted,
+            system,
+            membership: system
+                .then(|| membership(preview.event_detail.as_ref()))
+                .flatten(),
         }
     });
     let viewpoint = chat.viewpoint.unwrap_or_default();
@@ -107,8 +112,9 @@ pub fn chat(chat: g::Chat) -> Chat {
     }
 }
 
-/// Words for a system event, from its `eventDetail` type.
-fn system_summary(detail: Option<&serde_json::Value>) -> String {
+/// Words for a system event, from its `eventDetail` type. `me` is the
+/// signed-in person's id, to tell a missed call from one they placed.
+fn system_summary(detail: Option<&serde_json::Value>, me: &str) -> String {
     let Some(detail) = detail else {
         return "Chat event".into();
     };
@@ -122,26 +128,10 @@ fn system_summary(detail: Option<&serde_json::Value>) -> String {
         .and_then(|n| n.as_str())
         .filter(|n| !n.is_empty());
     let who = initiator.unwrap_or("Someone");
-    let members = || {
-        detail
-            .get("members")
-            .and_then(|m| m.as_array())
-            .map(|members| {
-                members
-                    .iter()
-                    .filter_map(|m| m.get("displayName").and_then(|n| n.as_str()))
-                    .filter(|n| !n.is_empty())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            })
-            .filter(|names| !names.is_empty())
-            .unwrap_or_else(|| "people".into())
-    };
+    if let Some(membership) = membership(Some(detail)) {
+        return membership.describe(|_| None);
+    }
     match kind {
-        "membersAddedEventMessageDetail" => format!("{who} added {}", members()),
-        "membersDeletedEventMessageDetail" => format!("{who} removed {}", members()),
-        "membersJoinedEventMessageDetail" => format!("{} joined", members()),
-        "membersLeftEventMessageDetail" => format!("{} left", members()),
         "chatRenamedEventMessageDetail" => {
             let name = detail
                 .get("chatDisplayName")
@@ -149,8 +139,20 @@ fn system_summary(detail: Option<&serde_json::Value>) -> String {
                 .unwrap_or_default();
             format!("{who} renamed the chat to “{name}”")
         }
+        "callStartedEventMessageDetail" if is_meeting(detail) => "Meeting started".into(),
         "callStartedEventMessageDetail" => "Call started".into(),
-        "callEndedEventMessageDetail" => "Call ended".into(),
+        "callEndedEventMessageDetail" if call_missed(Some(detail), me) => "Missed call".into(),
+        "callEndedEventMessageDetail" => {
+            let ended = if is_meeting(detail) {
+                "Meeting ended"
+            } else {
+                "Call ended"
+            };
+            match call_duration(detail) {
+                Some(duration) => format!("{ended} after {duration}"),
+                None => ended.into(),
+            }
+        }
         "callRecordingEventMessageDetail" => "Call recorded".into(),
         "callTranscriptEventMessageDetail" => "Transcript available".into(),
         "meetingPolicyUpdatedEventMessageDetail" => "Meeting settings changed".into(),
@@ -165,14 +167,136 @@ fn system_summary(detail: Option<&serde_json::Value>) -> String {
     }
 }
 
-pub fn message(message: g::ChatMessage, conversation: Option<&ConversationId>) -> Message {
+/// People added to or removed from a chat, by id and, when Graph says, by
+/// name. Graph often leaves `displayName` empty in these events.
+fn membership(detail: Option<&serde_json::Value>) -> Option<crate::model::Membership> {
+    use crate::model::{EventPerson, MemberChange, Membership};
+    let detail = detail?;
+    let change = match detail.get("@odata.type").and_then(|t| t.as_str())? {
+        "#microsoft.graph.membersAddedEventMessageDetail" => MemberChange::Added,
+        "#microsoft.graph.membersDeletedEventMessageDetail" => MemberChange::Removed,
+        "#microsoft.graph.membersJoinedEventMessageDetail" => MemberChange::Joined,
+        "#microsoft.graph.membersLeftEventMessageDetail" => MemberChange::Left,
+        _ => return None,
+    };
+    let person = |value: &serde_json::Value| {
+        let id = value.get("id").and_then(|i| i.as_str())?;
+        Some(EventPerson {
+            id: id.to_owned(),
+            name: value
+                .get("displayName")
+                .and_then(|n| n.as_str())
+                .filter(|n| !n.is_empty())
+                .map(str::to_owned),
+        })
+    };
+    Some(Membership {
+        change,
+        by: detail.pointer("/initiator/user").and_then(person),
+        members: detail
+            .get("members")
+            .and_then(|m| m.as_array())
+            .map(|members| members.iter().filter_map(person).collect())
+            .unwrap_or_default(),
+    })
+}
+
+/// A call or meeting starting or ending, for its icon and duration.
+fn call_event(detail: Option<&serde_json::Value>) -> Option<crate::model::CallEvent> {
+    let detail = detail?;
+    let ended = match detail.get("@odata.type").and_then(|t| t.as_str())? {
+        "#microsoft.graph.callStartedEventMessageDetail" => false,
+        "#microsoft.graph.callEndedEventMessageDetail" => true,
+        _ => return None,
+    };
+    Some(crate::model::CallEvent {
+        meeting: is_meeting(detail),
+        ended,
+        duration: ended.then(|| call_duration(detail)).flatten(),
+    })
+}
+
+/// Whether a call event belongs to a meeting rather than a call.
+fn is_meeting(detail: &serde_json::Value) -> bool {
+    detail.get("callEventType").and_then(|t| t.as_str()) == Some("meeting")
+}
+
+/// Whether an ended call went unanswered by anyone: a call (not a meeting)
+/// that someone else placed and nobody joined besides them. Graph has no
+/// answered or declined state, so this is inferred: a
+/// decline looks the same, and a group call one other person answered does
+/// not count as missed.
+pub fn call_missed(detail: Option<&serde_json::Value>, me: &str) -> bool {
+    let Some(detail) = detail else {
+        return false;
+    };
+    let ended = detail.get("@odata.type").and_then(|t| t.as_str())
+        == Some("#microsoft.graph.callEndedEventMessageDetail");
+    let joined = detail
+        .get("callParticipants")
+        .and_then(|p| p.as_array())
+        .map_or(0, Vec::len);
+    let initiator = detail
+        .pointer("/initiator/user/id")
+        .and_then(|id| id.as_str());
+    ended && !me.is_empty() && !is_meeting(detail) && joined < 2 && initiator != Some(me)
+}
+
+/// How long a call lasted ("4m 12s"), from its ISO 8601 `callDuration`.
+fn call_duration(detail: &serde_json::Value) -> Option<String> {
+    let seconds = iso_duration_seconds(detail.get("callDuration")?.as_str()?)?;
+    (seconds > 0).then(|| short_duration(seconds))
+}
+
+/// Seconds in an ISO 8601 duration such as `PT1H4M12.5S` or `P1DT2H`.
+fn iso_duration_seconds(text: &str) -> Option<u64> {
+    let rest = text.strip_prefix('P')?;
+    let (date, time) = rest.split_once('T').unwrap_or((rest, ""));
+    if date.is_empty() && time.is_empty() {
+        return None;
+    }
+    let sum = |part: &str, units: &[(char, u64)]| -> Option<u64> {
+        let mut total = 0;
+        let mut number = String::new();
+        for c in part.chars() {
+            if c.is_ascii_digit() || c == '.' {
+                number.push(c);
+                continue;
+            }
+            let (_, factor) = units.iter().find(|(unit, _)| *unit == c)?;
+            let value: f64 = number.parse().ok()?;
+            total += (value * *factor as f64) as u64;
+            number.clear();
+        }
+        number.is_empty().then_some(total)
+    };
+    Some(sum(date, &[('D', 86_400)])? + sum(time, &[('H', 3600), ('M', 60), ('S', 1)])?)
+}
+
+/// "45s", "4m 12s", "1h 5m", "2h".
+fn short_duration(seconds: u64) -> String {
+    let (hours, minutes, rest) = (seconds / 3600, seconds % 3600 / 60, seconds % 60);
+    match (hours, minutes, rest) {
+        (0, 0, s) => format!("{s}s"),
+        (0, m, 0) => format!("{m}m"),
+        (0, m, s) => format!("{m}m {s}s"),
+        (h, 0, _) => format!("{h}h"),
+        (h, m, _) => format!("{h}h {m}m"),
+    }
+}
+
+pub fn message(
+    message: g::ChatMessage,
+    conversation: Option<&ConversationId>,
+    me: &str,
+) -> Message {
     let system = message
         .message_type
         .as_deref()
         .is_some_and(|kind| kind != "message");
     let deleted = message.deleted_date_time.is_some();
     let mut body = if system {
-        html::RichText::plain(&system_summary(message.event_detail.as_ref()))
+        html::RichText::plain(&system_summary(message.event_detail.as_ref(), me))
     } else if deleted {
         html::RichText::default()
     } else {
@@ -254,11 +378,19 @@ pub fn message(message: g::ChatMessage, conversation: Option<&ConversationId>) -
         .replies
         .unwrap_or_default()
         .into_iter()
-        .map(|reply| self::message(reply, conversation.as_ref()))
+        .map(|reply| self::message(reply, conversation.as_ref(), me))
         .collect::<Vec<_>>();
     let mut replies = replies;
     replies.sort_by_key(|reply| reply.created);
+    let missed_call = system && call_missed(message.event_detail.as_ref(), me);
     Message {
+        missed_call,
+        membership: system
+            .then(|| membership(message.event_detail.as_ref()))
+            .flatten(),
+        call: system
+            .then(|| call_event(message.event_detail.as_ref()))
+            .flatten(),
         author_id: message
             .from
             .as_ref()
@@ -449,7 +581,7 @@ mod tests {
         let raw: g::ChatMessage = serde_json::from_value(serde_json::json!({
             "id":"message", "body":{"contentType":"html", "content":"<img src=\"../hostedContents/1/$value\"><img src=\"https://outside.example/image.png\">"}
         })).unwrap();
-        let message = message(raw, Some(&ConversationId::Chat("chat".into())));
+        let message = message(raw, Some(&ConversationId::Chat("chat".into())), "u-me");
         assert_eq!(
             message.body.images().collect::<Vec<_>>(),
             [
@@ -479,7 +611,7 @@ mod tests {
             "viewpoint": {"isHidden": false, "lastMessageReadDateTime": "2026-10-10T09:30:00Z"}
         }))
         .unwrap();
-        let chat = chat(raw);
+        let chat = chat(raw, "u-me");
         assert_eq!(chat.title("u-me"), "Ada");
         assert_eq!(chat.members[0].tenant_id.as_deref(), Some("t-ada"));
         assert_eq!(chat.members[1].tenant_id, None);
@@ -508,7 +640,7 @@ mod tests {
             ]
         }))
         .unwrap();
-        let message = message(raw, None);
+        let message = message(raw, None, "u-me");
         assert_eq!(
             message.conversation,
             Some(ConversationId::Chat("19:abc@thread.v2".into()))
@@ -542,9 +674,166 @@ mod tests {
             }
         }))
         .unwrap();
-        let message = message(raw, None);
+        let message = message(raw, None, "u-me");
         assert!(message.system);
-        assert_eq!(message.body.to_plain(), "Ada added Grace");
+        assert_eq!(message.body.to_plain(), "Ada added Grace to the chat.");
+    }
+
+    #[test]
+    fn membership_events_keep_ids_for_names_graph_left_out() {
+        let raw: g::ChatMessage = serde_json::from_value(serde_json::json!({
+            "id": "1", "messageType": "systemEventMessage", "createdDateTime": "2026-10-10T10:00:00Z",
+            "body": {"contentType": "html", "content": "<systemEventMessage/>"},
+            "eventDetail": {
+                "@odata.type": "#microsoft.graph.membersDeletedEventMessageDetail",
+                "members": [{"id": "u-g", "displayName": null}],
+                "initiator": {"user": {"id": "u-ada", "displayName": null}}
+            }
+        }))
+        .unwrap();
+        let message = message(raw, None, "u-me");
+        assert_eq!(
+            message.body.to_plain(),
+            "Someone removed someone from the chat."
+        );
+        let membership = message.membership.expect("kept for naming");
+        assert_eq!(membership.unnamed().collect::<Vec<_>>(), ["u-ada", "u-g"]);
+        let names = |id: &str| match id {
+            "u-ada" => Some("Ada".to_owned()),
+            "u-g" => Some("Grace".to_owned()),
+            _ => None,
+        };
+        assert_eq!(
+            membership.describe(names),
+            "Ada removed Grace from the chat."
+        );
+    }
+
+    #[test]
+    fn call_events_keep_their_kind_and_length() {
+        let raw: g::ChatMessage = serde_json::from_value(serde_json::json!({
+            "id": "1", "messageType": "systemEventMessage", "createdDateTime": "2026-10-10T10:00:00Z",
+            "body": {"contentType": "html", "content": "<systemEventMessage/>"},
+            "eventDetail": {
+                "@odata.type": "#microsoft.graph.callEndedEventMessageDetail",
+                "callEventType": "meeting",
+                "callDuration": "PT8M18S",
+                "callParticipants": [{"participant": {"user": {"id": "u-ada"}}}],
+                "initiator": {"user": {"id": "u-ada"}}
+            }
+        }))
+        .unwrap();
+        let call = message(raw, None, "u-me").call.expect("a call event");
+        assert!(call.meeting && call.ended);
+        assert_eq!(call.duration.as_deref(), Some("8m 18s"));
+    }
+
+    fn call_ended(detail: serde_json::Value) -> Message {
+        let mut detail = detail;
+        detail["@odata.type"] = "#microsoft.graph.callEndedEventMessageDetail".into();
+        let raw: g::ChatMessage = serde_json::from_value(serde_json::json!({
+            "id": "1", "messageType": "systemEventMessage", "createdDateTime": "2026-10-10T10:00:00Z",
+            "body": {"contentType": "html", "content": "<systemEventMessage/>"},
+            "eventDetail": detail
+        }))
+        .unwrap();
+        message(raw, None, "u-me")
+    }
+
+    #[test]
+    fn an_unanswered_call_from_someone_else_is_missed() {
+        let missed = call_ended(serde_json::json!({
+            "callEventType": "call", "callDuration": "PT0S",
+            "initiator": {"user": {"id": "u-ada"}},
+            "callParticipants": [{"participant": {"user": {"id": "u-ada"}}}]
+        }));
+        assert!(missed.missed_call);
+        assert_eq!(missed.body.to_plain(), "Missed call");
+
+        // Nobody joined, but nobody is named as the caller either.
+        let unknown = call_ended(serde_json::json!({"callEventType": "call"}));
+        assert!(unknown.missed_call);
+    }
+
+    #[test]
+    fn calls_i_placed_answered_calls_and_meetings_are_not_missed() {
+        let mine = call_ended(serde_json::json!({
+            "callEventType": "call", "initiator": {"user": {"id": "u-me"}},
+            "callParticipants": [{"participant": {"user": {"id": "u-me"}}}]
+        }));
+        assert!(!mine.missed_call);
+        assert_eq!(mine.body.to_plain(), "Call ended");
+
+        let answered = call_ended(serde_json::json!({
+            "callEventType": "call", "callDuration": "PT4M12.5S",
+            "initiator": {"user": {"id": "u-ada"}},
+            "callParticipants": [
+                {"participant": {"user": {"id": "u-ada"}}},
+                {"participant": {"user": {"id": "u-me"}}}
+            ]
+        }));
+        assert!(!answered.missed_call);
+        assert_eq!(answered.body.to_plain(), "Call ended after 4m 12s");
+
+        let meeting = call_ended(serde_json::json!({
+            "callEventType": "meeting", "callDuration": "PT1H5M30S",
+            "initiator": {"user": {"id": "u-ada"}}
+        }));
+        assert!(!meeting.missed_call);
+        assert_eq!(meeting.body.to_plain(), "Meeting ended after 1h 5m");
+
+        // Without the signed-in id nothing is called missed.
+        assert!(!call_missed(
+            Some(&serde_json::json!({
+                "@odata.type": "#microsoft.graph.callEndedEventMessageDetail",
+                "callEventType": "call"
+            })),
+            ""
+        ));
+    }
+
+    #[test]
+    fn missed_calls_show_in_the_chat_list_preview() {
+        let raw: g::Chat = serde_json::from_value(serde_json::json!({
+            "id": "19:a_b@unq.gbl.spaces", "chatType": "oneOnOne",
+            "lastMessagePreview": {
+                "id": "1", "createdDateTime": "2026-10-10T10:00:00Z", "isDeleted": false,
+                "messageType": "systemEventMessage",
+                "eventDetail": {
+                    "@odata.type": "#microsoft.graph.callEndedEventMessageDetail",
+                    "callEventType": "call", "initiator": {"user": {"id": "u-ada"}},
+                    "callParticipants": []
+                }
+            }
+        }))
+        .unwrap();
+        assert_eq!(chat(raw, "u-me").preview.unwrap().text, "Missed call");
+    }
+
+    #[test]
+    fn durations_read_iso_8601_and_print_short() {
+        assert_eq!(iso_duration_seconds("PT45S"), Some(45));
+        assert_eq!(iso_duration_seconds("PT4M12.9S"), Some(252));
+        assert_eq!(iso_duration_seconds("P1DT2H"), Some(93_600));
+        assert_eq!(iso_duration_seconds("PT"), None);
+        assert_eq!(iso_duration_seconds("P"), None);
+        assert_eq!(iso_duration_seconds("4M"), None);
+        assert_eq!(iso_duration_seconds("PT4X"), None);
+        assert_eq!(short_duration(45), "45s");
+        assert_eq!(short_duration(240), "4m");
+        assert_eq!(short_duration(252), "4m 12s");
+        assert_eq!(short_duration(7200), "2h");
+        assert_eq!(short_duration(3930), "1h 5m");
+        // A zero-length call shows no duration.
+        assert_eq!(
+            call_ended(serde_json::json!({
+                "callEventType": "call", "callDuration": "PT0S",
+                "initiator": {"user": {"id": "u-me"}}
+            }))
+            .body
+            .to_plain(),
+            "Call ended"
+        );
     }
 
     #[test]
@@ -554,7 +843,7 @@ mod tests {
             "body": {"contentType": "html", "content": "<p>secret</p>"}
         }))
         .unwrap();
-        let message = message(raw, None);
+        let message = message(raw, None, "u-me");
         assert!(message.deleted);
         assert!(message.body.is_empty());
     }

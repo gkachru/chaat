@@ -56,6 +56,8 @@ fastframe_icons::icons! {
         User => lucide "user",
         Offline => "wifi-off",
         File => "file-text",
+        UserPlus => "user-plus",
+        UserMinus => "user-minus",
         Image => "image",
         Download => "download",
         Keyboard => "keyboard",

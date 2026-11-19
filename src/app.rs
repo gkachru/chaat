@@ -294,6 +294,9 @@ pub struct Account {
     pub my_presence: Option<Presence>,
     pub meetings: Vec<Meeting>,
     pub photos: HashMap<String, Image>,
+    /// Display names Graph left out of system events, looked up by id.
+    pub names: HashMap<String, String>,
+    names_asked: HashSet<String>,
     pub media: HashMap<String, Image>,
     pub loading: HashSet<Resource>,
 
@@ -353,6 +356,8 @@ impl Account {
             my_presence: None,
             meetings: Vec::new(),
             photos: HashMap::new(),
+            names: HashMap::new(),
+            names_asked: HashSet::new(),
             media: HashMap::new(),
             loading: HashSet::new(),
             open: None,
@@ -470,6 +475,26 @@ impl Account {
                 format!("{team_name} › {channel_name}")
             }
         }
+    }
+
+    /// A person's name by id, for system events: "You", someone from the
+    /// account's chats, or a name looked up before.
+    pub fn person_name(&self, id: &str) -> Option<String> {
+        if id == self.me() {
+            return Some("You".into());
+        }
+        self.chats
+            .iter()
+            .flat_map(|chat| chat.members.iter())
+            .find(|m| m.user_id == id && !m.display_name.is_empty())
+            .map(|m| m.display_name.clone())
+            .or_else(|| self.names.get(id).cloned())
+    }
+
+    /// Whether a system event's person is still unnamed and not yet looked
+    /// up, so views ask for each name once.
+    pub fn needs_name(&self, id: &str) -> bool {
+        !self.names_asked.contains(id) && self.person_name(id).is_none()
     }
 
     /// Everyone in the account's chats except the person, by name: the
@@ -1244,6 +1269,11 @@ impl App {
             }
             Event::OutOfOfficeNotSaved => self.out_of_office_saving = false,
             Event::MeetingChat { join_url, chat } => self.on_meeting_chat(join_url, chat),
+            Event::UserName { user, name } => {
+                if let Some(name) = name {
+                    self.names.insert(user, name);
+                }
+            }
             Event::Photo { user, bytes } => {
                 let state = match bytes
                     .and_then(|bytes| register_image(ctx, &format!("photo-{user}"), bytes))
@@ -1535,14 +1565,19 @@ impl App {
             self.mark_read(&chat.clone());
         }
         // Keep the chat list's preview in step with what the chat shows.
+        // People added or removed don't count, as in Teams: they would move
+        // the chat up the list.
         if let ConversationId::Chat(chat_id) = &conversation
             && let Some(last) = self
                 .conversations
                 .get(&conversation)
-                .and_then(|c| c.messages.last())
+                .and_then(|c| c.messages.iter().rev().find(|m| m.membership.is_none()))
                 .cloned()
             && let Some(chat) = self.chats.iter_mut().find(|c| &c.id == chat_id)
-            && chat.preview.as_ref().is_none_or(|p| p.at < last.created)
+            && chat
+                .preview
+                .as_ref()
+                .is_none_or(|p| p.at < last.created || p.membership.is_some())
             && last.delivery == Delivery::Sent
         {
             chat.preview = Some(crate::model::Preview {
@@ -1552,6 +1587,8 @@ impl App {
                 text: preview_text(&last),
                 at: last.created,
                 deleted: last.deleted,
+                system: last.system,
+                membership: last.membership.clone(),
             });
             self.chats.sort_by_key(Chat::list_order);
         }
@@ -2226,6 +2263,30 @@ impl App {
                         .send(Command::SaveRelayKey(key.map(crate::realtime::RelayKey)));
                 }
             }
+            Action::LookUpNames(users) => {
+                // Asked once each; the demo has no directory to ask.
+                let demo = self.demo;
+                for user in users {
+                    if self.person_name(&user).is_none()
+                        && self.names_asked.insert(user.clone())
+                        && !demo
+                    {
+                        self.backend.send(Command::UserName(user));
+                    }
+                }
+            }
+            Action::RetryRelay => {
+                // Accounts already connected keep their connection.
+                if !self.demo {
+                    for account in &self.accounts {
+                        if matches!(account.push, crate::realtime::PushStatus::Failed(_)) {
+                            account
+                                .backend
+                                .send(Command::Relay(self.settings.relay_url.clone()));
+                        }
+                    }
+                }
+            }
             Action::TogglePerfOverlay => {
                 self.settings.perf_overlay = !self.settings.perf_overlay;
                 self.mark_settings_dirty();
@@ -2556,6 +2617,7 @@ impl App {
                 text: preview_text(&message),
                 at: message.created,
                 deleted: false,
+                ..Default::default()
             });
             self.chats.sort_by_key(Chat::list_order);
         }
@@ -2872,6 +2934,47 @@ mod tests {
             body: RichText::plain(id),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn names_graph_left_out_are_looked_up_once() {
+        let (mut app, mut commands) = app();
+        let ctx = egui::Context::default();
+        while commands.try_recv().is_ok() {}
+        app.apply(Action::LookUpNames(vec!["u-gone".into()]), &ctx);
+        assert!(matches!(
+            commands.try_recv().unwrap(),
+            Command::UserName(id) if id == "u-gone"
+        ));
+        assert!(!app.needs_name("u-gone"), "asked already");
+        app.apply(Action::LookUpNames(vec!["u-gone".into()]), &ctx);
+        assert!(commands.try_recv().is_err(), "not asked twice");
+        app.handle(
+            Event::UserName {
+                user: "u-gone".into(),
+                name: Some("Sourabh".into()),
+            },
+            &ctx,
+        );
+        assert_eq!(app.person_name("u-gone").as_deref(), Some("Sourabh"));
+        assert_eq!(app.person_name(app.me()).as_deref(), Some("You"));
+    }
+
+    #[test]
+    fn retrying_the_relay_reconnects_only_a_failed_connection() {
+        let (mut app, mut commands) = app();
+        let ctx = egui::Context::default();
+        while commands.try_recv().is_ok() {}
+        app.settings.relay_url = Some("https://relay.example.com".into());
+        app.push = crate::realtime::PushStatus::Live;
+        app.apply(Action::RetryRelay, &ctx);
+        assert!(commands.try_recv().is_err(), "a live connection stays");
+        app.push = crate::realtime::PushStatus::Failed("timed out".into());
+        app.apply(Action::RetryRelay, &ctx);
+        assert!(matches!(
+            commands.try_recv().unwrap(),
+            Command::Relay(Some(url)) if url == "https://relay.example.com"
+        ));
     }
 
     #[test]

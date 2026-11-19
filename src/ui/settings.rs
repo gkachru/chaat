@@ -798,7 +798,18 @@ fn push(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         crate::realtime::PushStatus::Failed(_) => palette.danger,
         _ => palette.secondary,
     };
-    ui.label(egui::RichText::new(app.push.label()).color(color));
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(app.push.label()).color(color));
+        // Chaat retries on its own; this skips the wait.
+        if matches!(app.push, crate::realtime::PushStatus::Failed(_))
+            && ui
+                .button("Retry now")
+                .on_hover_text("Connect to the relay again")
+                .clicked()
+        {
+            actions.push(Action::RetryRelay);
+        }
+    });
 }
 
 fn shortcuts(app: &App, ui: &mut egui::Ui) {

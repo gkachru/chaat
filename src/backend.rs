@@ -166,6 +166,8 @@ pub enum Command {
     SaveRelayKey(Option<crate::realtime::RelayKey>),
     Presence(Vec<String>),
     Photo(String),
+    /// A person's display name, for a system event Graph left it out of.
+    UserName(String),
     Media(String),
     Search(String),
     Shutdown,
@@ -238,6 +240,10 @@ pub enum Event {
     /// Whether channel posts can be read with the granted scopes.
     ChannelAccess(Access),
     Presence(Vec<(String, Presence)>),
+    UserName {
+        user: String,
+        name: Option<String>,
+    },
     Photo {
         user: String,
         bytes: Option<Vec<u8>>,

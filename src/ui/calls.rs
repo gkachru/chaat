@@ -96,7 +96,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     ui.add_space(theme::HEADER_HEIGHT + 12.0);
     egui::ScrollArea::vertical().id_salt("calls-page").auto_shrink([false, false]).show(ui, |ui| {
         Frame::new().inner_margin(Margin::symmetric(32, 0)).show(ui, |ui| {
-            ui.set_max_width(680.0);
+            ui.set_max_width(ui.available_width().min(680.0));
             ui.label(egui::RichText::new("Calls and meetings").font(theme::bold(24.0)).color(palette.text));
             ui.add_space(6.0);
             let place = match app.opener() {

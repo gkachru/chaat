@@ -142,6 +142,7 @@ struct Worker {
     /// subscription.
     contacts: watch::Sender<Vec<String>>,
     photos_asked: HashMap<String, Instant>,
+    names_asked: HashMap<String, Instant>,
     /// Channel paging links, by conversation.
     older_links: Arc<Mutex<HashMap<ConversationId, String>>>,
     /// Whether the last fetch reached Microsoft (see `Event::Reachable`).
@@ -197,6 +198,7 @@ pub(super) async fn run(
         presence_pushed: std::collections::HashSet::new(),
         contacts: watch::channel(Vec::new()).0,
         photos_asked: HashMap::new(),
+        names_asked: HashMap::new(),
         older_links: Arc::default(),
         reachable: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         downloads: Arc::new(Semaphore::new(4)),
@@ -405,6 +407,7 @@ impl Worker {
             }
             Command::Presence(users) => self.presence(users),
             Command::Photo(user) => self.photo(user),
+            Command::UserName(user) => self.user_name(user),
             Command::Media(url) => self.media(url),
             Command::Search(query) => self.search(query),
             Command::Shutdown => {}
@@ -1399,6 +1402,28 @@ impl Worker {
                 .unwrap_or_default()
                 .to_owned()
         })
+    }
+
+    /// Looks up a name once per person every ten minutes, like photos.
+    fn user_name(&mut self, user: String) {
+        let Some(account) = &self.account else { return };
+        let now = Instant::now();
+        if self
+            .names_asked
+            .get(&user)
+            .is_some_and(|at| now.duration_since(*at) < Duration::from_secs(600))
+        {
+            return;
+        }
+        self.names_asked.insert(user.clone(), now);
+        let graph = Arc::clone(&account.graph);
+        let out = self.out.clone();
+        tokio::spawn(async move {
+            match graph.user_name(&user).await {
+                Ok(name) => out.send(Event::UserName { user, name }),
+                Err(error) => log::debug!("name unavailable: {error}"),
+            }
+        });
     }
 
     fn photo(&mut self, user: String) {

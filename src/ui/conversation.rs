@@ -17,6 +17,8 @@ use crate::theme::{self, Icon};
 /// Room for the avatar left of other people's messages.
 const GUTTER: f32 = 44.0;
 const AVATAR: f32 = 32.0;
+/// How long the pointer rests on a message before its hover bar shows.
+const HOVER_DELAY: f64 = 0.3;
 /// Height of the name and time line above a message group.
 const HEADER: f32 = 19.0;
 /// Space between a bubble's edge and its text.
@@ -153,11 +155,32 @@ fn header(app: &mut App, ui: &mut egui::Ui, conversation: &ConversationId) {
                         (name, subtitle)
                     }
                 };
+                // During a call in this chat the call bar has the controls.
+                let in_call = app
+                    .call
+                    .as_ref()
+                    .is_some_and(|c| !c.is_ended() && c.chat.as_ref() == Some(conversation));
+                if in_call {
+                    call_users.clear();
+                    join = None;
+                }
+                // The title takes what the buttons on the right leave.
+                let icons = usize::from(web.is_some()) + if call_users.is_empty() { 0 } else { 2 };
+                let mut buttons = icons as f32 * 34.0 + 16.0;
+                if join.is_some() {
+                    buttons += 80.0;
+                }
+                if app
+                    .loading
+                    .contains(&crate::sync::Resource::Messages(conversation.clone()))
+                {
+                    buttons += 18.0;
+                }
                 ui.vertical(|ui| {
                     ui.add_space(8.0);
                     ui.spacing_mut().item_spacing.y = 0.0;
                     let width =
-                        (ui.available_width() - 260.0 - super::header_right_inset(ui.ctx()))
+                        (ui.available_width() - buttons - super::header_right_inset(ui.ctx()))
                             .max(120.0);
                     ui.add(egui::Label::new(super::chat_list::elided(
                         ui,
@@ -176,15 +199,6 @@ fn header(app: &mut App, ui: &mut egui::Ui, conversation: &ConversationId) {
                         )));
                     }
                 });
-                // During a call in this chat the call bar has the controls.
-                let in_call = app
-                    .call
-                    .as_ref()
-                    .is_some_and(|c| !c.is_ended() && c.chat.as_ref() == Some(conversation));
-                if in_call {
-                    call_users.clear();
-                    join = None;
-                }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
                     // The header's own margin already covers part of the
@@ -497,7 +511,9 @@ fn history(app: &mut App, ui: &mut egui::Ui, conversation: &ConversationId) {
                                     if keep
                                         || (!kept
                                             && pointer.is_some_and(|p| {
-                                                rect.contains(p) && clip.contains(p)
+                                                // In chats only the bubble itself.
+                                                bubble.unwrap_or(rect).contains(p)
+                                                    && clip.contains(p)
                                             }))
                                     {
                                         hovered = Some((
@@ -524,6 +540,46 @@ fn history(app: &mut App, ui: &mut egui::Ui, conversation: &ConversationId) {
                                 egui::style::ScrollAnimation::none(),
                             );
                         }
+                        // The bar waits until the pointer rests on a
+                        // message, so scrolling past bubbles shows nothing.
+                        // A bar already showing stays.
+                        let since_id = egui::Id::new(("chaat-hover-since", conversation.key()));
+                        let now = ui.input(|i| i.time);
+                        let scrolling = ui.input(|i| i.smooth_scroll_delta.y != 0.0);
+                        let hovered = hovered.filter(|(index, ..)| {
+                            let id = &messages[*index].id;
+                            if !scrolling
+                                && previous_hover
+                                    .as_ref()
+                                    .is_some_and(|(shown, _)| shown == id)
+                            {
+                                return true;
+                            }
+                            let since: Option<(String, f64)> =
+                                ui.ctx().data(|d| d.get_temp(since_id));
+                            match since {
+                                Some((resting, at)) if &resting == id && !scrolling => {
+                                    let waited = now - at;
+                                    if waited < HOVER_DELAY {
+                                        ui.ctx().request_repaint_after(
+                                            std::time::Duration::from_secs_f64(
+                                                HOVER_DELAY - waited,
+                                            ),
+                                        );
+                                    }
+                                    waited >= HOVER_DELAY
+                                }
+                                _ => {
+                                    ui.ctx().data_mut(|d| {
+                                        d.insert_temp(since_id, (id.clone(), now));
+                                    });
+                                    ui.ctx().request_repaint_after(
+                                        std::time::Duration::from_secs_f64(HOVER_DELAY),
+                                    );
+                                    false
+                                }
+                            }
+                        });
                         if let Some((index, rect, anchor, mine)) = &hovered {
                             let message = &messages[*index];
                             let id = &message.id;
@@ -609,6 +665,90 @@ fn unread_divider(ui: &mut egui::Ui, palette: &theme::Palette) {
     ui.add_space(2.0);
 }
 
+/// A system event's icon and words, as Teams shows them: people added or
+/// removed by name, and calls with their time and, in bold, how long they
+/// lasted. Names Graph left out are looked up.
+fn system_line(
+    app: &App,
+    message: &Message,
+    wrap: f32,
+    actions: &mut Vec<Action>,
+) -> (Option<Icon>, egui::text::LayoutJob) {
+    use crate::model::MemberChange;
+    let palette = &app.palette;
+    let format = |font: egui::FontId, color: egui::Color32| egui::TextFormat {
+        font_id: font,
+        color,
+        valign: Align::Center,
+        ..Default::default()
+    };
+    let mut job = egui::text::LayoutJob::default();
+    job.wrap.max_width = wrap;
+    let words = format(theme::regular(13.0), palette.secondary);
+    if let Some(membership) = &message.membership {
+        let unknown: Vec<String> = membership
+            .unnamed()
+            .filter(|id| app.needs_name(id))
+            .map(str::to_owned)
+            .collect();
+        if !unknown.is_empty() {
+            actions.push(Action::LookUpNames(unknown));
+        }
+        job.append(&membership.describe(|id| app.person_name(id)), 0.0, words);
+        let icon = match membership.change {
+            MemberChange::Added | MemberChange::Joined => Icon::UserPlus,
+            MemberChange::Removed | MemberChange::Left => Icon::UserMinus,
+        };
+        return (Some(icon), job);
+    }
+    if let Some(call) = &message.call {
+        let now = crate::time::now();
+        let clock = crate::time::clock(message.created);
+        let at = if crate::time::day_key(message.created) == crate::time::day_key(now) {
+            clock
+        } else {
+            format!("{} {clock}", crate::time::day_label(message.created, now))
+        };
+        job.append(&at, 0.0, format(theme::regular(12.0), palette.dim));
+        let what = if call.meeting { "Meeting" } else { "Call" };
+        let words_text = if message.missed_call {
+            "Missed call".to_owned()
+        } else if call.ended {
+            format!("{what} ended")
+        } else {
+            format!("{what} started")
+        };
+        job.append(&words_text, 12.0, words.clone());
+        if let Some(duration) = call.duration.as_deref().filter(|_| !message.missed_call) {
+            job.append(duration, 6.0, format(theme::semibold(13.0), palette.text));
+        }
+        let icon = if call.meeting {
+            Icon::Video
+        } else {
+            Icon::Phone
+        };
+        return (Some(icon), job);
+    }
+    job.append(&message.body.to_plain(), 0.0, words);
+    (None, job)
+}
+
+/// Whom "Call back" on a missed call rings: everyone else in the chat, as
+/// the chat header's call buttons do. Empty outside chats or without
+/// addresses, which hides the button.
+fn missed_call_back(app: &App, conversation: &ConversationId, me: &str) -> Vec<String> {
+    let ConversationId::Chat(id) = conversation else {
+        return Vec::new();
+    };
+    app.chat(id).map_or_else(Vec::new, |chat| {
+        chat.members
+            .iter()
+            .filter(|m| m.user_id != me)
+            .filter_map(|m| m.email.clone())
+            .collect()
+    })
+}
+
 /// One chat message as a bubble: on the right for the person's own
 /// messages, on the left under the author's name and picture for everyone
 /// else's. Returns the row's rect and the bubble's.
@@ -626,22 +766,48 @@ fn message_row(
 ) -> (egui::Rect, egui::Rect) {
     let palette = &app.palette;
     if message.system {
-        let response = ui.allocate_ui(vec2(width, 24.0), |ui| {
+        let call_back = if message.missed_call {
+            missed_call_back(app, conversation, me)
+        } else {
+            Vec::new()
+        };
+        let text_width = (width - GUTTER - 8.0).max(80.0);
+        let (icon, job) = system_line(app, message, text_width, actions);
+        let response = ui.allocate_ui(vec2(width, 0.0), |ui| {
             ui.set_width(width);
-            ui.add_space(4.0);
-            ui.vertical_centered(|ui| {
-                let text = format!(
-                    "{} · {}",
-                    message.body.to_plain(),
-                    crate::time::clock(message.created)
-                );
-                ui.label(
-                    egui::RichText::new(text)
-                        .font(theme::regular(12.0))
-                        .color(palette.dim),
-                );
+            ui.add_space(6.0);
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                // The icon sits in the avatar column, the words where
+                // messages start.
+                let (gutter, _) = ui.allocate_exact_size(vec2(GUTTER, 20.0), Sense::hover());
+                if let Some(icon) = icon {
+                    icon.image(palette.dim, 18.0).paint_at(
+                        ui,
+                        egui::Rect::from_min_size(
+                            gutter.min + vec2(7.0, 1.0),
+                            egui::Vec2::splat(18.0),
+                        ),
+                    );
+                }
+                let galley = ui.ctx().fonts_mut(|f| f.layout_job(job));
+                ui.add(egui::Label::new(galley))
+                    .on_hover_text(crate::time::day_label(message.created, crate::time::now()));
+                if !call_back.is_empty() {
+                    ui.add_space(10.0);
+                    let response = widgets::pill(ui, palette, Icon::Phone, "Call back", false)
+                        .on_hover_text("Call back in Microsoft Teams");
+                    widgets::on_click(
+                        &response,
+                        actions,
+                        Action::StartCall {
+                            users: call_back,
+                            video: false,
+                        },
+                    );
+                }
             });
-            ui.add_space(4.0);
+            ui.add_space(6.0);
         });
         let rect = response.response.rect;
         return (rect, rect);
@@ -2018,12 +2184,19 @@ fn composer(app: &mut App, ui: &mut egui::Ui, conversation: &ConversationId) {
                     });
                 });
             ui.add_space(2.0);
+            // Formatting help only while typing. The line keeps its room
+            // either way, so the history doesn't move as focus changes.
+            let typing = ui.memory(|m| m.has_focus(id));
             ui.label(
                 egui::RichText::new(
                     "**bold**  *italic*  `code`  > quote  - list  @ mention   ·   Shift+Enter for a new line",
                 )
                 .font(theme::regular(11.0))
-                .color(palette.dim),
+                .color(if typing {
+                    palette.dim
+                } else {
+                    egui::Color32::TRANSPARENT
+                }),
             );
         });
     ui.ctx().data_mut(|d| d.insert_temp(selected_id, selected));
@@ -2142,7 +2315,7 @@ fn channel_consent(app: &mut App, ui: &mut egui::Ui, conversation: &Conversation
     let palette = app.palette;
     ui.vertical_centered(|ui| {
         ui.add_space((ui.available_height() * 0.22).max(24.0));
-        ui.set_max_width(460.0);
+        ui.set_max_width(ui.available_width().min(460.0));
         theme::icon(ui, Icon::Lock, 36.0, palette.dim);
         ui.add_space(8.0);
         ui.label(egui::RichText::new("Channel posts need admin approval").font(theme::semibold(18.0)).color(palette.text));

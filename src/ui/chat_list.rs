@@ -54,6 +54,18 @@ fn kind_label(groups: bool, meetings: bool) -> &'static str {
 
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let palette = app.palette;
+    // Names Graph left out of system events in previews, asked for once.
+    let unknown: Vec<String> = app
+        .chats
+        .iter()
+        .filter_map(|chat| chat.preview.as_ref()?.membership.as_ref())
+        .flat_map(|m| m.unnamed())
+        .filter(|id| app.needs_name(id))
+        .map(str::to_owned)
+        .collect();
+    if !unknown.is_empty() {
+        app.actions.push(Action::LookUpNames(unknown));
+    }
     egui::Frame::new()
         .inner_margin(Margin::symmetric(12, 0))
         .show(ui, |ui| {
@@ -239,7 +251,15 @@ fn row(ui: &mut egui::Ui, app: &App, chat: &Chat, me: &str, now: i64) -> egui::R
     );
     ui.painter().galley(time_pos, time_galley, palette.dim);
 
+    // A system event reads in italics, with names but no author.
+    let system = chat.preview.as_ref().is_some_and(|p| p.system);
     let preview = chat.preview.as_ref().map(|p| {
+        if p.system {
+            return p
+                .membership
+                .as_ref()
+                .map_or_else(|| p.text.clone(), |m| m.describe(|id| app.person_name(id)));
+        }
         let who = match (&p.author_id, &p.author) {
             (Some(id), _) if id == me => Some("You".to_owned()),
             (_, Some(author)) if chat.kind != ChatKind::OneOnOne => Some(
@@ -257,7 +277,7 @@ fn row(ui: &mut egui::Ui, app: &App, chat: &Chat, me: &str, now: i64) -> egui::R
         }
     });
     let preview_width = (inner.right() - text_left - if unread { 28.0 } else { 10.0 }).max(20.0);
-    let preview_galley = elided(
+    let preview_galley = elided_styled(
         ui,
         preview.as_deref().unwrap_or(""),
         theme::regular(13.0),
@@ -267,6 +287,7 @@ fn row(ui: &mut egui::Ui, app: &App, chat: &Chat, me: &str, now: i64) -> egui::R
             palette.secondary
         },
         preview_width,
+        system,
     );
     ui.painter().galley(
         egui::pos2(text_left, inner.top() + 31.0),
@@ -291,11 +312,24 @@ pub fn elided(
     color: egui::Color32,
     width: f32,
 ) -> std::sync::Arc<egui::Galley> {
+    elided_styled(ui, text, font, color, width, false)
+}
+
+/// `elided`, optionally in italics (system events in the chat list).
+fn elided_styled(
+    ui: &egui::Ui,
+    text: &str,
+    font: egui::FontId,
+    color: egui::Color32,
+    width: f32,
+    italics: bool,
+) -> std::sync::Arc<egui::Galley> {
     let mut job = egui::text::LayoutJob::single_section(
         text.replace('\n', " "),
         egui::TextFormat {
             font_id: font,
             color,
+            italics,
             ..Default::default()
         },
     );

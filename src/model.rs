@@ -104,6 +104,101 @@ pub struct Preview {
     pub text: String,
     pub at: Millis,
     pub deleted: bool,
+    /// A system event, shown in italics without an author.
+    #[serde(default)]
+    pub system: bool,
+    #[serde(default)]
+    pub membership: Option<Membership>,
+}
+
+/// A call or meeting starting or ending in a chat.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CallEvent {
+    pub meeting: bool,
+    pub ended: bool,
+    /// How long it lasted ("8m 18s"), for an ended call.
+    #[serde(default)]
+    pub duration: Option<String>,
+}
+
+/// Someone named in a system event, with the name when Graph gave one.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventPerson {
+    pub id: String,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+/// How a chat's members changed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MemberChange {
+    #[default]
+    Added,
+    Removed,
+    Joined,
+    Left,
+}
+
+/// "people" at the start of a sentence.
+fn capitalized(text: &str) -> String {
+    let mut chars = text.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(chars).collect()
+    })
+}
+
+/// People added to or removed from a chat. Graph often leaves the names
+/// out, so the ids stay for the interface to name them.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Membership {
+    pub change: MemberChange,
+    #[serde(default)]
+    pub by: Option<EventPerson>,
+    #[serde(default)]
+    pub members: Vec<EventPerson>,
+}
+
+impl Membership {
+    /// "Ada added Grace to the chat." `name` fills in names Graph left out.
+    pub fn describe(&self, name: impl Fn(&str) -> Option<String>) -> String {
+        let named = |person: &EventPerson| {
+            person
+                .name
+                .clone()
+                .filter(|n| !n.is_empty())
+                .or_else(|| name(&person.id))
+        };
+        let by = self
+            .by
+            .as_ref()
+            .and_then(named)
+            .unwrap_or_else(|| "Someone".into());
+        let members: Vec<String> = self
+            .members
+            .iter()
+            .map(|person| named(person).unwrap_or_else(|| "someone".into()))
+            .collect();
+        let members = match members.as_slice() {
+            [] => "people".to_owned(),
+            [one] => one.clone(),
+            [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+        };
+        match self.change {
+            MemberChange::Added => format!("{by} added {members} to the chat."),
+            MemberChange::Removed => format!("{by} removed {members} from the chat."),
+            MemberChange::Joined => format!("{} joined.", capitalized(&members)),
+            MemberChange::Left => format!("{} left.", capitalized(&members)),
+        }
+    }
+
+    /// Ids of the people Graph gave no name for.
+    pub fn unnamed(&self) -> impl Iterator<Item = &str> {
+        self.by
+            .iter()
+            .chain(&self.members)
+            .filter(|p| p.name.as_deref().is_none_or(str::is_empty))
+            .map(|p| p.id.as_str())
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -166,6 +261,9 @@ impl Chat {
         // for the same chat disagree; sorting keeps the title from changing.
         others.sort_by_cached_key(|name| name.to_lowercase());
         match others.len() {
+            // Someone who left the organization: Graph drops them from the
+            // members, or keeps them without a name.
+            0 if self.kind == ChatKind::OneOnOne => "Unknown user".to_owned(),
             0 => "Just you".to_owned(),
             1..=3 => others.join(", "),
             n => format!("{}, {} and {} others", others[0], others[1], n - 2),
@@ -192,11 +290,13 @@ impl Chat {
         self.last_read.is_none_or(|read| preview.at > read)
     }
 
-    /// Sorting key for the list: newest activity first.
+    /// Sorting key for the list: the newest message, the time the list
+    /// shows. Graph's `lastUpdatedDateTime` also moves for membership and
+    /// other chat changes, so it orders only chats without a message.
     pub fn activity(&self) -> Millis {
         self.preview
             .as_ref()
-            .map_or(self.updated, |preview| preview.at.max(self.updated))
+            .map_or(self.updated, |preview| preview.at)
     }
 }
 
@@ -282,6 +382,16 @@ pub struct Message {
     pub deleted: bool,
     /// A system event ("Ada added Grace to the chat"), drawn as a line.
     pub system: bool,
+    /// A call someone else placed that nobody answered (see
+    /// `graph::convert::call_missed`), offered a "Call back".
+    #[serde(default)]
+    pub missed_call: bool,
+    /// For people added or removed: who, by id, to name them.
+    #[serde(default)]
+    pub membership: Option<Membership>,
+    /// For a call or meeting starting or ending.
+    #[serde(default)]
+    pub call: Option<CallEvent>,
     pub subject: Option<String>,
     pub importance_high: bool,
     pub body: RichText,
@@ -808,6 +918,10 @@ pub enum Action {
     SetRelay(String),
     /// The relay's access key; `None` removes it.
     SetRelayKey(Option<String>),
+    /// Connect to the relay again now, for accounts whose push failed.
+    RetryRelay,
+    /// Look up the names Graph left out of a system event, by user id.
+    LookUpNames(Vec<String>),
     TogglePerfOverlay,
     Refresh,
     DismissToast(u64),
@@ -908,6 +1022,62 @@ mod tests {
         ]);
         assert_eq!(one.title("me"), "Person A, person B");
         assert_eq!(other.title("me"), one.title("me"));
+    }
+
+    #[test]
+    fn membership_changes_read_like_teams() {
+        let person = |id: &str, name: Option<&str>| EventPerson {
+            id: id.into(),
+            name: name.map(str::to_owned),
+        };
+        let added = Membership {
+            change: MemberChange::Added,
+            by: Some(person("u-s", Some("Shiv"))),
+            members: vec![person("u-g", Some("Gautam")), person("u-r", None)],
+        };
+        assert_eq!(
+            added.describe(|id| (id == "u-r").then(|| "Rishu".to_owned())),
+            "Shiv added Gautam and Rishu to the chat."
+        );
+        let joined = Membership {
+            change: MemberChange::Joined,
+            by: None,
+            members: Vec::new(),
+        };
+        assert_eq!(joined.describe(|_| None), "People joined.");
+    }
+
+    #[test]
+    fn a_one_on_one_chat_with_someone_gone_is_an_unknown_user() {
+        let mut chat = Chat {
+            kind: ChatKind::OneOnOne,
+            members: vec![member("u-me", "Me")],
+            ..Default::default()
+        };
+        assert_eq!(chat.title("u-me"), "Unknown user");
+        chat.members.push(member("u-gone", ""));
+        assert_eq!(chat.title("u-me"), "Unknown user", "kept without a name");
+        chat.kind = ChatKind::Group;
+        assert_eq!(chat.title("u-me"), "Just you");
+    }
+
+    #[test]
+    fn the_list_orders_by_the_message_it_shows_not_chat_changes() {
+        let chat = |updated: Millis, at: Millis| Chat {
+            updated,
+            preview: Some(Preview {
+                at,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        // Someone removed later (`updated`) must not lift an older message.
+        assert_eq!(chat(9_000, 1_000).activity(), 1_000);
+        let empty = Chat {
+            updated: 5_000,
+            ..Default::default()
+        };
+        assert_eq!(empty.activity(), 5_000, "a chat without messages");
     }
 
     #[test]

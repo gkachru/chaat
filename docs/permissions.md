@@ -16,7 +16,7 @@ It does not request `Files.ReadWrite` or create a OneDrive sharing link.
 |---|---|---|---|
 | `openid`, `profile`, `offline_access` | At sign-in | Token endpoint (identity, refresh token) | No |
 | `User.Read` | At sign-in | `GET /me` | No |
-| `User.ReadBasic.All` | At sign-in | `GET /users/{id}/photos/96x96/$value`, `GET /users?$search=…` (people search for new chats and channel mentions) | No |
+| `User.ReadBasic.All` | At sign-in | `GET /users/{id}/photos/96x96/$value`, `GET /users?$search=…` (people search for new chats and channel mentions), `GET /users/{id}?$select=id,displayName` (names Graph leaves out of "added to the chat" events) | No |
 | `Chat.ReadWrite` | At sign-in | `GET /me/chats`, `GET /chats/{id}/messages`, `PATCH …/messages/{id}`, `POST /users/{id}/chats/{id}/messages/{id}/softDelete`, `POST /chats/{id}/markChatReadForUser`, `POST /search/query`, `POST /subscriptions` on `/users/{id}/chats/getAllMessages` (push relay only) | Excluded from the default user-consent policy |
 | `ChatMessage.Send` | At sign-in | `POST /chats/{id}/messages`, `POST …/replyWithQuote`, `setReaction`, `unsetReaction` | No |
 | `Team.ReadBasic.All` | At sign-in | `GET /me/joinedTeams` | No |

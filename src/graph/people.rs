@@ -75,8 +75,8 @@ impl Graph {
             .get::<g::Chat>(&format!("chats/{}?$expand=members", segment(&created.id)))
             .await
         {
-            Ok(full) => Ok(convert::chat(full)),
-            Err(_) => Ok(convert::chat(created)),
+            Ok(full) => Ok(convert::chat(full, self.my_id())),
+            Err(_) => Ok(convert::chat(created, self.my_id())),
         }
     }
 

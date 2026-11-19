@@ -119,7 +119,14 @@ impl Graph {
         );
         match self.chat_pages(&combined, pages).await {
             Err(GraphError::Http { status: 400, .. }) => {}
-            other => return other.map(|chats| chats.into_iter().map(convert::chat).collect()),
+            other => {
+                return other.map(|chats| {
+                    chats
+                        .into_iter()
+                        .map(|chat| convert::chat(chat, self.my_id()))
+                        .collect()
+                });
+            }
         }
         log::info!(
             "Graph refused the combined chat listing; listing members and previews separately"
@@ -140,7 +147,10 @@ impl Graph {
         for chat in &mut previews {
             chat.members = members.remove(&chat.id);
         }
-        Ok(previews.into_iter().map(convert::chat).collect())
+        Ok(previews
+            .into_iter()
+            .map(|chat| convert::chat(chat, self.my_id()))
+            .collect())
     }
 
     async fn chat_pages(&self, first: &str, pages: usize) -> Result<Vec<g::Chat>, GraphError> {
@@ -178,6 +188,8 @@ impl Graph {
             text: last.preview_text(),
             at: last.created,
             deleted: last.deleted,
+            system: last.system,
+            membership: last.membership.clone(),
         });
         Ok(Some(Chat {
             id: NOTES_CHAT.to_owned(),
@@ -197,7 +209,7 @@ impl Graph {
                 segment(chat)
             ))
             .await?;
-        Ok(convert::chat(raw))
+        Ok(convert::chat(raw, self.my_id()))
     }
 
     /// A chat's newest messages, or the 50 created before `before`
@@ -233,7 +245,7 @@ impl Graph {
             messages: page
                 .value
                 .into_iter()
-                .map(|m| convert::message(m, Some(&conversation)))
+                .map(|m| convert::message(m, Some(&conversation), self.my_id()))
                 .collect(),
             older: page.next_link,
         })
@@ -256,7 +268,7 @@ impl Graph {
             messages.extend(
                 page.value
                     .into_iter()
-                    .map(|m| convert::message(m, Some(&conversation))),
+                    .map(|m| convert::message(m, Some(&conversation), self.my_id())),
             );
             match page.next_link {
                 Some(next) => url = next,
@@ -281,6 +293,7 @@ impl Graph {
         Ok(convert::message(
             raw,
             Some(&ConversationId::Chat(chat.to_owned())),
+            self.my_id(),
         ))
     }
 
@@ -300,6 +313,7 @@ impl Graph {
         Ok(convert::message(
             raw,
             Some(&ConversationId::Chat(chat.to_owned())),
+            self.my_id(),
         ))
     }
 
@@ -423,7 +437,7 @@ impl Graph {
             messages: page
                 .value
                 .into_iter()
-                .map(|m| convert::message(m, Some(&conversation)))
+                .map(|m| convert::message(m, Some(&conversation), self.my_id()))
                 .collect(),
             older: page.next_link,
         })
@@ -451,7 +465,7 @@ impl Graph {
         let mut replies: Vec<Message> = page
             .value
             .into_iter()
-            .map(|m| convert::message(m, Some(&conversation)))
+            .map(|m| convert::message(m, Some(&conversation), self.my_id()))
             .collect();
         replies.sort_by_key(|m| m.created);
         Ok(replies)
@@ -478,7 +492,7 @@ impl Graph {
             path.push_str(&format!("/{}/replies", segment(root)));
         }
         let raw: g::ChatMessage = self.post(&path, &message.body()).await?;
-        Ok(convert::message(raw, Some(&conversation)))
+        Ok(convert::message(raw, Some(&conversation), self.my_id()))
     }
 
     /// `POST /communications/getPresencesByUserId`, up to 650 people per
@@ -524,6 +538,19 @@ impl Graph {
             .await
         {
             Ok(bytes) => Ok(Some(bytes)),
+            Err(GraphError::NotFound) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// A person's display name (User.ReadBasic.All). `None` when the
+    /// directory no longer has them.
+    pub async fn user_name(&self, user: &str) -> Result<Option<String>, GraphError> {
+        match self
+            .get::<g::User>(&format!("users/{}?$select=id,displayName", segment(user)))
+            .await
+        {
+            Ok(found) => Ok(found.display_name.filter(|n| !n.is_empty())),
             Err(GraphError::NotFound) => Ok(None),
             Err(error) => Err(error),
         }
@@ -782,6 +809,32 @@ mod tests {
             testing::session("at", &server.uri()).await,
             &server.uri(),
         )
+    }
+
+    #[tokio::test]
+    async fn user_names_come_from_the_directory_and_gone_users_have_none() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/users/u-grace"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"id": "u-grace", "displayName": "Grace"})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/users/u-gone"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(
+                serde_json::json!({"error": {"code": "Request_ResourceNotFound", "message": "x"}}),
+            ))
+            .mount(&server)
+            .await;
+        let graph = graph(&server).await;
+        assert_eq!(
+            graph.user_name("u-grace").await.unwrap().as_deref(),
+            Some("Grace")
+        );
+        assert_eq!(graph.user_name("u-gone").await.unwrap(), None);
     }
 
     #[tokio::test]

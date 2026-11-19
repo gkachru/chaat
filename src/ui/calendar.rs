@@ -165,7 +165,7 @@ pub fn detail(app: &mut App, ui: &mut egui::Ui) {
     let now = crate::time::now();
     ui.add_space(theme::HEADER_HEIGHT + 12.0);
     Frame::new().inner_margin(Margin::symmetric(32, 0)).show(ui, |ui| {
-        ui.set_max_width(640.0);
+        ui.set_max_width(ui.available_width().min(640.0));
         ui.label(egui::RichText::new(&meeting.subject).font(theme::bold(24.0)).color(palette.text));
         ui.add_space(6.0);
         let when = format!(

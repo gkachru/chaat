@@ -390,7 +390,7 @@ fn toasts(app: &mut App, ctx: &egui::Context) {
                     })
                     .inner_margin(Margin::symmetric(14, 9))
                     .show(ui, |ui| {
-                        ui.set_max_width(520.0);
+                        ui.set_max_width(ui.available_width().min(520.0));
                         ui.horizontal(|ui| {
                             let (icon, tint) = match toast.kind {
                                 ToastKind::Error => (Icon::Alert, palette.danger),

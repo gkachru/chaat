@@ -148,6 +148,16 @@ impl Builder {
         });
     }
 
+    fn missed_call(&mut self, at: i64) {
+        self.system(at, "Missed call");
+        let message = self.messages.last_mut().expect("just pushed");
+        message.missed_call = true;
+        message.call = Some(crate::model::CallEvent {
+            ended: true,
+            ..Default::default()
+        });
+    }
+
     fn quote(&mut self, author: &str, at: i64, quoted_index: usize, body: &str) {
         let quoted = &self.messages[quoted_index];
         let attachment = Attachment {
@@ -332,6 +342,7 @@ pub fn populate(app: &mut App) {
             now - DAY - 3 * HOUR + MINUTE,
             "Tape it into the log book 😄",
         );
+        b.missed_call(now - DAY - 2 * HOUR - 10 * MINUTE);
         b.text("u-grace", now - DAY - 2 * HOUR, "Done. Also: the HTML parser handled every message in the corpus, including the weird Outlook ones.").edited = true;
         let mut c = chat(id, ChatKind::OneOnOne, None, &[ME, "u-grace"], Some(now));
         c.updated = now - DAY - 2 * HOUR;
@@ -359,7 +370,7 @@ pub fn populate(app: &mut App) {
             now - 26 * HOUR + 22 * MINUTE,
             "It does: local full-text search over the cache, then Microsoft Search for the rest.",
         );
-        b.system(now - 25 * HOUR, "Meeting ended: 58 min");
+        b.system(now - 25 * HOUR, "Meeting ended after 58m");
         let mut c = chat(
             id,
             ChatKind::Meeting,
@@ -692,6 +703,7 @@ pub fn populate(app: &mut App) {
                 text: last.body.summary(140),
                 at: last.created,
                 deleted: false,
+                ..Default::default()
             });
         }
     }
@@ -833,6 +845,7 @@ fn populate_second(app: &mut App, now: i64) {
                 text: "No rush. Also: are you joining the board meeting on Thursday?".into(),
                 at: now - 20 * MINUTE,
                 deleted: false,
+                ..Default::default()
             }),
             last_read: Some(now - DAY),
             updated: now - 20 * MINUTE,
@@ -850,6 +863,7 @@ fn populate_second(app: &mut App, now: i64) {
                 text: "Deck for Thursday is in the shared folder.".into(),
                 at: now - 3 * DAY,
                 deleted: false,
+                ..Default::default()
             }),
             last_read: Some(now),
             updated: now - 3 * DAY,

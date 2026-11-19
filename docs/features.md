@@ -49,6 +49,7 @@ Status as of Chaat 0.1 (unreleased).
 | Upcoming meetings (14 days) and Join | Works | Calendars.Read. Join opens the meeting in Teams on the web, beside Chaat (below) |
 | Meeting reminders | Works | 5 minutes before, from the cached calendar (no network) |
 | Start audio or video call | Works | Microsoft's call deep link in Teams on the web; Teams asks to confirm |
+| Missed calls and call length in chats | Works, inferred | From the chat's `callEndedEventMessageDetail` system message: "Call ended after 4m 12s" from `callDuration`. "Missed call", with **Call back** (the call deep link to the chat's other members), when someone else placed a call (not a meeting) and nobody else joined. Graph has no answered or declined state, so a declined call also shows as missed, and a group call one other person answered does not. Shown after the chat is fetched, not while the call rings |
 | Join by pasted link | Works | Teams hosts only |
 | Where calls open | Works | Default: a chrome-less Edge or Chrome window (`--app`); without either, the default browser. The Teams app only if chosen in Settings. The browser is started with an argument list, never a shell, and only with Teams links ([calling.md](calling.md)) |
 | Docking beside the call | Works | Chaat becomes a 380-point panel on the right of its frame and asks the browser to open the call on the left; restored when the call ends. Not on Wayland (no window positions) or for windows under 960 points |

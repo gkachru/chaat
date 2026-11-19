@@ -1730,10 +1730,24 @@ fn the_hover_bar_keeps_edit_delete_and_copy_in_a_menu() {
     h.frames(5);
     let (own, _) = bubbles(&h);
     let bubble = *own.last().expect("an own bubble is on screen");
+    // Beside the bubble, in the same row: no bar. 😡 shows only in the bar.
+    h.frame_with(vec![egui::Event::PointerMoved(
+        bubble.left_center() - egui::vec2(60.0, 0.0),
+    )]);
+    h.frames(2);
+    assert!(
+        !painted_texts(&h).iter().any(|t| t == "😡"),
+        "only the bubble shows the bar"
+    );
     h.frame_with(vec![egui::Event::PointerMoved(bubble.center())]);
     h.frames(2);
+    assert!(
+        !painted_texts(&h).iter().any(|t| t == "😡"),
+        "the bar waits for the pointer to rest"
+    );
+    h.frames(25); // past the hover delay
     let texts = painted_texts(&h);
-    assert!(texts.iter().any(|t| t == "👍"), "quick reactions show");
+    assert!(texts.iter().any(|t| t == "😡"), "quick reactions show");
     assert!(!texts.iter().any(|t| t == "Edit"), "Edit waits in the menu");
     // The bar sits on the bubble's top edge from its left end (wider than
     // the bar here), its More button last.
@@ -1833,7 +1847,7 @@ fn pointing_at_a_quick_reaction_dims_the_others() {
     let (own, _) = bubbles(&h);
     let bubble = *own.last().expect("an own bubble is on screen");
     h.frame_with(vec![egui::Event::PointerMoved(bubble.center())]);
-    h.frames(2);
+    h.frames(25); // past the hover delay
     // The bar starts at your bubble's left edge; its second button is the heart.
     let bar_left = bubble.left();
     let heart = egui::pos2(bar_left + 3.0 + 28.0 + 14.0, bubble.top() - 16.0);
@@ -2380,6 +2394,153 @@ fn settings_pages_fit_the_smallest_window() {
                     "{page:?} (demo {demo}) clips at 720 × 480: {clipped:#?}"
                 );
             }
+        }
+    }
+}
+
+/// The right edge of the widest text painted right of the chat list.
+fn widest_text(h: &Harness) -> f32 {
+    let pane = h.app.settings.sidebar_width + 80.0;
+    painted_shapes(h)
+        .into_iter()
+        .filter_map(|shape| match shape {
+            egui::epaint::Shape::Text(text) if text.pos.x > pane => {
+                Some(text.pos.x + text.galley.size().x)
+            }
+            _ => None,
+        })
+        .fold(0.0, f32::max)
+}
+
+#[test]
+fn formatting_help_shows_only_while_typing() {
+    let mut h = Harness::new();
+    h.act(Action::OpenConversation(ConversationId::Chat(
+        "19:demo-ada@unq.gbl.spaces".into(),
+    )));
+    h.frames(3);
+    let help = |h: &Harness| {
+        painted_shapes(h)
+            .into_iter()
+            .find_map(|shape| match shape {
+                egui::epaint::Shape::Text(text) if text.galley.job.text.starts_with("**bold**") => {
+                    Some((text.galley.job.sections[0].format.color, text.pos.y))
+                }
+                _ => None,
+            })
+            .expect("the help line keeps its place")
+    };
+    let (focused, at) = help(&h);
+    assert_ne!(focused, egui::Color32::TRANSPARENT, "shown while typing");
+    // Clicking the history takes focus from the editor.
+    h.click(egui::pos2(h.app.settings.sidebar_width + 200.0, 200.0));
+    let (unfocused, moved) = help(&h);
+    assert_eq!(unfocused, egui::Color32::TRANSPARENT, "hidden otherwise");
+    assert_eq!(at, moved, "the composer doesn't change height");
+}
+
+#[test]
+fn calls_and_calendar_pages_fit_a_narrow_window() {
+    let width = 1000.0;
+    let mut h = Harness::new();
+    h.size.x = width;
+    h.act(Action::Navigate(Section::Calls));
+    h.frames(5);
+    assert!(
+        widest_text(&h) <= width,
+        "the calls page fits: {}",
+        widest_text(&h),
+    );
+
+    h.act(Action::Navigate(Section::Calendar));
+    let meeting = &mut h.app.meetings[0];
+    meeting.preview = Some(format!(
+        "Join: https://teams.microsoft.com/meet/{}?p=kY7X9YXPLoHl0F1",
+        "4596999827403".repeat(6)
+    ));
+    let id = meeting.id.clone();
+    h.app.selected_meeting = Some(id);
+    h.frames(5);
+    assert!(
+        widest_text(&h) <= width,
+        "a meeting with a long link fits: {}",
+        widest_text(&h)
+    );
+}
+
+#[test]
+fn membership_lines_name_people_graph_left_unnamed() {
+    let ada = ConversationId::Chat("19:demo-ada@unq.gbl.spaces".into());
+    let mut h = Harness::new();
+    h.act(Action::OpenConversation(ada.clone()));
+    let view = h.app.conversations.get_mut(&ada).unwrap();
+    let at = view.messages.last().unwrap().created + 1_000;
+    view.messages.push(chaat::model::Message {
+        id: "added".into(),
+        system: true,
+        created: at,
+        body: chaat::html::RichText::plain("Someone added someone to the chat."),
+        membership: Some(chaat::model::Membership {
+            change: chaat::model::MemberChange::Added,
+            by: Some(chaat::model::EventPerson {
+                id: "u-ada".into(),
+                name: None,
+            }),
+            members: vec![chaat::model::EventPerson {
+                id: "u-nobody".into(),
+                name: None,
+            }],
+        }),
+        ..Default::default()
+    });
+    view.layout.invalidate();
+    h.frames(5);
+    let texts = painted_texts(&h);
+    assert!(
+        texts
+            .iter()
+            .any(|t| t == "Ada Lovelace added someone to the chat."),
+        "a chat member is named; someone unknown waits: {texts:?}"
+    );
+    assert!(
+        !h.app.needs_name("u-nobody"),
+        "the unknown name was asked for"
+    );
+}
+
+#[test]
+fn a_missed_call_offers_call_back_in_both_themes_and_widths() {
+    for width in [720.0, 1280.0] {
+        for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+            let mut h = Harness::new();
+            h.size.x = width;
+            h.app.settings.theme = theme.clone();
+            h.frames(2);
+            h.act(Action::OpenConversation(ConversationId::Chat(
+                "19:demo-grace@unq.gbl.spaces".into(),
+            )));
+            h.frames(2);
+            let texts = painted_texts(&h);
+            assert!(
+                texts.iter().any(|t| t.ends_with("Missed call")),
+                "the missed call line is painted"
+            );
+            let button = painted_shapes(&h)
+                .iter()
+                .find_map(|shape| match shape {
+                    egui::epaint::Shape::Text(text) if text.galley.job.text == "Call back" => {
+                        Some(text.pos + text.galley.size() / 2.0)
+                    }
+                    _ => None,
+                })
+                .expect("Call back is painted");
+            assert!(
+                button.x > 0.0 && button.x < width,
+                "Call back fits at {width}"
+            );
+            assert!(h.app.call.is_none());
+            h.click(button);
+            assert!(h.app.call.is_some(), "Call back starts a call");
         }
     }
 }

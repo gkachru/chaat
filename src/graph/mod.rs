@@ -106,6 +106,12 @@ impl Graph {
         &self.session
     }
 
+    /// The signed-in person's object id: the account id before its tenant.
+    pub fn my_id(&self) -> &str {
+        let account = self.session.account.as_str();
+        account.split('.').next().unwrap_or(account)
+    }
+
     /// A path below the base, or a full URL on the Graph origin.
     fn url(&self, path_or_url: &str) -> Result<String, GraphError> {
         if path_or_url.starts_with("https://") || path_or_url.starts_with("http://") {

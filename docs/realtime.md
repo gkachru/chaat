@@ -61,7 +61,8 @@ How it works:
    per run. If you saved an access key, it goes in the `X-Chaat-Relay-Key`
    header. A WebSocket that isn't open within 8 seconds counts as a relay
    that can't be reached, and Chaat tries again (5 seconds, then doubling,
-   up to 5 minutes). Log lines for push carry `push[…]` with the start of
+   up to 5 minutes). While it is failing, **Retry now** in Settings → Push
+   updates connects again at once. Log lines for push carry `push[…]` with the start of
    the account's id, so two accounts' lines can be told apart.
 3. Chaat subscribes to Graph change notifications for all of your chat
    messages: `POST /subscriptions` on `/users/{id}/chats/getAllMessages`,

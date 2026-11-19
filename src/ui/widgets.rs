@@ -292,7 +292,7 @@ pub fn empty_state(ui: &mut Ui, palette: &Palette, icon: Icon, title: &str, text
                 .color(palette.text),
         );
         ui.add_space(4.0);
-        ui.set_max_width(360.0);
+        ui.set_max_width(ui.available_width().min(360.0));
         ui.label(egui::RichText::new(text).color(palette.secondary));
     });
 }
