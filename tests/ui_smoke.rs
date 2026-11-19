@@ -2544,3 +2544,255 @@ fn a_missed_call_offers_call_back_in_both_themes_and_widths() {
         }
     }
 }
+
+// -- People panel -------------------------------------------------------------
+
+const LAUNCH: &str = "19:demo-launch@thread.v2";
+
+fn launch_ids(h: &Harness) -> Vec<String> {
+    h.app
+        .group_members(LAUNCH)
+        .into_iter()
+        .map(|m| m.user_id)
+        .collect()
+}
+
+fn open_launch(h: &mut Harness) {
+    h.act(Action::OpenConversation(ConversationId::Chat(
+        LAUNCH.into(),
+    )));
+    h.frames(5);
+}
+
+/// The bounds of the rightmost painted text equal to `text` in the header
+/// row (the sidebar can paint the same text lower down).
+fn header_text(h: &Harness, text: &str) -> Option<egui::Rect> {
+    painted_shapes(h)
+        .into_iter()
+        .filter_map(|shape| match shape {
+            egui::epaint::Shape::Text(t) if t.galley.job.text == text => {
+                let rect = shape.visual_bounding_rect();
+                (rect.center().y < chaat::theme::HEADER_HEIGHT).then_some(rect)
+            }
+            _ => None,
+        })
+        .max_by(|a, b| a.center().x.total_cmp(&b.center().x))
+}
+
+fn open_people_panel(h: &mut Harness) {
+    open_launch(h);
+    let button = header_text(h, "5").expect("the people button shows the count");
+    h.click(button.center());
+}
+
+fn press(h: &mut Harness, key: egui::Key) {
+    h.frame_with(vec![egui::Event::Key {
+        key,
+        physical_key: Some(key),
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    }]);
+    h.frames(3);
+}
+
+#[test]
+fn people_button_opens_panel() {
+    let mut h = Harness::new();
+    open_people_panel(&mut h);
+    let texts = painted_texts(&h);
+    for expected in ["People (5)", "You", "Ada Lovelace", "Add people", "Leave"] {
+        assert!(
+            texts.iter().any(|t| t == expected),
+            "the panel shows {expected}"
+        );
+    }
+}
+
+#[test]
+fn people_panel_draws_in_both_themes_and_widths() {
+    for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+        for width in [720.0, 1280.0] {
+            let mut h = Harness::new();
+            h.size.x = width;
+            h.app.settings.theme = theme.clone();
+            open_launch(&mut h);
+            // The button fits beside the title without overlapping it.
+            let title = header_text(&h, "Launch crew").expect("the title shows");
+            let button = header_text(&h, "5").expect("the people button shows");
+            assert!(
+                title.right() <= button.left(),
+                "title and people button overlap ({theme:?}, {width})"
+            );
+            h.click(button.center());
+            h.frames(3);
+            assert!(
+                painted_texts(&h).iter().any(|t| t == "People (5)"),
+                "the panel draws ({theme:?}, {width})"
+            );
+        }
+    }
+}
+
+#[test]
+fn people_panel_shows_for_meeting_chats() {
+    const MEETING: &str = "19:meeting_demo-design-review@thread.v2";
+    for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+        for width in [720.0, 1280.0] {
+            let mut h = Harness::new();
+            h.size.x = width;
+            h.app.settings.theme = theme.clone();
+            h.act(Action::OpenConversation(ConversationId::Chat(
+                MEETING.into(),
+            )));
+            h.frames(5);
+            let title = header_text(&h, "Design review: Chaat 0.2").expect("the title shows");
+            let join = header_text(&h, "Join").expect("the Join pill stays");
+            // Narrow headers show the people button as an icon only: it
+            // sits right of the Join pill (pill padding 9 + spacing 4).
+            let button = header_text(&h, "4").unwrap_or_else(|| {
+                egui::Rect::from_min_size(
+                    join.right_top() + egui::vec2(13.0, 0.0),
+                    egui::vec2(30.0, 9.0),
+                )
+            });
+            assert!(
+                title.right() <= join.left() && join.right() <= button.left(),
+                "title, people button and Join overlap ({theme:?}, {width}): {title:?} {join:?} {button:?}"
+            );
+            h.click(button.center());
+            let texts = painted_texts(&h);
+            for expected in ["People (4)", "You", "Ada Lovelace", "Add people", "Leave"] {
+                assert!(
+                    texts.iter().any(|t| t == expected),
+                    "the panel shows {expected} ({theme:?}, {width})"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn people_panel_never_for_one_on_one() {
+    let mut h = Harness::new();
+    h.act(Action::OpenConversation(ConversationId::Chat(
+        "19:demo-ada@unq.gbl.spaces".into(),
+    )));
+    h.frames(5);
+    assert!(
+        header_text(&h, "2").is_none(),
+        "no people button in a 1:1 chat"
+    );
+}
+
+#[test]
+fn add_people_flow() {
+    let mut h = Harness::new();
+    open_launch(&mut h);
+    h.act(Action::OpenAddPeople(LAUNCH.into()));
+    h.app.add_people.query = "al".into();
+    h.frames(3);
+    let alan = h
+        .app
+        .directory()
+        .into_iter()
+        .find(|m| m.user_id == "u-alan")
+        .expect("Alan is a known person");
+    assert!(
+        painted_texts(&h).contains(&alan.display_name),
+        "the picker offers Alan"
+    );
+    h.app.add_people.picked.push(alan.clone());
+    h.app.add_people.history_step = true;
+    h.frames(3);
+    assert!(
+        painted_texts(&h)
+            .iter()
+            .any(|t| t == "Include all chat history")
+    );
+    assert!(
+        painted_texts(&h)
+            .iter()
+            .any(|t| t == "Don't include chat history")
+    );
+    h.act(Action::AddMembers {
+        chat: LAUNCH.into(),
+        members: vec![alan],
+        history: true,
+    });
+    assert_eq!(launch_ids(&h).len(), 6);
+    assert!(launch_ids(&h).contains(&"u-alan".to_owned()));
+    assert_eq!(h.app.overlay, None);
+}
+
+#[test]
+fn add_people_excludes_members() {
+    let mut h = Harness::new();
+    open_launch(&mut h);
+    h.act(Action::OpenAddPeople(LAUNCH.into()));
+    let count = |h: &Harness, text: &str| painted_texts(h).iter().filter(|t| *t == text).count();
+    let before = count(&h, "Ada Lovelace");
+    h.app.add_people.query = "ada".into();
+    h.frames(3);
+    assert_eq!(
+        count(&h, "Ada Lovelace"),
+        before,
+        "an existing member is not offered"
+    );
+    assert!(
+        !painted_texts(&h).iter().any(|t| t.starts_with("ada@")),
+        "no result row for an existing member"
+    );
+    // The picker does offer people who are not members.
+    h.app.add_people.query = "alan".into();
+    h.frames(3);
+    assert!(painted_texts(&h).iter().any(|t| t.contains("alan@")));
+}
+
+#[test]
+fn leave_confirm_and_leave() {
+    let mut h = Harness::new();
+    open_launch(&mut h);
+    h.act(Action::OpenLeaveChat(LAUNCH.into()));
+    assert!(painted_texts(&h).iter().any(|t| t == "Leave the chat?"));
+    h.act(Action::LeaveChat(LAUNCH.into()));
+    assert!(h.app.chats.iter().all(|c| c.id != LAUNCH));
+    assert_eq!(h.app.open, None);
+    assert_eq!(h.app.overlay, None);
+}
+
+#[test]
+fn leave_without_scope_shows_admin_dialog() {
+    let mut h = Harness::new();
+    h.app.demo = false;
+    h.app.granted = "User.Read Chat.ReadWrite".into();
+    h.act(Action::OpenLeaveChat(LAUNCH.into()));
+    let texts = painted_texts(&h);
+    assert!(texts.iter().any(|t| t == "Leaving needs admin approval"));
+    assert!(texts.iter().any(|t| t == "Open in Teams"));
+    assert!(texts.iter().any(|t| t.trim() == "Request access"));
+}
+
+#[test]
+fn escape_closes_dialogs() {
+    let mut h = Harness::new();
+    open_launch(&mut h);
+    for action in [
+        Action::OpenAddPeople(LAUNCH.into()),
+        Action::OpenLeaveChat(LAUNCH.into()),
+    ] {
+        h.act(action);
+        assert!(h.app.overlay.is_some());
+        press(&mut h, egui::Key::Escape);
+        assert_eq!(h.app.overlay, None, "Escape closes the dialog");
+    }
+}
+
+#[test]
+fn escape_closes_the_people_panel() {
+    let mut h = Harness::new();
+    open_people_panel(&mut h);
+    assert!(painted_texts(&h).iter().any(|t| t == "People (5)"));
+    press(&mut h, egui::Key::Escape);
+    assert!(!painted_texts(&h).iter().any(|t| t == "People (5)"));
+}

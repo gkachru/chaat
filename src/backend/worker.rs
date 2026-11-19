@@ -350,6 +350,12 @@ impl Worker {
             ),
             Command::SearchPeople(query) => self.search_people(query),
             Command::CreateChat { others, topic } => self.create_chat(others, topic),
+            Command::AddMembers {
+                chat,
+                users,
+                history,
+            } => self.add_members(chat, users, history),
+            Command::LeaveChat(chat) => self.leave_chat(chat),
             Command::SetAvailability(availability) => self.set_availability(availability),
             Command::SetStatusMessage(text) => self.set_status_message(text),
             Command::SetOutOfOffice(value) => self.set_out_of_office(value),
@@ -1102,6 +1108,83 @@ impl Worker {
         });
     }
 
+    fn add_members(&mut self, chat: String, users: Vec<String>, history: bool) {
+        let Some(account) = &self.account else { return };
+        let graph = Arc::clone(&account.graph);
+        let out = self.out.clone();
+        let internal = self.internal.clone();
+        tokio::spawn(async move {
+            let mut added = Vec::new();
+            let mut failed = Vec::new();
+            for user in users {
+                match graph.add_chat_member(&chat, &user, history).await {
+                    Ok(()) => added.push(user),
+                    Err(error) => {
+                        log::info!("adding a person to a chat failed: {error}");
+                        failed.push(user);
+                    }
+                }
+            }
+            out.send(Event::MembersAdded {
+                chat: chat.clone(),
+                added,
+                failed,
+            });
+            // Read the list back, so what is shown is what Graph has.
+            let _ = internal.send(Internal::Confirm(Resource::Members(chat)));
+        });
+    }
+
+    fn leave_chat(&mut self, chat: String) {
+        let Some(account) = &self.account else { return };
+        let graph = Arc::clone(&account.graph);
+        let store = Arc::clone(&account.store);
+        let out = self.out.clone();
+        let me = account
+            .record
+            .id
+            .split('.')
+            .next()
+            .unwrap_or_default()
+            .to_owned();
+        tokio::spawn(async move {
+            // The membership id is read now, never kept: it changes when
+            // the person is removed and added again.
+            let result = async {
+                let mine = graph
+                    .chat_members(&chat)
+                    .await?
+                    .into_iter()
+                    .find(|(_, member)| member.user_id == me)
+                    .map(|(membership, _)| membership);
+                match mine {
+                    Some(membership) => graph.remove_chat_member(&chat, &membership).await,
+                    None => Err(GraphError::Decode),
+                }
+            }
+            .await;
+            match result {
+                Ok(()) => {
+                    {
+                        let mut store = store.lock().unwrap_or_else(|p| p.into_inner());
+                        if let Ok(mut chats) = store.chats() {
+                            chats.retain(|c| c.id != chat);
+                            let _ = store.save_chats(&chats);
+                        }
+                    }
+                    out.send(Event::LeftChat(chat));
+                }
+                Err(error) => {
+                    log::info!("leaving a chat failed: {error}");
+                    out.send(Event::LeaveFailed {
+                        chat,
+                        admin: matches!(error, GraphError::Forbidden { .. }),
+                    });
+                }
+            }
+        });
+    }
+
     fn find_meeting_chat(&mut self, join_url: String) {
         let Some(account) = &self.account else { return };
         let graph = Arc::clone(&account.graph);
@@ -1607,6 +1690,7 @@ fn describe(resource: &Resource) -> &'static str {
         Resource::Presence => "Loading presence",
         Resource::MyPresence => "Loading your status",
         Resource::OutOfOffice => "Loading your automatic replies",
+        Resource::Members(_) => "Loading the people in this chat",
     }
 }
 
@@ -1944,6 +2028,30 @@ async fn fetch_resource(
         Resource::MyPresence => {
             let presence = graph.my_presence().await?;
             out.send(Event::MyPresence(presence));
+        }
+        Resource::Members(chat) => {
+            let members: Vec<crate::model::Member> = graph
+                .chat_members(chat)
+                .await?
+                .into_iter()
+                .map(|(_, member)| member)
+                .collect();
+            {
+                // The cached chat keeps the whole list, not the first 25.
+                let store = store.lock().unwrap_or_else(|p| p.into_inner());
+                if let Some(mut cached) = store
+                    .chats()
+                    .ok()
+                    .and_then(|chats| chats.into_iter().find(|c| &c.id == chat))
+                {
+                    cached.members = members.clone();
+                    let _ = store.upsert_chat(&cached);
+                }
+            }
+            out.send(Event::Members {
+                chat: chat.clone(),
+                members,
+            });
         }
         Resource::OutOfOffice => match graph.out_of_office().await {
             Ok(value) => out.send(Event::OutOfOffice(value)),

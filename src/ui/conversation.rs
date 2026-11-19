@@ -68,6 +68,8 @@ fn header(app: &mut App, ui: &mut egui::Ui, conversation: &ConversationId) {
                 let mut call_users: Vec<String> = Vec::new();
                 let mut join: Option<String> = None;
                 let web: Option<String>;
+                // A group chat's people button: chat id and member count.
+                let mut people: Option<(String, usize)> = None;
                 let (title, subtitle) = match conversation {
                     ConversationId::Chat(id) => {
                         let chat = app.chat(id).cloned().unwrap_or_default();
@@ -108,6 +110,7 @@ fn header(app: &mut App, ui: &mut egui::Ui, conversation: &ConversationId) {
                             }
                             ChatKind::Group => {
                                 widgets::avatar(ui, app, None, &title, 32.0, false);
+                                people = Some((id.clone(), chat.members.len()));
                                 (title, format!("{} people", chat.members.len()))
                             }
                             ChatKind::Meeting => {
@@ -125,6 +128,7 @@ fn header(app: &mut App, ui: &mut egui::Ui, conversation: &ConversationId) {
                                         egui::Vec2::splat(16.0),
                                     ),
                                 );
+                                people = Some((id.clone(), chat.members.len()));
                                 (title, "Meeting chat".to_owned())
                             }
                         }
@@ -170,6 +174,14 @@ fn header(app: &mut App, ui: &mut egui::Ui, conversation: &ConversationId) {
                 if join.is_some() {
                     buttons += 80.0;
                 }
+                // The people button: icon, count and its spacing, or just
+                // the icon when the title would be squeezed out.
+                let compact = people.is_some()
+                    && ui.available_width() - buttons - 64.0 - super::header_right_inset(ui.ctx())
+                        < 80.0;
+                if people.is_some() {
+                    buttons += if compact { 34.0 } else { 64.0 };
+                }
                 if app
                     .loading
                     .contains(&crate::sync::Resource::Messages(conversation.clone()))
@@ -181,7 +193,7 @@ fn header(app: &mut App, ui: &mut egui::Ui, conversation: &ConversationId) {
                     ui.spacing_mut().item_spacing.y = 0.0;
                     let width =
                         (ui.available_width() - buttons - super::header_right_inset(ui.ctx()))
-                            .max(120.0);
+                            .max(48.0);
                     ui.add(egui::Label::new(super::chat_list::elided(
                         ui,
                         &title,
@@ -236,6 +248,9 @@ fn header(app: &mut App, ui: &mut egui::Ui, conversation: &ConversationId) {
                             },
                         );
                     }
+                    if let Some((chat, count)) = people {
+                        people_button(ui, app, &chat, count, compact);
+                    }
                     if let Some(join) = join {
                         ui.add_space(4.0);
                         let response = widgets::pill(ui, &palette, Icon::Video, "Join", true)
@@ -251,6 +266,94 @@ fn header(app: &mut App, ui: &mut egui::Ui, conversation: &ConversationId) {
                 });
             });
         });
+}
+
+/// The header's people button of a group chat and the panel it opens: the
+/// members, Add people and Leave.
+fn people_button(ui: &mut egui::Ui, app: &mut App, chat: &str, count: usize, compact: bool) {
+    let palette = app.palette;
+    let id = egui::Id::new(("people-panel", chat));
+    let was_open = egui::Popup::is_id_open(ui.ctx(), id);
+    let button = if compact {
+        widgets::icon_button(ui, &palette, Icon::Teams, &format!("People ({count})"))
+    } else {
+        widgets::pill(ui, &palette, Icon::Teams, &count.to_string(), false).on_hover_text("People")
+    };
+    if button.clicked() && !was_open {
+        app.actions.push(Action::PeopleOpened(chat.to_owned()));
+    }
+    let members = app.group_members(chat);
+    let me = app.me().to_owned();
+    let mut actions = Vec::new();
+    egui::Popup::menu(&button).id(id).width(280.0).show(|ui| {
+        ui.set_width(280.0);
+        ui.label(
+            egui::RichText::new(format!("People ({})", members.len()))
+                .font(theme::semibold(14.0))
+                .color(palette.text),
+        );
+        ui.add_space(4.0);
+        egui::ScrollArea::vertical()
+            .max_height(360.0)
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                for member in &members {
+                    let mine = member.user_id == me;
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 8.0;
+                        let face = widgets::avatar(
+                            ui,
+                            app,
+                            Some(&member.user_id),
+                            &member.display_name,
+                            28.0,
+                            true,
+                        );
+                        // Presence of the signed-in person is not in the
+                        // followed-people map.
+                        if mine
+                            && !app.presence.contains_key(&member.user_id)
+                            && let Some(state) = &app.my_presence
+                        {
+                            let rect = face.rect;
+                            let dot = 9.0;
+                            let center = rect.right_bottom() - vec2(dot * 0.42, dot * 0.42);
+                            ui.painter()
+                                .circle_filled(center, dot / 2.0 + 1.5, palette.panel);
+                            ui.painter().circle_filled(
+                                center,
+                                dot / 2.0,
+                                palette.presence(state.availability),
+                            );
+                        }
+                        let name = if mine { "You" } else { &member.display_name };
+                        ui.label(
+                            egui::RichText::new(name)
+                                .font(theme::regular(13.0))
+                                .color(palette.text),
+                        );
+                        if app
+                            .adding
+                            .contains(&(chat.to_owned(), member.user_id.clone()))
+                        {
+                            ui.label(
+                                egui::RichText::new("Adding…")
+                                    .font(theme::regular(12.0))
+                                    .color(palette.dim),
+                            );
+                        }
+                    });
+                }
+            });
+        ui.separator();
+        if menu_item(ui, &palette, Icon::UserPlus, "Add people") {
+            actions.push(Action::OpenAddPeople(chat.to_owned()));
+        }
+        if menu_item(ui, &palette, Icon::LogOut, "Leave") {
+            actions.push(Action::OpenLeaveChat(chat.to_owned()));
+        }
+    });
+    app.actions.extend(actions);
 }
 
 // -- History ------------------------------------------------------------------

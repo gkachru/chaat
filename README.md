@@ -39,6 +39,7 @@ the rename, when the app still had a demo mode:
 |---|---|
 | Chats: list, unread, filter by unread, group or meeting chats, history, send, quote replies, reactions, edit, delete, mark read | ✅ Implemented (Graph) |
 | New chats, @mentions in the composer, sending files (OneDrive upload and sharing) | ✅ Implemented |
+| People in group and meeting chats: members (with presence in group chats), add people (with or without chat history), leave | ✅ Implemented; leaving needs admin consent |
 | Rich text, mentions, emoji, links, code, inline images | ✅ Implemented (native rendering of Teams HTML) |
 | Images in chats and drafts | ✅ Cropped draft thumbnails; click either for the same full preview with fit and 100% views |
 | Teams and channels, threaded posts and replies | ✅ Implemented; reading channel posts needs admin consent |
@@ -83,9 +84,10 @@ tenants, and most tenants block unverified multi-tenant apps.
    `CHAAT_TENANT` in the environment.
 3. In most tenants an administrator must approve `Chat.ReadWrite` and
    `Calendars.Read`, which the default consent policy excludes, and
-   `ChannelMessage.Read.All` for channel posts. Chaat shows an admin-consent
-   link under **Settings → Advanced**. Starting a chat, sending a file and setting
-   your status each ask for one more permission the first time. Each
+   `ChannelMessage.Read.All` for channel posts, and `ChatMember.ReadWrite` for
+   leaving group chats. Chaat shows an admin-consent link under
+   **Settings → Advanced**. Starting a chat, sending a file, setting your status
+   and leaving a group chat each ask for one more permission the first time. Each
    permission is explained in [docs/permissions.md](docs/permissions.md).
 
 Personal Microsoft accounts and Teams (free) are not supported; Graph's Teams

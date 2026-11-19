@@ -58,6 +58,10 @@ pub const ONLINE_MEETINGS_SCOPE: &str = "OnlineMeetings.Read";
 /// User-consentable; asked for on first use.
 pub const MAILBOX_SETTINGS_SCOPE: &str = "MailboxSettings.ReadWrite";
 
+/// Leaving group chats (deleting one's own membership). Requires tenant admin
+/// consent; asked for on first use.
+pub const CHAT_MEMBER_SCOPE: &str = "ChatMember.ReadWrite";
+
 /// The scopes Chaat may ask for beyond sign-in, each when a feature first
 /// needs it (incremental consent).
 pub const OPTIONAL_SCOPES: &[&str] = &[
@@ -67,6 +71,7 @@ pub const OPTIONAL_SCOPES: &[&str] = &[
     PRESENCE_WRITE_SCOPE,
     ONLINE_MEETINGS_SCOPE,
     MAILBOX_SETTINGS_SCOPE,
+    CHAT_MEMBER_SCOPE,
 ];
 
 /// Why a feature needs an optional scope, for the consent prompt.
@@ -85,6 +90,9 @@ pub fn scope_reason(scope: &str) -> &'static str {
         }
         MAILBOX_SETTINGS_SCOPE => {
             "Reading and setting your automatic replies (Out of Office). Outlook sends the same replies."
+        }
+        CHAT_MEMBER_SCOPE => {
+            "Leaving group chats. Your administrator must approve this permission."
         }
         _ => "This feature.",
     }
@@ -262,6 +270,12 @@ impl IdClaims {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scope_is_optional() {
+        assert!(OPTIONAL_SCOPES.contains(&CHAT_MEMBER_SCOPE));
+        assert!(scope_reason(CHAT_MEMBER_SCOPE).contains("administrator"));
+    }
 
     #[test]
     fn pkce_challenge_matches_rfc_7636_example() {

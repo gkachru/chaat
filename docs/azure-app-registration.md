@@ -55,7 +55,7 @@ permissions**, add:
 |---|---|---|
 | `User.Read` | Your profile | No |
 | `User.ReadBasic.All` | Names and photos of people in your chats; finding people for new chats and mentions | No |
-| `Chat.ReadWrite` | List chats, read messages, edit, delete, mark read | Not by flag, but excluded from the default user-consent policy |
+| `Chat.ReadWrite` | List chats, read messages, edit, delete, mark read, list and add group chat members | Not by flag, but excluded from the default user-consent policy |
 | `ChatMessage.Send` | Send messages, quote replies, reactions | No |
 | `Team.ReadBasic.All` | The teams you belong to | No |
 | `Channel.ReadBasic.All` | Their channels | No |
@@ -67,6 +67,7 @@ permissions**, add:
 | `Presence.ReadWrite` *(optional)* | Setting your availability and status message | No |
 | `OnlineMeetings.Read` *(optional)* | Finding a meeting's chat to show beside the call | No |
 | `MailboxSettings.ReadWrite` *(optional)* | Reading and setting your automatic replies (Out of Office) | No |
+| `ChatMember.ReadWrite` *(optional)* | Leaving group chats | **Yes** |
 | `ChannelMessage.Read.All` *(optional)* | Reading channel posts | **Yes** |
 
 `openid`, `profile` and `offline_access` are added automatically during
@@ -140,7 +141,7 @@ for scope in User.Read User.ReadBasic.All Chat.ReadWrite ChatMessage.Send \
              Team.ReadBasic.All Channel.ReadBasic.All ChannelMessage.Send \
              Presence.Read.All Calendars.Read Chat.Create Files.ReadWrite \
              Presence.ReadWrite OnlineMeetings.Read MailboxSettings.ReadWrite \
-             ChannelMessage.Read.All; do
+             ChatMember.ReadWrite ChannelMessage.Read.All; do
   id=$(az ad sp show --id $GRAPH --query "oauth2PermissionScopes[?value=='$scope'].id" -o tsv)
   az ad app permission add --id $APP --api $GRAPH --api-permissions "$id=Scope"
 done

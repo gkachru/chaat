@@ -871,6 +871,20 @@ pub enum Action {
     CancelAddAccount,
 
     OpenNewChat,
+    /// Opens the Add people dialog for a group chat (chat id).
+    OpenAddPeople(String),
+    /// Adds people to a group chat; `history` shows them the earlier messages.
+    AddMembers {
+        chat: String,
+        members: Vec<Member>,
+        history: bool,
+    },
+    /// Opens the Leave dialog for a group chat (chat id).
+    OpenLeaveChat(String),
+    /// Leaves a group chat (chat id).
+    LeaveChat(String),
+    /// The people panel of a group chat was opened (chat id).
+    PeopleOpened(String),
     /// Looks people up in the directory for the new-chat dialog or mentions.
     SearchPeople(String),
     CreateChat {

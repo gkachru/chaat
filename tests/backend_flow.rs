@@ -28,15 +28,18 @@ fn id_token() -> String {
     format!("eyJhbGciOiJub25lIn0.{payload}.")
 }
 
-/// Events not yet looked at, so a wait never drops the rest of a batch.
-static PENDING: std::sync::Mutex<Vec<Event>> = std::sync::Mutex::new(Vec::new());
+// Events not yet looked at, so a wait never drops the rest of a batch.
+thread_local! {
+    /// Per test thread: tests run in parallel and must not steal events.
+    static PENDING: std::cell::RefCell<Vec<Event>> = const { std::cell::RefCell::new(Vec::new()) };
+}
 
 /// Waits for the first event `pick` accepts, failing after `seconds`.
 /// Events before it are skipped; events after it stay for the next wait.
 fn wait_for<T>(backend: &Backend, seconds: u64, mut pick: impl FnMut(Event) -> Option<T>) -> T {
     let deadline = Instant::now() + Duration::from_secs(seconds);
     loop {
-        let mut pending = PENDING.lock().unwrap();
+        let mut pending = PENDING.take();
         pending.extend(backend.poll());
         while !pending.is_empty() {
             let event = pending.remove(0);
@@ -44,10 +47,11 @@ fn wait_for<T>(backend: &Backend, seconds: u64, mut pick: impl FnMut(Event) -> O
                 eprintln!("event: {event:?}");
             }
             if let Some(found) = pick(event) {
+                PENDING.set(pending);
                 return found;
             }
         }
-        drop(pending);
+        PENDING.set(pending);
         assert!(Instant::now() < deadline, "timed out waiting for an event");
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -63,6 +67,11 @@ fn query_value(url: &str, key: &str) -> String {
 }
 
 async fn mock_microsoft() -> MockServer {
+    mock_server(true).await
+}
+
+/// `sends`: whether the test sends the one message the fixture expects.
+async fn mock_server(sends: bool) -> MockServer {
     let server = MockServer::start().await;
     // Entra: the code Chaat's loopback received, with the PKCE verifier.
     Mock::given(method("POST"))
@@ -133,7 +142,7 @@ async fn mock_microsoft() -> MockServer {
             "from": {"user": {"id": "u-me", "displayName": "Alex Rivera"}},
             "body": {"contentType": "html", "content": "<p>Shipping <strong>today</strong></p>"}
         })))
-        .expect(1)
+        .expect(if sends { 1..=1 } else { 0..=u64::MAX })
         .mount(&server)
         .await;
     // A restored conversation refreshes by modification date, independently
@@ -268,7 +277,7 @@ async fn sign_in_sync_send_restore_and_sign_out() {
     assert_eq!(sent.0, "local-1");
     assert_eq!(sent.1.id, "1701");
     drop(backend);
-    PENDING.lock().unwrap().clear();
+    PENDING.with_borrow_mut(Vec::clear);
 
     // Second run: the session comes back from the credential store, and the
     // cache is shown before any request.
@@ -409,4 +418,271 @@ async fn sign_in_sync_send_restore_and_sign_out() {
         None
     );
     assert!(!dirs.account(&account).exists());
+}
+
+// -- People panel -------------------------------------------------------------
+
+struct Session {
+    backend: Backend,
+    dirs: AppDirs,
+    options: BackendOptions,
+    account: String,
+    _dir: tempfile::TempDir,
+}
+
+/// Signs in against the mock and loads the chat list, so the cache holds
+/// the chat.
+async fn signed_in(server: &MockServer) -> Session {
+    let dir = tempfile::tempdir().unwrap();
+    let dirs = AppDirs::under(dir.path());
+    let options = BackendOptions {
+        authority: server.uri(),
+        graph_base: format!("{}/v1.0", server.uri()),
+        secrets: Arc::new(MemoryStore::default()),
+        open_browser: false,
+        push_renew_every: chaat::realtime::RENEW_EVERY,
+        relay_connect_timeout: std::time::Duration::from_secs(20),
+    };
+    PENDING.with_borrow_mut(Vec::clear);
+    let backend = Backend::spawn_with(dirs.clone(), Waker::default(), options.clone());
+    backend.send(Command::Start {
+        client_id: CLIENT.into(),
+        tenant: "organizations".into(),
+        account: None,
+    });
+    wait_for(&backend, 5, |e| {
+        matches!(e, Event::Auth(AuthStatus::SignedOut)).then_some(())
+    });
+    backend.send(Command::SignIn {
+        extra_scopes: Vec::new(),
+        device_code: false,
+    });
+    let url = wait_for(&backend, 5, |e| match e {
+        Event::Auth(AuthStatus::WaitingForBrowser { url }) => Some(url),
+        _ => None,
+    });
+    let redirect = query_value(&url, "redirect_uri");
+    let state = query_value(&url, "state");
+    let port = redirect.trim_start_matches("http://localhost:");
+    reqwest::get(format!(
+        "http://127.0.0.1:{port}/?code=the-code&state={state}"
+    ))
+    .await
+    .unwrap();
+    let account = wait_for(&backend, 10, |e| match e {
+        Event::Auth(AuthStatus::SignedIn { account, .. }) => Some(account),
+        _ => None,
+    });
+    backend.send(Command::Fetch {
+        resource: Resource::Chats,
+        trigger: Trigger::Start,
+    });
+    wait_for(&backend, 10, |e| {
+        matches!(e, Event::Chats { cached: false, .. }).then_some(())
+    });
+    Session {
+        backend,
+        dirs,
+        options,
+        account,
+        _dir: dir,
+    }
+}
+
+/// Restarts the backend on the same files and returns the cached chats.
+fn cached_chats(session: Session) -> Vec<chaat::model::Chat> {
+    let Session {
+        backend,
+        dirs,
+        options,
+        account,
+        _dir,
+    } = session;
+    drop(backend);
+    PENDING.with_borrow_mut(Vec::clear);
+    let backend = Backend::spawn_with(dirs, Waker::default(), options);
+    backend.send(Command::Start {
+        client_id: CLIENT.into(),
+        tenant: "organizations".into(),
+        account: Some(account),
+    });
+    wait_for(&backend, 5, |e| match e {
+        Event::Chats {
+            chats,
+            cached: true,
+        } => Some(chats),
+        _ => None,
+    })
+}
+
+fn members_path() -> String {
+    format!("/v1.0/chats/{CHAT}/members")
+}
+
+fn member_json(membership: &str, user: &str, name: &str) -> serde_json::Value {
+    serde_json::json!({"id": membership, "userId": user, "displayName": name})
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn members_fetch_sends_event_and_updates_store() {
+    let server = mock_server(false).await;
+    Mock::given(method("GET"))
+        .and(path(members_path()))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"value": [
+                member_json("m1", "u-me", "Alex Rivera"),
+                member_json("m2", "u-ada", "Ada Lovelace"),
+                member_json("m3", "u-grace", "Grace Hopper"),
+            ]})),
+        )
+        .mount(&server)
+        .await;
+    let session = signed_in(&server).await;
+    session.backend.send(Command::Fetch {
+        resource: Resource::Members(CHAT.into()),
+        trigger: Trigger::Opened,
+    });
+    let members = wait_for(&session.backend, 10, |e| match e {
+        Event::Members { chat, members } if chat == CHAT => Some(members),
+        _ => None,
+    });
+    assert_eq!(members.len(), 3);
+    assert_eq!(members[2].user_id, "u-grace");
+    // The cache holds the full list.
+    std::thread::sleep(Duration::from_millis(200));
+    let chats = cached_chats(session);
+    assert_eq!(chats[0].members.len(), 3);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn add_members_reports_partial_failure() {
+    let server = mock_server(false).await;
+    for (user, status) in [("u1", 201), ("u2", 500)] {
+        Mock::given(method("POST"))
+            .and(path(members_path()))
+            .and(body_string_contains(format!("users('{user}')")))
+            .respond_with(
+                ResponseTemplate::new(status).set_body_json(serde_json::json!({"id": "x"})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+    }
+    Mock::given(method("GET"))
+        .and(path(members_path()))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"value": [
+                member_json("m1", "u-me", "Alex Rivera"),
+                member_json("m4", "u1", "One"),
+            ]})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let session = signed_in(&server).await;
+    session.backend.send(Command::AddMembers {
+        chat: CHAT.into(),
+        users: vec!["u1".into(), "u2".into()],
+        history: false,
+    });
+    let (added, failed) = wait_for(&session.backend, 20, |e| match e {
+        Event::MembersAdded {
+            chat,
+            added,
+            failed,
+        } if chat == CHAT => Some((added, failed)),
+        _ => None,
+    });
+    assert_eq!(added, vec!["u1".to_string()]);
+    assert_eq!(failed, vec!["u2".to_string()]);
+    // Then the members are read back.
+    let members = wait_for(&session.backend, 10, |e| match e {
+        Event::Members { chat, members } if chat == CHAT => Some(members),
+        _ => None,
+    });
+    assert_eq!(members.len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn leave_finds_my_membership_and_deletes() {
+    let server = mock_server(false).await;
+    Mock::given(method("GET"))
+        .and(path(members_path()))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"value": [
+                member_json("m-ada", "u-ada", "Ada Lovelace"),
+                member_json("m#me=", "u-me", "Alex Rivera"),
+            ]})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path(format!("{}/m%23me%3D", members_path())))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let session = signed_in(&server).await;
+    session.backend.send(Command::LeaveChat(CHAT.into()));
+    wait_for(&session.backend, 10, |e| match e {
+        Event::LeftChat(chat) if chat == CHAT => Some(()),
+        Event::LeaveFailed { .. } => panic!("leave failed"),
+        _ => None,
+    });
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(cached_chats(session).is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn leave_403_reports_admin() {
+    let server = mock_server(false).await;
+    Mock::given(method("GET"))
+        .and(path(members_path()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            serde_json::json!({"value": [member_json("m-me", "u-me", "Alex Rivera")]}),
+        ))
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path(format!("{}/m-me", members_path())))
+        .respond_with(
+            ResponseTemplate::new(403).set_body_json(
+                serde_json::json!({"error": {"code": "Forbidden", "message": "no"}}),
+            ),
+        )
+        .mount(&server)
+        .await;
+    let session = signed_in(&server).await;
+    session.backend.send(Command::LeaveChat(CHAT.into()));
+    let admin = wait_for(&session.backend, 10, |e| match e {
+        Event::LeaveFailed { chat, admin } if chat == CHAT => Some(admin),
+        _ => None,
+    });
+    assert!(admin);
+    // The chat stays in the cache.
+    assert_eq!(cached_chats(session).len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn leave_without_my_membership_fails() {
+    let server = mock_server(false).await;
+    Mock::given(method("GET"))
+        .and(path(members_path()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            serde_json::json!({"value": [member_json("m-ada", "u-ada", "Ada Lovelace")]}),
+        ))
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let session = signed_in(&server).await;
+    session.backend.send(Command::LeaveChat(CHAT.into()));
+    let admin = wait_for(&session.backend, 10, |e| match e {
+        Event::LeaveFailed { chat, admin } if chat == CHAT => Some(admin),
+        _ => None,
+    });
+    assert!(!admin);
 }

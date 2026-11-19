@@ -5,8 +5,9 @@ signed-in person, and can never see more than that person can in Teams.
 It asks for the smallest set that covers its features. Permissions that only
 one feature needs are requested the first time someone uses that feature
 (incremental consent): Chaat explains why, then opens Microsoft's consent page.
-`ChannelMessage.Read.All`, the one that needs admin consent, is requested when
-someone opens a channel.
+The two that need admin consent, `ChannelMessage.Read.All` and
+`ChatMember.ReadWrite`, are requested when someone opens a channel or first
+leaves a group chat.
 
 Pasting images into a new message uses `hostedContents` in the ordinary
 send request, covered by `ChatMessage.Send` or `ChannelMessage.Send`.
@@ -17,7 +18,7 @@ It does not request `Files.ReadWrite` or create a OneDrive sharing link.
 | `openid`, `profile`, `offline_access` | At sign-in | Token endpoint (identity, refresh token) | No |
 | `User.Read` | At sign-in | `GET /me` | No |
 | `User.ReadBasic.All` | At sign-in | `GET /users/{id}/photos/96x96/$value`, `GET /users?$search=…` (people search for new chats and channel mentions), `GET /users/{id}?$select=id,displayName` (names Graph leaves out of "added to the chat" events) | No |
-| `Chat.ReadWrite` | At sign-in | `GET /me/chats`, `GET /chats/{id}/messages`, `PATCH …/messages/{id}`, `POST /users/{id}/chats/{id}/messages/{id}/softDelete`, `POST /chats/{id}/markChatReadForUser`, `POST /search/query`, `POST /subscriptions` on `/users/{id}/chats/getAllMessages` (push relay only) | Excluded from the default user-consent policy |
+| `Chat.ReadWrite` | At sign-in | `GET /me/chats`, `GET /chats/{id}/messages`, `PATCH …/messages/{id}`, `POST /users/{id}/chats/{id}/messages/{id}/softDelete`, `POST /chats/{id}/markChatReadForUser`, `POST /search/query`, `POST /subscriptions` on `/users/{id}/chats/getAllMessages` (push relay only), `GET /chats/{id}/members` and `POST /chats/{id}/members` (people panel) | Excluded from the default user-consent policy |
 | `ChatMessage.Send` | At sign-in | `POST /chats/{id}/messages`, `POST …/replyWithQuote`, `setReaction`, `unsetReaction` | No |
 | `Team.ReadBasic.All` | At sign-in | `GET /me/joinedTeams` | No |
 | `Channel.ReadBasic.All` | At sign-in | `GET /teams/{id}/allChannels` | No |
@@ -29,6 +30,7 @@ It does not request `Files.ReadWrite` or create a OneDrive sharing link.
 | `Presence.ReadWrite` | First status change, or the presence session | `POST /users/{id}/presence/setUserPreferredPresence`, `clearUserPreferredPresence`, `setStatusMessage`, `setPresence`, `clearPresence` | No |
 | `OnlineMeetings.Read` | First "Meeting chat" during a call | `GET /me/onlineMeetings?$filter=JoinWebUrl eq '…'` (finds a meeting's chat from its join link) | No |
 | `MailboxSettings.ReadWrite` | First visit to Settings › Out of office, or "Out of office…" in the account menu | `GET /me/mailboxSettings/automaticRepliesSetting`, `PATCH /me/mailboxSettings` (automatic replies only) | No |
+| `ChatMember.ReadWrite` | First group chat left | `DELETE /chats/{id}/members/{membership-id}`. No other delegated permission allows it | **Yes** |
 | `ChannelMessage.Read.All` | First channel opened | `GET /teams/{id}/channels/{id}/messages`, `…/replies` | **Yes** |
 
 ## Not requested

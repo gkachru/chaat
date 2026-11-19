@@ -34,6 +34,8 @@ pub enum Resource {
     MyPresence,
     /// The signed-in person's automatic replies (Out of Office).
     OutOfOffice,
+    /// Everyone in one group chat (the chat list carries at most 25).
+    Members(String),
 }
 
 /// Why a fetch is being considered.
@@ -72,6 +74,7 @@ impl Resource {
             Self::Calendar => Duration::from_secs(5 * 60),
             Self::Presence | Self::MyPresence => Duration::from_secs(60),
             Self::OutOfOffice => Duration::from_secs(30),
+            Self::Members(_) => Duration::from_secs(30),
         }
     }
 }

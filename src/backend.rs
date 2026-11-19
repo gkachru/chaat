@@ -124,6 +124,16 @@ pub enum Command {
         recipients: Vec<String>,
     },
     SearchPeople(String),
+    /// Adds people to a group chat, one request each; `history` lets them
+    /// see the messages from before they joined.
+    AddMembers {
+        chat: String,
+        users: Vec<String>,
+        history: bool,
+    },
+    /// Leaves a group chat: finds the person's own membership and deletes
+    /// it (needs ChatMember.ReadWrite).
+    LeaveChat(String),
     /// A one-on-one chat with one person, or a group chat with several.
     CreateChat {
         others: Vec<String>,
@@ -276,6 +286,25 @@ pub enum Event {
         people: Vec<Member>,
     },
     ChatCreated(Box<Chat>),
+    /// Everyone in a group chat, as Graph lists them.
+    Members {
+        chat: String,
+        members: Vec<Member>,
+    },
+    /// The outcome of `AddMembers`: who was added and who was not.
+    MembersAdded {
+        chat: String,
+        added: Vec<String>,
+        failed: Vec<String>,
+    },
+    /// The person left the chat.
+    LeftChat(String),
+    /// Leaving failed; `admin` when Graph refused for lack of an
+    /// administrator-approved permission (403).
+    LeaveFailed {
+        chat: String,
+        admin: bool,
+    },
     /// The signed-in person's own presence.
     MyPresence(Presence),
     /// The automatic replies, as Graph has them after a fetch or a save.

@@ -80,6 +80,62 @@ impl Graph {
         }
     }
 
+    /// `GET /chats/{id}/members`: every member with the membership id
+    /// (Chat.ReadWrite). The list has no paging, unlike `$expand=members`,
+    /// which stops at 25. Members without a user id (anonymous, guests of
+    /// other kinds) are dropped, as in `convert::chat`.
+    pub async fn chat_members(&self, chat: &str) -> Result<Vec<(String, Member)>, GraphError> {
+        let page: g::Page<g::ConversationMember> = self
+            .get(&format!("chats/{}/members", segment(chat)))
+            .await?;
+        Ok(page
+            .value
+            .into_iter()
+            .filter_map(|member| {
+                Some((
+                    member.id?,
+                    Member {
+                        user_id: member.user_id?,
+                        display_name: member.display_name.unwrap_or_default(),
+                        email: member.email,
+                        tenant_id: member.tenant_id,
+                    },
+                ))
+            })
+            .collect())
+    }
+
+    /// `POST /chats/{id}/members`: one person per request. With `history`
+    /// they see all earlier messages; without it, only new ones.
+    pub async fn add_chat_member(
+        &self,
+        chat: &str,
+        user: &str,
+        history: bool,
+    ) -> Result<(), GraphError> {
+        let mut body = json!({
+            "@odata.type": "#microsoft.graph.aadUserConversationMember",
+            "roles": ["owner"],
+            "user@odata.bind": format!("https://graph.microsoft.com/v1.0/users('{user}')"),
+        });
+        if history {
+            body["visibleHistoryStartDateTime"] = json!("0001-01-01T00:00:00Z");
+        }
+        self.post_no_content(&format!("chats/{}/members", segment(chat)), &body)
+            .await
+    }
+
+    /// `DELETE /chats/{id}/members/{membership-id}` (ChatMember.ReadWrite,
+    /// admin consent). The membership id is opaque.
+    pub async fn remove_chat_member(&self, chat: &str, membership: &str) -> Result<(), GraphError> {
+        self.delete(&format!(
+            "chats/{}/members/{}",
+            segment(chat),
+            segment(membership)
+        ))
+        .await
+    }
+
     /// `GET /me/presence` (Presence.Read, part of Presence.Read.All).
     pub async fn my_presence(&self) -> Result<Presence, GraphError> {
         let raw: g::Presence = self.get("me/presence").await?;
@@ -278,5 +334,107 @@ mod tests {
             .set_presence_session("u-me", "client", false, 30)
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn members_list_maps_30_members() {
+        let server = MockServer::start().await;
+        let value: Vec<_> = (0..30)
+            .map(|i| serde_json::json!({"id": format!("m{i}"), "userId": format!("u{i}"), "displayName": format!("P{i}")}))
+            .chain([serde_json::json!({"id": "mx", "displayName": "No user"})])
+            .collect();
+        Mock::given(method("GET"))
+            .and(path("/chats/19:a@thread.v2/members"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "value": value })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let members = graph(&server)
+            .await
+            .chat_members("19:a@thread.v2")
+            .await
+            .unwrap();
+        assert_eq!(members.len(), 30);
+        assert_eq!(members[0].0, "m0");
+        assert_eq!(members[29].1.user_id, "u29");
+        assert_eq!(members[29].1.display_name, "P29");
+    }
+
+    #[tokio::test]
+    async fn add_member_without_history_omits_field() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chats/19:a@thread.v2/members"))
+            .and(body_json(serde_json::json!({
+                "@odata.type": "#microsoft.graph.aadUserConversationMember",
+                "roles": ["owner"],
+                "user@odata.bind": "https://graph.microsoft.com/v1.0/users('u2')"
+            })))
+            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({"id": "m2"})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        graph(&server)
+            .await
+            .add_chat_member("19:a@thread.v2", "u2", false)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn add_member_with_all_history() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chats/19:a@thread.v2/members"))
+            .and(body_json(serde_json::json!({
+                "@odata.type": "#microsoft.graph.aadUserConversationMember",
+                "roles": ["owner"],
+                "user@odata.bind": "https://graph.microsoft.com/v1.0/users('u2')",
+                "visibleHistoryStartDateTime": "0001-01-01T00:00:00Z"
+            })))
+            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({"id": "m2"})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        graph(&server)
+            .await
+            .add_chat_member("19:a@thread.v2", "u2", true)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn remove_member_deletes_by_membership_id() {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path("/chats/19:a@thread.v2/members/m%231%3D%2F"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&server)
+            .await;
+        graph(&server)
+            .await
+            .remove_chat_member("19:a@thread.v2", "m#1=/")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn remove_member_403_is_forbidden() {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .respond_with(ResponseTemplate::new(403).set_body_json(
+                serde_json::json!({"error": {"code": "Forbidden", "message": "secret"}}),
+            ))
+            .mount(&server)
+            .await;
+        let error = graph(&server)
+            .await
+            .remove_chat_member("19:a@thread.v2", "m1")
+            .await
+            .unwrap_err();
+        assert!(matches!(error, GraphError::Forbidden { .. }), "{error:?}");
     }
 }

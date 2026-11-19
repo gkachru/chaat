@@ -11,7 +11,7 @@
 //! account that is not on screen are applied with `hidden` set: they update
 //! that account, notify, and never touch what the window shows.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -202,6 +202,23 @@ pub enum Overlay {
     /// A join link as a QR code, to join on a phone.
     JoinOnPhone(String),
     ImagePreview(String),
+    /// Add people to a group chat (chat id).
+    AddPeople(String),
+    /// Leave a group chat (chat id): a confirmation, or an explanation of the
+    /// permission it needs.
+    LeaveChat(String),
+}
+
+/// The Add people dialog's fields.
+#[derive(Debug, Default)]
+pub struct AddPeople {
+    pub query: String,
+    pub picked: Vec<Member>,
+    pub selected: usize,
+    /// The second step, choosing what the new people see of the chat so far.
+    pub history_step: bool,
+    /// Whether new people see the earlier messages (false: none, true: all).
+    pub history: bool,
 }
 
 #[derive(Debug, Default)]
@@ -301,6 +318,13 @@ pub struct Account {
     pub loading: HashSet<Resource>,
 
     pub open: Option<ConversationId>,
+    /// People being added to group chats, shown as "Adding…": (chat id, user id).
+    pub adding: BTreeSet<(String, String)>,
+    /// Chats the person is leaving, kept to bring back if leaving fails.
+    pub leaving: HashMap<String, Chat>,
+    /// Chats already left, kept out of the list until Graph's chat list
+    /// stops returning them (it can lag behind).
+    pub left: HashSet<String>,
     pub expanded_teams: HashSet<String>,
     pub selected_meeting: Option<String>,
     pub chat_filter: String,
@@ -361,6 +385,9 @@ impl Account {
             media: HashMap::new(),
             loading: HashSet::new(),
             open: None,
+            adding: BTreeSet::new(),
+            leaving: HashMap::new(),
+            left: HashSet::new(),
             expanded_teams: HashSet::new(),
             selected_meeting: None,
             chat_filter: String::new(),
@@ -381,6 +408,18 @@ impl Account {
             out_of_office_saving: false,
             no_mailbox: false,
         }
+    }
+
+    /// The people of a group chat: the signed-in person first, then the
+    /// others by name. Empty for a chat Chaat does not know.
+    pub fn group_members(&self, chat: &str) -> Vec<Member> {
+        let Some(chat) = self.chats.iter().find(|c| c.id == chat) else {
+            return Vec::new();
+        };
+        let me = self.me();
+        let mut members = chat.members.clone();
+        members.sort_by_key(|m| (m.user_id != me, m.display_name.to_lowercase()));
+        members
     }
 
     /// The signed-in person's id (Graph user id).
@@ -560,6 +599,7 @@ pub struct App {
     pub overlay: Option<Overlay>,
     pub switcher: Switcher,
     pub new_chat: NewChat,
+    pub add_people: AddPeople,
     pub people: People,
     /// A message to scroll to once its conversation is drawn.
     pub jump_to: Option<String>,
@@ -694,6 +734,7 @@ impl App {
             overlay: None,
             switcher: Switcher::default(),
             new_chat: NewChat::default(),
+            add_people: AddPeople::default(),
             people: People::default(),
             jump_to: None,
             toasts: Vec::new(),
@@ -1310,6 +1351,69 @@ impl App {
                     self.people.results = people;
                 }
             }
+            Event::Members { chat, members } => {
+                let pending: Vec<(String, String)> = self
+                    .adding
+                    .iter()
+                    .filter(|(c, _)| *c == chat)
+                    .cloned()
+                    .collect();
+                if let Some(found) = self.chats.iter_mut().find(|c| c.id == chat) {
+                    // People still being added stay listed until Graph says.
+                    let waiting: Vec<Member> = found
+                        .members
+                        .iter()
+                        .filter(|m| {
+                            pending.iter().any(|(_, user)| *user == m.user_id)
+                                && !members.iter().any(|n| n.user_id == m.user_id)
+                        })
+                        .cloned()
+                        .collect();
+                    found.members = members;
+                    found.members.extend(waiting);
+                }
+            }
+            Event::MembersAdded {
+                chat,
+                added,
+                failed,
+            } => {
+                for user in added.iter().chain(failed.iter()) {
+                    self.adding.remove(&(chat.clone(), user.clone()));
+                }
+                if let Some(found) = self.chats.iter_mut().find(|c| c.id == chat) {
+                    found.members.retain(|m| !failed.contains(&m.user_id));
+                }
+                if !failed.is_empty() {
+                    let noun = if failed.len() == 1 {
+                        "person"
+                    } else {
+                        "people"
+                    };
+                    self.toast(
+                        ToastKind::Error,
+                        format!("Could not add {} {noun}", failed.len()),
+                    );
+                }
+            }
+            Event::LeftChat(chat) => {
+                self.leaving.remove(&chat);
+                self.chats.retain(|c| c.id != chat);
+                self.left.insert(chat);
+            }
+            Event::LeaveFailed { chat, admin } => {
+                if let Some(found) = self.leaving.remove(&chat) {
+                    self.chats.retain(|c| c.id != chat);
+                    self.chats.insert(0, found);
+                    self.chats.sort_by_key(Chat::list_order);
+                }
+                let text = if admin {
+                    "Could not leave the chat. An administrator must approve leaving chats; try Open in Teams."
+                } else {
+                    "Could not leave the chat"
+                };
+                self.toast(ToastKind::Error, text);
+            }
             Event::ChatCreated(chat) => {
                 let chat = *chat;
                 let id = chat.id.clone();
@@ -1444,6 +1548,13 @@ impl App {
     }
 
     fn on_chats(&mut self, mut chats: Vec<Chat>, cached: bool) {
+        // A chat being left stays out of the list until Graph answers.
+        if !cached {
+            // Once Graph stops listing a left chat, forget it.
+            let listed: HashSet<&str> = chats.iter().map(|c| c.id.as_str()).collect();
+            self.left.retain(|id| listed.contains(id.as_str()));
+        }
+        chats.retain(|c| !self.leaving.contains_key(&c.id) && !self.left.contains(&c.id));
         chats.sort_by_key(Chat::list_order);
         let me = self.me().to_owned();
         if !cached && !self.chats.is_empty() {
@@ -2109,6 +2220,75 @@ impl App {
                 self.new_chat = NewChat::default();
                 self.people = People::default();
                 self.overlay = Some(Overlay::NewChat);
+            }
+            Action::OpenAddPeople(chat) => {
+                self.add_people = AddPeople::default();
+                self.people = People::default();
+                self.overlay = Some(Overlay::AddPeople(chat));
+            }
+            Action::AddMembers {
+                chat,
+                members,
+                history,
+            } => {
+                let existing: Vec<String> = self
+                    .chats
+                    .iter()
+                    .find(|c| c.id == chat)
+                    .map(|c| c.members.iter().map(|m| m.user_id.clone()).collect())
+                    .unwrap_or_default();
+                let mut fresh: Vec<Member> = Vec::new();
+                for member in members {
+                    if !existing.contains(&member.user_id)
+                        && !fresh.iter().any(|m| m.user_id == member.user_id)
+                    {
+                        fresh.push(member);
+                    }
+                }
+                self.overlay = None;
+                if fresh.is_empty() {
+                    return;
+                }
+                let count = fresh.len();
+                let users: Vec<String> = fresh.iter().map(|m| m.user_id.clone()).collect();
+                if let Some(found) = self.chats.iter_mut().find(|c| c.id == chat) {
+                    found.members.extend(fresh);
+                }
+                if self.demo {
+                    let noun = if count == 1 { "person" } else { "people" };
+                    self.toast(ToastKind::Info, format!("Added {count} {noun}"));
+                } else {
+                    for user in &users {
+                        self.adding.insert((chat.clone(), user.clone()));
+                    }
+                    self.backend.send(Command::AddMembers {
+                        chat,
+                        users,
+                        history,
+                    });
+                }
+            }
+            Action::OpenLeaveChat(chat) => self.overlay = Some(Overlay::LeaveChat(chat)),
+            Action::LeaveChat(chat) => {
+                if !self.demo && !self.has_scope(crate::auth::CHAT_MEMBER_SCOPE) {
+                    // Never delete without the permission: explain it instead.
+                    self.overlay = Some(Overlay::LeaveChat(chat));
+                    return;
+                }
+                self.overlay = None;
+                if self.open == Some(ConversationId::Chat(chat.clone())) {
+                    self.open = None;
+                }
+                if self.demo {
+                    self.chats.retain(|c| c.id != chat);
+                } else if let Some(found) = self.chats.iter().position(|c| c.id == chat) {
+                    let found = self.chats.remove(found);
+                    self.leaving.insert(chat.clone(), found);
+                    self.backend.send(Command::LeaveChat(chat));
+                }
+            }
+            Action::PeopleOpened(chat) => {
+                self.fetch(Resource::Members(chat), Trigger::Opened);
             }
             Action::SearchPeople(query) => {
                 self.people.query = query.clone();
@@ -3050,6 +3230,382 @@ mod tests {
         (app, commands)
     }
 
+    const LAUNCH: &str = "19:demo-launch@thread.v2";
+
+    fn demo_app() -> (App, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::new(
+            AppDirs::under(dir.path()),
+            Settings::default(),
+            Waker::default(),
+            true,
+        );
+        (app, dir)
+    }
+
+    fn launch_members(app: &App) -> Vec<String> {
+        app.group_members(LAUNCH)
+            .into_iter()
+            .map(|m| m.user_id)
+            .collect()
+    }
+
+    fn person(id: &str) -> Member {
+        Member {
+            user_id: id.into(),
+            display_name: id.into(),
+            ..Default::default()
+        }
+    }
+
+    /// A signed-in, non-demo app with one group chat of me and Ada.
+    fn group_app() -> (App, tokio::sync::mpsc::UnboundedReceiver<Command>) {
+        let (mut app, commands) = app();
+        app.granted = "User.Read Chat.ReadWrite ChatMember.ReadWrite".into();
+        app.chats = vec![Chat {
+            id: "19:g".into(),
+            kind: ChatKind::Group,
+            members: vec![person("u-me"), person("u-ada")],
+            ..Default::default()
+        }];
+        (app, commands)
+    }
+
+    #[test]
+    fn group_members_lists_me_first_then_by_name() {
+        let (app, _dir) = demo_app();
+        assert_eq!(
+            launch_members(&app),
+            ["u-me", "u-ada", "u-grace", "u-katherine", "u-margaret"]
+        );
+        assert!(app.group_members("unknown").is_empty());
+    }
+
+    #[test]
+    fn open_add_people_resets_scratch() {
+        let (mut app, _dir) = demo_app();
+        let ctx = egui::Context::default();
+        app.add_people.picked.push(person("u-alan"));
+        app.add_people.history_step = true;
+        app.apply(Action::OpenAddPeople(LAUNCH.into()), &ctx);
+        assert_eq!(app.overlay, Some(Overlay::AddPeople(LAUNCH.into())));
+        assert!(app.add_people.picked.is_empty());
+        assert!(!app.add_people.history_step);
+    }
+
+    #[test]
+    fn add_members_in_demo_appends() {
+        let (mut app, _dir) = demo_app();
+        let ctx = egui::Context::default();
+        app.apply(Action::OpenAddPeople(LAUNCH.into()), &ctx);
+        app.apply(
+            Action::AddMembers {
+                chat: LAUNCH.into(),
+                members: vec![person("u-alan")],
+                history: true,
+            },
+            &ctx,
+        );
+        let ids = launch_members(&app);
+        assert_eq!(ids.len(), 6);
+        assert!(ids.contains(&"u-alan".to_owned()));
+        assert_eq!(app.overlay, None);
+    }
+
+    #[test]
+    fn add_skips_existing_members() {
+        let (mut app, _dir) = demo_app();
+        let ctx = egui::Context::default();
+        app.apply(
+            Action::AddMembers {
+                chat: LAUNCH.into(),
+                members: vec![person("u-ada")],
+                history: false,
+            },
+            &ctx,
+        );
+        assert_eq!(launch_members(&app).len(), 5);
+    }
+
+    #[test]
+    fn leave_in_demo_removes_chat() {
+        let (mut app, _dir) = demo_app();
+        let ctx = egui::Context::default();
+        app.apply(
+            Action::OpenConversation(ConversationId::Chat(LAUNCH.into())),
+            &ctx,
+        );
+        app.apply(Action::LeaveChat(LAUNCH.into()), &ctx);
+        assert!(app.chats.iter().all(|c| c.id != LAUNCH));
+        assert_eq!(app.open, None);
+        assert_eq!(app.overlay, None);
+    }
+
+    #[test]
+    fn adding_and_leaving_work_on_a_meeting_chat_in_demo() {
+        const MEETING: &str = "19:meeting_demo-design-review@thread.v2";
+        let (mut app, _dir) = demo_app();
+        let ctx = egui::Context::default();
+        let before = app.group_members(MEETING).len();
+        assert!(before > 0);
+        app.apply(
+            Action::AddMembers {
+                chat: MEETING.into(),
+                members: vec![person("u-alan")],
+                history: false,
+            },
+            &ctx,
+        );
+        assert_eq!(app.group_members(MEETING).len(), before + 1);
+        app.apply(
+            Action::OpenConversation(ConversationId::Chat(MEETING.into())),
+            &ctx,
+        );
+        app.apply(Action::LeaveChat(MEETING.into()), &ctx);
+        assert!(app.chats.iter().all(|c| c.id != MEETING));
+        assert_eq!(app.open, None);
+    }
+
+    #[test]
+    fn open_leave_sets_overlay() {
+        let (mut app, _dir) = demo_app();
+        let ctx = egui::Context::default();
+        app.apply(Action::OpenLeaveChat(LAUNCH.into()), &ctx);
+        assert_eq!(app.overlay, Some(Overlay::LeaveChat(LAUNCH.into())));
+    }
+
+    #[test]
+    fn leave_without_scope_shows_consent_dialog() {
+        // The dialog itself decides between confirming and explaining.
+        let (mut app, _commands) = group_app();
+        app.granted = "User.Read Chat.ReadWrite".into();
+        assert!(!app.has_scope(crate::auth::CHAT_MEMBER_SCOPE));
+        let ctx = egui::Context::default();
+        app.apply(Action::OpenLeaveChat("19:g".into()), &ctx);
+        assert_eq!(app.overlay, Some(Overlay::LeaveChat("19:g".into())));
+    }
+
+    #[test]
+    fn leave_without_scope_never_sends() {
+        let (mut app, mut commands) = group_app();
+        app.granted = "User.Read Chat.ReadWrite".into();
+        let ctx = egui::Context::default();
+        app.apply(Action::LeaveChat("19:g".into()), &ctx);
+        assert_eq!(app.chats.len(), 1);
+        assert!(app.leaving.is_empty());
+        assert!(commands.try_recv().is_err());
+        assert_eq!(app.overlay, Some(Overlay::LeaveChat("19:g".into())));
+    }
+
+    #[test]
+    fn left_chat_stays_out_until_graph_stops_listing_it() {
+        let (mut app, _commands) = group_app();
+        let ctx = egui::Context::default();
+        app.apply(Action::LeaveChat("19:g".into()), &ctx);
+        app.handle(Event::LeftChat("19:g".into()), &ctx);
+        app.handle(
+            Event::Chats {
+                chats: vec![Chat {
+                    id: "19:g".into(),
+                    ..Default::default()
+                }],
+                cached: false,
+            },
+            &ctx,
+        );
+        assert!(app.chats.is_empty(), "a lagging list must not re-add it");
+        app.handle(
+            Event::Chats {
+                chats: vec![],
+                cached: false,
+            },
+            &ctx,
+        );
+        assert!(app.left.is_empty());
+    }
+
+    #[test]
+    fn people_opened_fetches_members() {
+        let (mut app, mut commands) = group_app();
+        let ctx = egui::Context::default();
+        app.apply(Action::PeopleOpened("19:g".into()), &ctx);
+        assert!(matches!(
+            commands.try_recv(),
+            Ok(Command::Fetch {
+                resource: Resource::Members(chat),
+                trigger: Trigger::Opened,
+            }) if chat == "19:g"
+        ));
+    }
+
+    #[test]
+    fn members_event_replaces_members() {
+        let (mut app, _commands) = group_app();
+        let ctx = egui::Context::default();
+        app.handle(
+            Event::Members {
+                chat: "19:g".into(),
+                members: vec![person("u-me"), person("u-ada"), person("u-grace")],
+            },
+            &ctx,
+        );
+        assert_eq!(app.chats[0].members.len(), 3);
+        // People still being added stay until Graph confirms them.
+        app.apply(
+            Action::AddMembers {
+                chat: "19:g".into(),
+                members: vec![person("u-alan")],
+                history: false,
+            },
+            &ctx,
+        );
+        app.handle(
+            Event::Members {
+                chat: "19:g".into(),
+                members: vec![person("u-me")],
+            },
+            &ctx,
+        );
+        let ids: Vec<&str> = app.chats[0]
+            .members
+            .iter()
+            .map(|m| m.user_id.as_str())
+            .collect();
+        assert_eq!(ids, ["u-me", "u-alan"]);
+    }
+
+    #[test]
+    fn add_members_marks_adding_and_sends() {
+        let (mut app, mut commands) = group_app();
+        let ctx = egui::Context::default();
+        app.apply(
+            Action::AddMembers {
+                chat: "19:g".into(),
+                members: vec![person("u-alan"), person("u-ada")],
+                history: true,
+            },
+            &ctx,
+        );
+        assert!(
+            app.adding
+                .contains(&("19:g".to_owned(), "u-alan".to_owned()))
+        );
+        assert_eq!(app.adding.len(), 1, "existing members are skipped");
+        assert_eq!(app.chats[0].members.len(), 3);
+        assert!(matches!(
+            commands.try_recv(),
+            Ok(Command::AddMembers { chat, users, history: true })
+                if chat == "19:g" && users == ["u-alan"]
+        ));
+    }
+
+    #[test]
+    fn members_added_clears_adding_and_toasts_failures() {
+        let (mut app, _commands) = group_app();
+        let ctx = egui::Context::default();
+        app.apply(
+            Action::AddMembers {
+                chat: "19:g".into(),
+                members: vec![person("u-alan"), person("u-hedy")],
+                history: false,
+            },
+            &ctx,
+        );
+        app.handle(
+            Event::MembersAdded {
+                chat: "19:g".into(),
+                added: vec!["u-alan".into()],
+                failed: vec!["u-hedy".into()],
+            },
+            &ctx,
+        );
+        assert!(app.adding.is_empty());
+        let ids: Vec<&str> = app.chats[0]
+            .members
+            .iter()
+            .map(|m| m.user_id.as_str())
+            .collect();
+        assert_eq!(ids, ["u-me", "u-ada", "u-alan"]);
+        assert!(
+            app.toasts
+                .iter()
+                .any(|t| t.kind == ToastKind::Error && t.text == "Could not add 1 person")
+        );
+    }
+
+    #[test]
+    fn leave_hides_chat_and_sends() {
+        let (mut app, mut commands) = group_app();
+        let ctx = egui::Context::default();
+        app.apply(
+            Action::OpenConversation(ConversationId::Chat("19:g".into())),
+            &ctx,
+        );
+        while commands.try_recv().is_ok() {}
+        app.apply(Action::LeaveChat("19:g".into()), &ctx);
+        assert!(app.chats.is_empty());
+        assert!(app.leaving.contains_key("19:g"));
+        assert_eq!(app.open, None);
+        assert!(matches!(
+            commands.try_recv(),
+            Ok(Command::LeaveChat(chat)) if chat == "19:g"
+        ));
+        // A chat list refresh does not bring it back meanwhile.
+        app.handle(
+            Event::Chats {
+                chats: vec![Chat {
+                    id: "19:g".into(),
+                    ..Default::default()
+                }],
+                cached: false,
+            },
+            &ctx,
+        );
+        assert!(app.chats.is_empty());
+    }
+
+    #[test]
+    fn leave_failed_restores_chat() {
+        let (mut app, _commands) = group_app();
+        let ctx = egui::Context::default();
+        app.apply(Action::LeaveChat("19:g".into()), &ctx);
+        app.handle(
+            Event::LeaveFailed {
+                chat: "19:g".into(),
+                admin: false,
+            },
+            &ctx,
+        );
+        assert_eq!(app.chats.len(), 1);
+        assert!(app.leaving.is_empty());
+        assert!(app.toasts.iter().any(|t| t.kind == ToastKind::Error));
+
+        app.apply(Action::LeaveChat("19:g".into()), &ctx);
+        app.handle(
+            Event::LeaveFailed {
+                chat: "19:g".into(),
+                admin: true,
+            },
+            &ctx,
+        );
+        assert_eq!(app.chats.len(), 1);
+        assert!(
+            app.toasts
+                .iter()
+                .any(|t| t.text.contains("administrator must approve"))
+        );
+    }
+
+    #[test]
+    fn left_chat_forgets_copy() {
+        let (mut app, _commands) = group_app();
+        let ctx = egui::Context::default();
+        app.apply(Action::LeaveChat("19:g".into()), &ctx);
+        app.handle(Event::LeftChat("19:g".into()), &ctx);
+        assert!(app.leaving.is_empty());
+        assert!(app.chats.is_empty());
+    }
+
     #[test]
     fn latest_pages_connect_to_older_ones() {
         let mut conversation = Conversation::default();
@@ -3525,7 +4081,7 @@ mod tests {
     fn out_of_office_asks_for_its_scope_then_fetches_and_saves() {
         use crate::model::{AutoReplies, OutOfOffice};
         let (mut app, mut commands) = app();
-        app.granted = "User.Read Chat.ReadWrite".into();
+        app.granted = "User.Read Chat.ReadWrite ChatMember.ReadWrite".into();
         let ctx = egui::Context::default();
         app.apply(Action::OpenOutOfOffice, &ctx);
         assert_eq!(app.settings_page, Some(SettingsPage::OutOfOffice));
@@ -3589,7 +4145,7 @@ mod tests {
     #[test]
     fn features_needing_new_permissions_ask_first() {
         let (mut app, mut commands) = app();
-        app.granted = "User.Read Chat.ReadWrite".into();
+        app.granted = "User.Read Chat.ReadWrite ChatMember.ReadWrite".into();
         let ctx = egui::Context::default();
         app.apply(Action::OpenNewChat, &ctx);
         assert_eq!(

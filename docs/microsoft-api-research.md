@@ -46,6 +46,32 @@ For message attachments and sharing permissions, see [permissions](permissions.m
 and [privacy](privacy.md). Do not fetch message-provided images from other hosts
 or send Graph credentials outside the Graph origin.
 
+## Chat members
+
+The people panel in group and meeting chats uses three calls:
+
+- `GET /chats/{id}/members` lists the full member list. `POST /chats/{id}/members`
+  adds people, one POST per person. Both use `Chat.ReadWrite`, which Chaat
+  already requests at sign-in. Microsoft lists it as a higher-privileged
+  permission for both calls. No new scope is needed.
+- `DELETE /chats/{id}/members/{membership-id}` leaves a group chat. Only
+  `ChatMember.ReadWrite` allows it, among delegated permissions. It needs admin
+  consent, so Chaat requests it the first time someone leaves a group chat.
+- Adding history: "Don't include chat history" omits
+  `visibleHistoryStartDateTime`. "Include all chat history" sends
+  `0001-01-01T00:00:00Z`.
+
+Microsoft documents roster changes for group chats (chatType group) and fixes
+the roster of one-on-one chats; it does not document adding or removing members
+of meeting chats, and notes that methods on a chat tied to an online meeting can
+affect the meeting. Chaat offers Add people and Leave in meeting chats as Teams
+does; a refusal from Graph shows as an error. Presence is followed for members
+of group chats only, so a meeting chat's panel shows no presence dots.
+
+The chat list's `$expand=members` returns at most 25 members. The panel
+therefore fetches the full list with `GET /chats/{id}/members` when it opens.
+That is a fetch the person causes, never a poll.
+
 ## Refresh and throttling
 
 Microsoft's [Teams polling requirements][polling] allow repeated fetches

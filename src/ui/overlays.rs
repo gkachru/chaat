@@ -16,6 +16,8 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         Some(Overlay::Consent(scope)) => consent(app, ctx, scope),
         Some(Overlay::JoinOnPhone(url)) => join_on_phone(app, ctx, &url),
         Some(Overlay::ImagePreview(uri)) => image_preview(app, ctx, &uri),
+        Some(Overlay::AddPeople(chat)) => add_people(app, ctx, &chat),
+        Some(Overlay::LeaveChat(chat)) => leave_chat(app, ctx, &chat),
         None => {}
     }
 }
@@ -457,46 +459,8 @@ fn new_chat(app: &mut App, ctx: &egui::Context) {
     let mut query = app.new_chat.query.clone();
     let mut topic = app.new_chat.topic.clone();
     let mut picked = app.new_chat.picked.clone();
-    // People known from chats first, then the directory's answer.
-    let needle = query.trim().to_lowercase();
-    let mut found: Vec<Member> = app
-        .directory()
-        .into_iter()
-        .filter(|p| {
-            !needle.is_empty()
-                && (p.display_name.to_lowercase().contains(&needle)
-                    || p.email
-                        .as_deref()
-                        .is_some_and(|e| e.to_lowercase().contains(&needle)))
-        })
-        .collect();
-    if app.people.query == query {
-        for person in &app.people.results {
-            if !found.iter().any(|p| p.user_id == person.user_id) {
-                found.push(person.clone());
-            }
-        }
-    }
-    found.retain(|p| !picked.iter().any(|q| q.user_id == p.user_id) && p.user_id != app.me());
-    found.truncate(8);
-    let mut selected = app.new_chat.selected.min(found.len().saturating_sub(1));
-    let mut choose: Option<Member> = None;
+    let mut selected = app.new_chat.selected;
     let mut start = false;
-    ctx.input_mut(|input| {
-        if !found.is_empty() {
-            if input.consume_key(Modifiers::NONE, Key::ArrowDown) {
-                selected = (selected + 1) % found.len();
-            }
-            if input.consume_key(Modifiers::NONE, Key::ArrowUp) {
-                selected = (selected + found.len() - 1) % found.len();
-            }
-            if input.consume_key(Modifiers::NONE, Key::Enter) {
-                choose = found.get(selected).cloned();
-            }
-        } else if !picked.is_empty() && input.consume_key(Modifiers::COMMAND, Key::Enter) {
-            start = true;
-        }
-    });
     let close = modal(palette, ctx, "new-chat", 520.0, 90.0, |ui| {
         Frame::new().inner_margin(Margin::same(20)).show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -511,109 +475,8 @@ fn new_chat(app: &mut App, ctx: &egui::Context) {
                 });
             });
             ui.add_space(10.0);
-            // The people picked so far.
-            if !picked.is_empty() {
-                let mut remove = None;
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
-                    for (index, person) in picked.iter().enumerate() {
-                        Frame::new()
-                            .fill(palette.surface_hover)
-                            .corner_radius(CornerRadius::same(14))
-                            .inner_margin(Margin {
-                                left: 4,
-                                right: 2,
-                                top: 2,
-                                bottom: 2,
-                            })
-                            .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.spacing_mut().item_spacing.x = 4.0;
-                                    widgets::avatar(
-                                        ui,
-                                        app,
-                                        Some(&person.user_id),
-                                        &person.display_name,
-                                        22.0,
-                                        false,
-                                    );
-                                    ui.label(
-                                        egui::RichText::new(&person.display_name)
-                                            .font(theme::medium(13.0))
-                                            .color(palette.text),
-                                    );
-                                    let close = widgets::icon_button_sized(
-                                        ui,
-                                        &palette,
-                                        Icon::Close,
-                                        "Remove",
-                                        20.0,
-                                        12.0,
-                                        palette.dim,
-                                    );
-                                    if close.clicked() {
-                                        remove = Some(index);
-                                    }
-                                });
-                            });
-                    }
-                });
-                if let Some(index) = remove {
-                    picked.remove(index);
-                }
-                ui.add_space(8.0);
-            }
-            let response = ui.add(
-                egui::TextEdit::singleline(&mut query)
-                    .hint_text("Type a name or email address")
-                    .desired_width(f32::INFINITY)
-                    .margin(Margin::symmetric(10, 8))
-                    .font(theme::regular(14.0)),
-            );
-            response.request_focus();
-            ui.add_space(6.0);
-            for (index, person) in found.iter().enumerate() {
-                let (rect, row) =
-                    ui.allocate_exact_size(vec2(ui.available_width(), 44.0), Sense::click());
-                if index == selected || row.hovered() {
-                    ui.painter()
-                        .rect_filled(rect, CornerRadius::same(8), palette.surface_active);
-                }
-                let mut child = ui.new_child(
-                    egui::UiBuilder::new()
-                        .max_rect(rect.shrink2(vec2(10.0, 0.0)))
-                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
-                );
-                widgets::avatar(
-                    &mut child,
-                    app,
-                    Some(&person.user_id),
-                    &person.display_name,
-                    30.0,
-                    true,
-                );
-                child.add_space(8.0);
-                child.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = 0.0;
-                    ui.label(
-                        egui::RichText::new(&person.display_name)
-                            .font(theme::medium(14.0))
-                            .color(palette.text),
-                    );
-                    if let Some(email) = &person.email {
-                        ui.label(
-                            egui::RichText::new(email)
-                                .font(theme::regular(12.0))
-                                .color(palette.dim),
-                        );
-                    }
-                });
-                if row.clicked() {
-                    choose = Some(person.clone());
-                }
-            }
-            if found.is_empty() && query.trim().chars().count() >= 2 {
-                ui.label(egui::RichText::new("Searching your organisation…").color(palette.dim));
+            if people_picker(ui, app, &mut query, &mut picked, &mut selected, &[]) {
+                start = true;
             }
             if picked.len() > 1 {
                 ui.add_space(10.0);
@@ -660,17 +523,6 @@ fn new_chat(app: &mut App, ctx: &egui::Context) {
             });
         });
     });
-    if let Some(person) = choose {
-        picked.push(person);
-        query.clear();
-        selected = 0;
-    }
-    if query != app.new_chat.query {
-        selected = 0;
-        if query.trim().chars().count() >= 2 {
-            actions.push(Action::SearchPeople(query.clone()));
-        }
-    }
     if start && !picked.is_empty() {
         actions.push(Action::CreateChat {
             members: picked.clone(),
@@ -681,6 +533,352 @@ fn new_chat(app: &mut App, ctx: &egui::Context) {
     app.new_chat.topic = topic;
     app.new_chat.picked = picked;
     app.new_chat.selected = selected;
+    if close {
+        actions.push(Action::CloseOverlay);
+    }
+    app.actions.extend(actions);
+}
+
+/// The search box, the people picked so far and the matching people, shared
+/// by New chat and Add people. People in `exclude` and the signed-in person
+/// are never offered. Returns true when Ctrl/Cmd+Enter asks to go on.
+fn people_picker(
+    ui: &mut egui::Ui,
+    app: &mut App,
+    query: &mut String,
+    picked: &mut Vec<Member>,
+    selected: &mut usize,
+    exclude: &[String],
+) -> bool {
+    let palette = app.palette;
+    let before = query.clone();
+    // People known from chats first, then the directory's answer.
+    let needle = query.trim().to_lowercase();
+    let mut found: Vec<Member> = app
+        .directory()
+        .into_iter()
+        .filter(|p| {
+            !needle.is_empty()
+                && (p.display_name.to_lowercase().contains(&needle)
+                    || p.email
+                        .as_deref()
+                        .is_some_and(|e| e.to_lowercase().contains(&needle)))
+        })
+        .collect();
+    if app.people.query == *query {
+        for person in &app.people.results {
+            if !found.iter().any(|p| p.user_id == person.user_id) {
+                found.push(person.clone());
+            }
+        }
+    }
+    found.retain(|p| {
+        !picked.iter().any(|q| q.user_id == p.user_id)
+            && p.user_id != app.me()
+            && !exclude.contains(&p.user_id)
+    });
+    found.truncate(8);
+    *selected = (*selected).min(found.len().saturating_sub(1));
+    let mut choose: Option<Member> = None;
+    let mut proceed = false;
+    ui.ctx().input_mut(|input| {
+        if !found.is_empty() {
+            if input.consume_key(Modifiers::NONE, Key::ArrowDown) {
+                *selected = (*selected + 1) % found.len();
+            }
+            if input.consume_key(Modifiers::NONE, Key::ArrowUp) {
+                *selected = (*selected + found.len() - 1) % found.len();
+            }
+            if input.consume_key(Modifiers::NONE, Key::Enter) {
+                choose = found.get(*selected).cloned();
+            }
+        } else if !picked.is_empty() && input.consume_key(Modifiers::COMMAND, Key::Enter) {
+            proceed = true;
+        }
+    });
+    // The people picked so far.
+    if !picked.is_empty() {
+        let mut remove = None;
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+            for (index, person) in picked.iter().enumerate() {
+                Frame::new()
+                    .fill(palette.surface_hover)
+                    .corner_radius(CornerRadius::same(14))
+                    .inner_margin(Margin {
+                        left: 4,
+                        right: 2,
+                        top: 2,
+                        bottom: 2,
+                    })
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 4.0;
+                            widgets::avatar(
+                                ui,
+                                app,
+                                Some(&person.user_id),
+                                &person.display_name,
+                                22.0,
+                                false,
+                            );
+                            ui.label(
+                                egui::RichText::new(&person.display_name)
+                                    .font(theme::medium(13.0))
+                                    .color(palette.text),
+                            );
+                            let close = widgets::icon_button_sized(
+                                ui,
+                                &palette,
+                                Icon::Close,
+                                "Remove",
+                                20.0,
+                                12.0,
+                                palette.dim,
+                            );
+                            if close.clicked() {
+                                remove = Some(index);
+                            }
+                        });
+                    });
+            }
+        });
+        if let Some(index) = remove {
+            picked.remove(index);
+        }
+        ui.add_space(8.0);
+    }
+    let response = ui.add(
+        egui::TextEdit::singleline(query)
+            .hint_text("Type a name or email address")
+            .desired_width(f32::INFINITY)
+            .margin(Margin::symmetric(10, 8))
+            .font(theme::regular(14.0)),
+    );
+    response.request_focus();
+    ui.add_space(6.0);
+    for (index, person) in found.iter().enumerate() {
+        let (rect, row) = ui.allocate_exact_size(vec2(ui.available_width(), 44.0), Sense::click());
+        if index == *selected || row.hovered() {
+            ui.painter()
+                .rect_filled(rect, CornerRadius::same(8), palette.surface_active);
+        }
+        let mut child = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(rect.shrink2(vec2(10.0, 0.0)))
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        widgets::avatar(
+            &mut child,
+            app,
+            Some(&person.user_id),
+            &person.display_name,
+            30.0,
+            true,
+        );
+        child.add_space(8.0);
+        child.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            ui.label(
+                egui::RichText::new(&person.display_name)
+                    .font(theme::medium(14.0))
+                    .color(palette.text),
+            );
+            if let Some(email) = &person.email {
+                ui.label(
+                    egui::RichText::new(email)
+                        .font(theme::regular(12.0))
+                        .color(palette.dim),
+                );
+            }
+        });
+        if row.clicked() {
+            choose = Some(person.clone());
+        }
+    }
+    if found.is_empty() && query.trim().chars().count() >= 2 {
+        ui.label(egui::RichText::new("Searching your organisation…").color(palette.dim));
+    }
+    if let Some(person) = choose {
+        picked.push(person);
+        query.clear();
+        *selected = 0;
+    }
+    if *query != before {
+        *selected = 0;
+        if query.trim().chars().count() >= 2 {
+            app.actions.push(Action::SearchPeople(query.clone()));
+        }
+    }
+    proceed
+}
+
+/// Add people to a group chat: pick them, then choose what they see of the
+/// chat so far.
+fn add_people(app: &mut App, ctx: &egui::Context, chat: &str) {
+    let palette = app.palette;
+    let mut actions = Vec::new();
+    let title = app
+        .chats
+        .iter()
+        .find(|c| c.id == chat)
+        .map(|c| c.title(app.me()))
+        .unwrap_or_else(|| "this chat".into());
+    let exclude: Vec<String> = app
+        .group_members(chat)
+        .into_iter()
+        .map(|m| m.user_id)
+        .collect();
+    let mut query = app.add_people.query.clone();
+    let mut picked = app.add_people.picked.clone();
+    let mut selected = app.add_people.selected;
+    let mut history_step = app.add_people.history_step;
+    let mut history = app.add_people.history;
+    let close = modal(palette, ctx, "add-people", 520.0, 90.0, |ui| {
+        Frame::new().inner_margin(Margin::same(20)).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(format!("Add people to {title}"))
+                        .font(theme::bold(18.0))
+                        .color(palette.text),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let close = widgets::icon_button(ui, &palette, Icon::Close, "Close (Esc)");
+                    widgets::on_click(&close, &mut actions, Action::CloseOverlay);
+                });
+            });
+            ui.add_space(10.0);
+            let mut next = false;
+            if history_step {
+                ui.label(
+                    egui::RichText::new("What can the new people see?").color(palette.secondary),
+                );
+                ui.add_space(6.0);
+                ui.radio_value(&mut history, false, "Don't include chat history");
+                ui.radio_value(&mut history, true, "Include all chat history");
+            } else if people_picker(ui, app, &mut query, &mut picked, &mut selected, &exclude) {
+                next = true;
+            }
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                if history_step {
+                    if widgets::secondary_button(ui, &palette, "Back").clicked() {
+                        history_step = false;
+                    }
+                    let count = picked.len();
+                    let label = if count == 1 {
+                        "Add 1 person".to_owned()
+                    } else {
+                        format!("Add {count} people")
+                    };
+                    if widgets::primary_button(ui, &palette, &label).clicked() {
+                        actions.push(Action::AddMembers {
+                            chat: chat.to_owned(),
+                            members: picked.clone(),
+                            history,
+                        });
+                    }
+                } else {
+                    let button = ui.add_enabled(
+                        !picked.is_empty(),
+                        egui::Button::new(
+                            egui::RichText::new("Next")
+                                .font(theme::semibold(14.0))
+                                .color(palette.on_accent),
+                        )
+                        .fill(palette.accent)
+                        .corner_radius(CornerRadius::same(8))
+                        .min_size(vec2(0.0, 34.0)),
+                    );
+                    if button.clicked() {
+                        next = true;
+                    }
+                }
+            });
+            if next && !picked.is_empty() {
+                history_step = true;
+            }
+        });
+    });
+    app.add_people.query = query;
+    app.add_people.picked = picked;
+    app.add_people.selected = selected;
+    app.add_people.history_step = history_step;
+    app.add_people.history = history;
+    if close {
+        actions.push(Action::CloseOverlay);
+    }
+    app.actions.extend(actions);
+}
+
+/// Leave a group chat: a confirmation when Chaat holds the permission,
+/// otherwise an explanation of what an administrator must approve.
+fn leave_chat(app: &mut App, ctx: &egui::Context, chat: &str) {
+    let palette = app.palette;
+    let mut actions = Vec::new();
+    let found = app.chats.iter().find(|c| c.id == chat);
+    let title = found
+        .map(|c| c.title(app.me()))
+        .unwrap_or_else(|| "this chat".into());
+    let web_url = found.and_then(|c| c.web_url.clone());
+    let allowed = app.has_scope(crate::auth::CHAT_MEMBER_SCOPE);
+    let close = modal(palette, ctx, "leave-chat", 460.0, 120.0, |ui| {
+        Frame::new().inner_margin(Margin::same(22)).show(ui, |ui| {
+            if allowed {
+                ui.label(
+                    egui::RichText::new("Leave the chat?")
+                        .font(theme::bold(18.0))
+                        .color(palette.text),
+                );
+                ui.add_space(8.0);
+                ui.label(
+                    egui::RichText::new(format!(
+                        "You won't get new messages from {title}. Someone in the chat can add you back."
+                    ))
+                    .color(palette.text),
+                );
+                ui.add_space(14.0);
+                ui.horizontal(|ui| {
+                    if widgets::primary_button(ui, &palette, "  Leave  ").clicked() {
+                        actions.push(Action::LeaveChat(chat.to_owned()));
+                    }
+                    if widgets::secondary_button(ui, &palette, "Cancel").clicked() {
+                        actions.push(Action::CloseOverlay);
+                    }
+                });
+            } else {
+                ui.horizontal(|ui| {
+                    theme::icon(ui, Icon::Lock, 20.0, palette.accent);
+                    ui.label(
+                        egui::RichText::new("Leaving needs admin approval")
+                            .font(theme::bold(18.0))
+                            .color(palette.text),
+                    );
+                });
+                ui.add_space(8.0);
+                ui.label(
+                    egui::RichText::new(
+                        "Leaving a chat uses Microsoft Graph's ChatMember.ReadWrite permission, which a tenant administrator must approve.",
+                    )
+                    .color(palette.text),
+                );
+                ui.add_space(14.0);
+                ui.horizontal(|ui| {
+                    if widgets::primary_button(ui, &palette, "  Request access  ").clicked() {
+                        actions.push(Action::RequestScope(crate::auth::CHAT_MEMBER_SCOPE));
+                    }
+                    if let Some(url) = &web_url
+                        && widgets::secondary_button(ui, &palette, "Open in Teams").clicked()
+                    {
+                        actions.push(Action::OpenUrl(url.clone()));
+                    }
+                    if widgets::secondary_button(ui, &palette, "Cancel").clicked() {
+                        actions.push(Action::CloseOverlay);
+                    }
+                });
+            }
+        });
+    });
     if close {
         actions.push(Action::CloseOverlay);
     }
