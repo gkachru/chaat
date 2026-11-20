@@ -20,10 +20,11 @@ Microsoft Graph. These rules are for coding agents and contributors. Follow
   gets its data (the call-alerts plugin uses push service and Teams' own sign-in)
   lives only in the plugin's repository, never in Chaat; the rule above
   still binds Chaat itself. Chaat never ships, downloads or updates a plugin,
-  never passes it tokens, settings or user data beyond the `hello`
-  handshake, and treats every plugin line as untrusted: unknown messages are
-  ignored, and beyond showing it (and raising the window), nothing happens
-  until the person clicks.
+  never passes it tokens, settings or messages: the call-alerts plugin is
+  told only each account's ID (`oid.tid`) and sign-in name, so it can sign
+  in to and listen for the same accounts. Chaat treats every plugin line as
+  untrusted: unknown messages are ignored, and beyond showing it (and
+  raising the window), nothing happens until the person clicks.
 - **Never poll Graph.** Microsoft's Teams API rules allow fetching when the
   person looks and at most one unattended refresh a day. Polling violates
   the Microsoft APIs Terms of Use. Every fetch goes through

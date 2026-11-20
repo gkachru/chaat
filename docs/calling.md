@@ -115,6 +115,25 @@ the ring does not receive it (tested). The plugin also cannot see when a
 call ends, so the card closes after 40 seconds, on either action, or on
 dismiss. A repeat of the same call replaces its card; at most three show.
 
+### Several accounts
+
+Chaat tells the plugin the ID (`oid.tid`) and sign-in name of each of its
+accounts, never a token. The plugin listens for each one on its own
+connection, in one process, and asks to sign in to each separately: the
+panel names the account to sign in as, and a sign-in to a different account
+is turned down with a new code. Settings lists every account as **Listening
+for calls**, **Waiting for sign-in** (with **New code**) or **Not signed in**
+(with **Sign in**).
+
+A ring says which account it came in on. When Chaat has several accounts,
+the card names it, and **Place call** and **Open chat** switch to that
+account first, so the call uses its browser profile and the chat is its
+own. A ring on an account the plugin has but Chaat does not still shows,
+named by its sign-in name; **Place call** opens Teams on the web and **Open
+chat** is unavailable. Signing an account out of Chaat also clears the
+plugin's sign-in for it; an account only removed from the list stops
+listening but keeps its plugin sign-in.
+
 ### Protocol
 
 Newline-delimited JSON over the plugin's stdin and stdout, each message with
@@ -123,16 +142,21 @@ side can be newer.
 
 | Direction | `type` | Fields |
 |---|---|---|
-| Chaat → plugin | `hello` | `host: "chaat"`, `capabilities: ["call_alerts"]` |
+| Chaat → plugin | `hello` | `host: "chaat"`, `capabilities: ["call_alerts"]`, `accounts: [{id, username}]` (without `accounts`, the plugin serves every account it has stored) |
+| Chaat → plugin | `accounts` | `accounts`: the new list. Removed accounts stop listening and keep their sign-in |
+| Chaat → plugin | `forget` | `account`: clear the plugin's sign-in for it (sign-out) |
+| Chaat → plugin | `sign_in` | `account`: offer a fresh code now, if it is waiting for one |
 | Chaat → plugin | `shutdown` | |
 | plugin → Chaat | `ready` | `capabilities` |
-| plugin → Chaat | `sign_in_required` | `verification_uri`, `user_code` |
-| plugin → Chaat | `signed_in` | |
-| plugin → Chaat | `incoming_call` | `id`, `caller`, `caller_mri`, `video`, `group`, `thread_id` (optional, usually absent for one-on-one calls) |
-| plugin → Chaat | `error` | `message`, shown as an error notice |
+| plugin → Chaat | `sign_in_required` | `verification_uri`, `user_code`, `account` and `username` (optional) |
+| plugin → Chaat | `signed_in` | `account`, `username` |
+| plugin → Chaat | `listening` | `account`, `username`; sent each time an account's connection comes up |
+| plugin → Chaat | `incoming_call` | `id`, `caller`, `caller_mri`, `video`, `group`, `account`, `username`, `thread_id` (optional, usually absent for one-on-one calls) |
+| plugin → Chaat | `error` | `message`, shown as an error notice; `account` (optional) |
 
 `call_ended` is reserved for when a plugin can report it. Chaat passes the
-plugin no tokens, settings or account data, and discards its stderr.
+plugin its accounts' IDs and sign-in names only: no tokens, settings or
+messages. It discards the plugin's stderr.
 
 ## API limits
 
@@ -156,4 +180,4 @@ These still need a real browser, meeting and tenant:
 | Browser session reuse and creation of missing account profiles | Sign in to Teams on the web; separate profiles are optional |
 | Presence timing when entering or leaving a real call | One-minute grace period and **Done** |
 | Focusing the exact call window | **Show call** activates the browser on macOS |
-| Call-alerts plugin with a real group call, and with a plugin signed in to a different account than the one on screen | The ring card still shows; callers are matched only against the account on screen, so **Open chat** may be unavailable |
+| Call-alerts plugin with a real group call, and with several accounts signed in live | Tested with fixtures only; one live account and one-on-one rings were verified before multi-account support |
