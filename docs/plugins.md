@@ -221,31 +221,159 @@ and shortened like other plugin text.
 
 A plugin may describe up to 16 settings in `ready.options`. Chaat draws them
 in Settings › Plugins; it never runs plugin code or renders plugin markup.
-Each option has an `id`, a `kind`, a `label` and, for some kinds, a default:
+Each option has an `id`, a `kind` and a `label`. Limits: `id` is 1 to 32
+characters of `a-z`, `0-9` and `_`; labels are plain text up to 60 characters.
+Chaat drops an option that is malformed (bad id, label, default or limits) and
+keeps the first of a repeated `id`.
 
 | Kind | Control | Default |
 |---|---|---|
 | `toggle` | Checkbox | `true` or `false` |
 | `text` | Text field | A string of at most 200 characters |
-| `choice` | Drop-down; `choices` is 1 to 12 `{value, label}` entries | One of the choice values |
+| `multiline` | Text box of several lines | A string of at most 2000 characters |
+| `choice` | Drop-down; `choices` is 1 to 12 `{value, label}` entries (value 1 to 64 characters, unique) | One of the choice values |
+| `number` | Number field | A number within `min` and `max` |
+| `color` | Color field | `#rrggbb`, saved in lowercase |
 | `secret` | Write-only field with **Save** and **Clear** | None |
+| `action` | A button with the label; no value | None |
 
-Limits: `id` is 1 to 32 characters of `a-z`, `0-9` and `_`; labels are plain
-text up to 60 characters; a choice value is 1 to 64 characters. Chaat drops
-an option that is malformed and keeps the first of a repeated `id`.
+Optional fields on every option (plain text is stripped of control and
+invisible characters, collapsed and shortened):
 
-Chaat stores the values of toggle, text and choice options in its settings
-file, under the plugin's entry. Secret values never go in a file: they are
-stored in the OS credential store under `plugin-option:<plugin id>:<option
-id>`, written and read only by Chaat's background worker (one queue per plugin),
-and deleted when you clear them or remove the plugin. Chaat sends `options { values }` after
-`ready` and after each change, and only per the schema in the current `ready`:
-`values` holds each option that `ready` describes (an unset toggle, text or
-choice option carries its default) and the stored secrets of secret options.
-A plain value stored for an option that is now a secret is deleted from the
-settings file. Removing a plugin deletes the stored secret of every secret
-option it described. Secret values are never logged. An unsaved secret entry
-is cleared on Save, Clear, a change of page and when Settings closes.
+| Field | Meaning |
+|---|---|
+| `help` | Plain text, at most 200 characters, under the option |
+| `placeholder` | Plain text, at most 60 characters, in an empty field |
+| `section` | Plain text, at most 40 characters. Options are grouped under this heading, in the order sections first appear |
+| `advanced` | `true` folds the option into an "Advanced" area of its section |
+| `required` | `true` marks the option as needed for setup. A secret counts as set once saved. Ignored for `action` and unsupported kinds |
+| `visible_when` | `{"option": <id>, "equals": <string or bool>}`: shown only while that other option's current value (its default if unset) equals this. A string is at most 64 characters. An id that names no option, or a secret, hides nothing. An invalid condition, or one naming the option itself, is ignored |
+
+Fields for one kind:
+
+| Kind | Fields |
+|---|---|
+| `number` | `min`, `max`, `step` (numbers; `min` at most `max`, `step` above 0), `unit` (plain, at most 12 characters). A mistyped limit drops the option |
+| `text` | `format` (`ip`, `hostname`, `url_https`, `email`; any other value means no format), `min_length`, `max_length` (characters; `max_length` is capped at 200) |
+| `multiline` | `min_length`, `max_length` (capped at 2000) |
+
+A default that fails its own kind's checks drops the option. A secret or an
+action with a default is dropped.
+
+### How values are checked
+
+Chaat checks a value against its kind before it stores it or sends it to the
+plugin. A value that fails is neither saved nor sent, and the page shows the
+reason under the field.
+
+- `toggle`: `true` or `false`.
+- `choice`: one of the listed values.
+- `number`: a JSON number within `min` and `max` when given. Out of range is
+  refused, never clamped. `step` and `unit` describe the field; Chaat does not
+  round a value to the step.
+- `color`: `#` and six hex digits, whitespace trimmed, saved in lowercase.
+- `text`: trimmed, one line of plain text, within `min_length` and
+  `max_length` (up to 200). An empty value means "not set" and passes the
+  length and format checks. Formats: `ip` (IPv4 or IPv6, no port), `hostname`
+  (dot-separated labels of letters, digits and hyphens, RFC 1123), `url_https`
+  (an `https://` address with a host, no user info, no spaces, at most 300
+  characters), `email` (one `@`, a local part of at most 64 characters without
+  spaces, a host name after it).
+- `multiline`: up to 2000 characters, line breaks and tabs allowed, `\r\n`
+  saved as `\n`; whitespace only means "not set".
+- `secret`: trimmed, plain, at most 1000 characters.
+
+There are no regular expressions: a plugin cannot supply a pattern.
+
+### Unsupported kinds
+
+An option whose `kind` Chaat does not know is kept, not dropped, and Settings
+shows its label with "This setting needs a newer Chaat". It has no default, is
+never required and is sent no value. A value stored for it earlier is kept.
+The limits of 16 options and 12 choices still apply.
+
+### Storage and sending
+
+Chaat stores the values of every kind except secrets in its settings file,
+under the plugin's entry. Secret values never go in a file: they are stored in
+the OS credential store under `plugin-option:<plugin id>:<option id>`, written
+and read only by Chaat's background worker (one queue per plugin), and deleted
+when you clear them or remove the plugin. Chaat sends `options { values }`
+after `ready` and after each change, and only per the schema in the current
+`ready`: `values` holds each described option that has a value (the stored
+value, else the default) and the stored secrets of secret options. Actions and
+options with neither a value nor a default are left out. A plain value stored
+for an option that is now a secret is deleted from the settings file. Removing
+a plugin deletes the stored secret of every secret option it described. Secret
+values are never logged. An unsaved secret entry is cleared on Save, Clear, a
+change of page and when Settings closes.
+
+On each `ready`, a stored value that the option's kind, range or format now
+refuses is dropped. A stored choice that is still a well-formed value is kept
+even if the plugin no longer lists it. Values for options the plugin does not
+describe, or of an unsupported kind, are kept.
+
+### What you see
+
+This describes the page from the design note ([plans/2026-11-20-plugin-options.md](plans/2026-11-20-plugin-options.md)).
+
+- Toggles and choices save at once. Text, number and multiline values save on
+  Enter (Ctrl+Enter for multiline) or when the field loses focus.
+- Each section has **Reset to defaults**: options with a default get it,
+  options without one lose their stored value, and secrets are untouched.
+- A plugin with a required, visible option that has no value shows **Needs
+  setup** and a **Set up** button on its row. It still runs, since it may need
+  to run to find devices.
+- After **Add plugin...**, the first `ready` that leaves required options
+  unset opens that plugin's setup view: the required options first, then the
+  rest.
+- A status under an option is shown as the plugin's own words, in the
+  palette's success, warning or error color, so it does not pass as Chaat's
+  text.
+
+### Statuses, choices and actions
+
+Plugin to Chaat:
+
+- `option_status { id, state, message? }`: how an option or action is doing.
+  `state` is `ok`, `error` or `working`; any other state drops the message.
+  `id` must be an option the current `ready` described, or the status is
+  ignored. `message` is plain text, at most 200 characters. Chaat takes at
+  most 5 of these a second per plugin and drops the rest. Statuses are
+  cleared when the plugin restarts or stops, and a status for an option that a
+  new `ready` no longer describes goes.
+- `options_update { id, choices }`: replaces the choices of one `choice`
+  option after `ready`, with the same rules as in `ready` (at most 12, unique
+  values, plain labels). A malformed list drops the message; an empty list is
+  allowed. A stored value that is no longer among the choices is kept, and the
+  page shows it as not available until a later update lists it again. An
+  update for an id that is not a described choice option is ignored.
+
+Chaat to plugin:
+
+- `action { id }`: the person clicked that action's button. Chaat sends it only
+  after a click, only to a running plugin that has sent `ready`, and only for
+  an option the plugin described as an `action`. It never sends one on its own.
+  The button shows "Working..." from the click until an `ok` or `error` status
+  for the action arrives, or while its latest status is `working`, and for at
+  most 30 seconds either way. What the action does is the plugin's business.
+
+Example, a plugin that finds devices (the `ready` is one line on the wire and
+is wrapped here to read):
+
+```
+plugin -> {"v":1,"type":"ready","capabilities":["presence_display"],"options":[
+  {"id":"find","kind":"action","label":"Find bulbs","section":"Bulb"},
+  {"id":"bulb","kind":"choice","label":"Bulb","section":"Bulb","default":"none",
+   "choices":[{"value":"none","label":"None found yet"}]},
+  {"id":"brightness","kind":"number","label":"Brightness","min":10,"max":100,"step":5,"unit":"%","default":80},
+  {"id":"address","kind":"text","label":"Bulb address","format":"ip","advanced":true,
+   "visible_when":{"option":"bulb","equals":"none"}}]}
+chaat  -> {"v":1,"type":"action","id":"find"}
+plugin -> {"v":1,"type":"option_status","id":"find","state":"working","message":"Listening"}
+plugin -> {"v":1,"type":"options_update","id":"bulb","choices":[{"value":"b1","label":"Desk bulb"},{"value":"b2","label":"Lamp"}]}
+plugin -> {"v":1,"type":"option_status","id":"find","state":"ok","message":"Found 2 bulbs"}
+```
 
 ## Presence
 
@@ -293,13 +421,16 @@ them (as JSON values; key order does not matter).
 | Chaat to plugin | `sign_in` | `sign_in.json` |
 | Chaat to plugin | `options` | `options.json` |
 | Chaat to plugin | `presence` | `presence.json` |
+| Chaat to plugin | `action` | `action.json` |
 | Chaat to plugin | `shutdown` | `shutdown.json` |
-| Plugin to Chaat | `ready` | `ready.json`, `ready_options.json` (with `needs` and `options`) |
+| Plugin to Chaat | `ready` | `ready.json`, `ready_options.json` (with `needs` and `options`), `ready_options_rich.json` (every option kind, format, limit and `visible_when`) |
 | Plugin to Chaat | `sign_in_required` | `sign_in_required.json` |
 | Plugin to Chaat | `signed_in` | `signed_in.json` |
 | Plugin to Chaat | `listening` | `listening.json` |
 | Plugin to Chaat | `incoming_call` | `incoming_call.json` |
 | Plugin to Chaat | `error` | `error.json` |
+| Plugin to Chaat | `option_status` | `option_status.json` |
+| Plugin to Chaat | `options_update` | `options_update.json` |
 
 ## A minimal exchange
 
