@@ -30,6 +30,9 @@ pub struct PluginState {
     pub needs: Vec<&'static str>,
     /// The options it described.
     pub options: Vec<OptionSpec>,
+    /// Whether the current run sent its `ready`; no option values go to a run
+    /// before it described its options.
+    pub(super) ready_seen: bool,
     /// Sign-ins it is waiting for, one per account.
     pub sign_in: Vec<PluginSignIn>,
     /// Accounts (`oid.tid`) it said it listens for.
@@ -57,6 +60,7 @@ impl PluginState {
     /// Forgets what belongs to one process run.
     fn stopped(&mut self) {
         self.running = false;
+        self.ready_seen = false;
         self.sign_in.clear();
         self.asked.clear();
         self.listening.clear();
@@ -448,6 +452,9 @@ impl App {
         let Some(state) = self.plugins.get(id) else {
             return;
         };
+        if !state.ready_seen {
+            return;
+        }
         let mut values = std::collections::BTreeMap::new();
         let mut secrets = Vec::new();
         for spec in &state.options {
@@ -684,6 +691,7 @@ impl App {
             .collect();
         if let Some(state) = self.plugins.get_mut(id) {
             state.options = options;
+            state.ready_seen = true;
         }
         if let Some(entry) = self.settings.plugins.iter_mut().find(|e| e.id == id) {
             let before = entry.options.len();
@@ -1022,6 +1030,96 @@ mod tests {
             c,
             Command::PluginHello { id, accounts: Some(a), .. } if id == "p" && a.is_empty()
         )));
+    }
+
+    fn option_app() -> (App, tokio::sync::mpsc::UnboundedReceiver<Command>) {
+        let (backend, _) = Backend::recording();
+        let dir = std::env::temp_dir().join("chaat-test-unused");
+        let mut app = App::with_backend(
+            AppDirs::under(&dir),
+            Settings::default(),
+            Waker::default(),
+            backend,
+            false,
+        );
+        let (service, commands) = Backend::recording();
+        app.service = service;
+        app.settings.plugins.push(PluginEntry {
+            id: "p".into(),
+            instance: "inst".into(),
+            path: PathBuf::from("p.exe"),
+            enabled: true,
+            sha256: Some("old".into()),
+            ..PluginEntry::default()
+        });
+        (app, commands)
+    }
+
+    fn describe_options(app: &mut App) {
+        let spec = |id: &str, kind| OptionSpec {
+            id: id.into(),
+            kind,
+            label: id.into(),
+            default: None,
+            choices: Vec::new(),
+        };
+        app.on_plugin_ready(
+            "p",
+            PluginInfo::default(),
+            Vec::new(),
+            Vec::new(),
+            vec![
+                spec("key", OptionKind::Secret),
+                spec("name", OptionKind::Text),
+            ],
+            Vec::new(),
+        );
+    }
+
+    fn option_commands(commands: &mut tokio::sync::mpsc::UnboundedReceiver<Command>) -> usize {
+        std::iter::from_fn(|| commands.try_recv().ok())
+            .filter(|c| matches!(c, Command::PluginOptions { .. }))
+            .count()
+    }
+
+    fn change_and_answer(app: &mut App) {
+        app.apply_plugin_action(Action::SetPluginOption {
+            plugin: "p".into(),
+            option: "name".into(),
+            value: serde_json::json!("x"),
+        });
+        app.on_plugin_secret_saved("p", "inst", "key".into(), true, true);
+    }
+
+    #[test]
+    fn no_options_are_sent_before_the_new_runs_ready() {
+        let (mut app, mut commands) = option_app();
+        app.sync_plugins();
+        describe_options(&mut app);
+        while commands.try_recv().is_ok() {}
+        change_and_answer(&mut app);
+        assert!(option_commands(&mut commands) > 0, "after ready they go");
+        // A restart: the old run's options are not sent to the new program.
+        app.settings.plugins[0].path = PathBuf::from("q.exe");
+        app.sync_plugins();
+        change_and_answer(&mut app);
+        assert_eq!(option_commands(&mut commands), 0);
+        describe_options(&mut app);
+        assert!(option_commands(&mut commands) > 0, "sent again on ready");
+    }
+
+    #[test]
+    fn trusting_a_changed_file_sends_options_only_after_ready() {
+        let (mut app, mut commands) = option_app();
+        app.sync_plugins();
+        describe_options(&mut app);
+        app.plugins.get_mut("p").unwrap().file_changed = Some("new".into());
+        while commands.try_recv().is_ok() {}
+        app.trust_plugin_file("p");
+        change_and_answer(&mut app);
+        assert_eq!(option_commands(&mut commands), 0);
+        describe_options(&mut app);
+        assert!(option_commands(&mut commands) > 0);
     }
 
     fn generation_of(command: Option<Command>) -> u64 {
