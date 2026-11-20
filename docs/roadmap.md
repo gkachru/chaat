@@ -35,3 +35,11 @@ Next:
    with a real browser, meeting and tenant: window placement with a running
    browser, the join page, silent sign-in, presence timing.
 2. Watch for an official, documented API for in-call controls.
+
+## Plugins
+
+Chaat runs one optional plugin today, for call alerts
+([calling.md](calling.md#call-alerts-plugin)). A system for several plugins
+(a plugin list in Settings, one host per plugin, capabilities routed to
+features, plugin-described options) is designed but deferred until a second
+plugin is planned: [design note](plans/2026-11-20-plugin-system.md).
