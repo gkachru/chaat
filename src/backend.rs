@@ -200,6 +200,42 @@ pub enum Command {
     CallAlertsSignIn(String),
     /// Stop the call-alerts plugin, if one is running.
     StopCallAlerts,
+    /// Launch (or relaunch) one plugin of the plugin list. Replaces only the
+    /// host with this id.
+    StartPlugin {
+        id: String,
+        path: std::path::PathBuf,
+        hello: crate::plugin::protocol::HostMessage,
+    },
+    /// Sends a message to one running plugin.
+    PluginSend {
+        id: String,
+        message: crate::plugin::protocol::HostMessage,
+    },
+    /// Changes what one plugin's restart hello holds, for each part given.
+    PluginHello {
+        id: String,
+        accounts: Option<Vec<crate::plugin::protocol::PluginAccount>>,
+        forget: Option<Vec<String>>,
+    },
+    /// Sends a plugin its option values. The worker adds the values of the
+    /// `secrets` options from the credential store; a missing one is left out.
+    PluginOptions {
+        id: String,
+        values: std::collections::BTreeMap<String, serde_json::Value>,
+        secrets: Vec<String>,
+    },
+    /// Stores one secret option's value in the credential store, or removes
+    /// it (`None`). Answered with `PluginSecretSaved`.
+    SavePluginSecret {
+        plugin: String,
+        option: String,
+        value: Option<String>,
+    },
+    /// Stop one plugin, if it runs. The others keep running.
+    StopPlugin {
+        id: String,
+    },
     Shutdown,
 }
 
@@ -297,6 +333,19 @@ pub enum Event {
     Push(crate::realtime::PushStatus),
     /// Whether `SaveRelayKey` worked; `set` says whether a key is now stored.
     RelayKeySaved {
+        set: bool,
+        ok: bool,
+    },
+    /// Something a plugin did, by the plugin's id.
+    Plugin {
+        id: String,
+        event: crate::plugin::event::PluginEvent,
+    },
+    /// Whether `SavePluginSecret` worked; `set` says whether a value is now
+    /// stored.
+    PluginSecretSaved {
+        plugin: String,
+        option: String,
         set: bool,
         ok: bool,
     },

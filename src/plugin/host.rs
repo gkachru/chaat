@@ -18,8 +18,8 @@ pub enum HostEvent {
     /// The plugin exited or could not start; it is restarted with backoff.
     /// `notify` is true for the first failure in a run of failures only.
     Stopped { error: String, notify: bool },
-    /// The plugin's `ready` lacked the required capability: it is stopped and
-    /// not restarted.
+    /// The plugin's `ready` offered no capability Chaat knows: it is stopped
+    /// and not restarted.
     Unsupported,
 }
 
@@ -33,11 +33,12 @@ pub struct Plugin {
 }
 
 impl Plugin {
-    /// Starts the plugin at `path`. Events go to `sink`, on the runtime.
+    /// Starts the plugin at `path`. Events go to `sink`, on the runtime. A
+    /// `ready` offering none of `known` stops it as unsupported.
     pub fn start(
         path: std::path::PathBuf,
         hello: HostMessage,
-        capability: &'static str,
+        known: &'static [&'static str],
         sink: impl Fn(HostEvent) + Send + Sync + 'static,
     ) -> Self {
         let (stop, stopped) = watch::channel(false);
@@ -45,7 +46,7 @@ impl Plugin {
         let (outgoing, outgoing_rx) = mpsc::unbounded_channel();
         let task = tokio::spawn(run(
             path,
-            capability,
+            known,
             Box::new(sink),
             stopped,
             hello_rx,
@@ -63,6 +64,11 @@ impl Plugin {
     /// restarting).
     pub fn send(&self, message: HostMessage) {
         let _ = self.outgoing.send(message);
+    }
+
+    /// A handle that sends messages to this plugin from another task.
+    pub fn sender(&self) -> mpsc::UnboundedSender<HostMessage> {
+        self.outgoing.clone()
     }
 
     /// Changes the `hello` used at the next restart.
@@ -96,7 +102,7 @@ type Sink = Box<dyn Fn(HostEvent) + Send + Sync>;
 
 async fn run(
     path: std::path::PathBuf,
-    capability: &'static str,
+    known: &'static [&'static str],
     sink: Sink,
     mut stop: watch::Receiver<bool>,
     hello: watch::Receiver<HostMessage>,
@@ -109,7 +115,7 @@ async fn run(
     while !*stop.borrow() {
         let started = std::time::Instant::now();
         let hello = hello.borrow().clone();
-        match run_once(&path, capability, &sink, &mut stop, hello, &mut outgoing).await {
+        match run_once(&path, known, &sink, &mut stop, hello, &mut outgoing).await {
             Ok(Exit::Stopped) => return,
             Ok(Exit::Unsupported) => {
                 sink(HostEvent::Unsupported);
@@ -147,7 +153,7 @@ enum Exit {
 /// One run of the plugin process, until it is stopped or exits.
 async fn run_once(
     path: &std::path::Path,
-    capability: &str,
+    known: &[&str],
     sink: &Sink,
     stop: &mut watch::Receiver<bool>,
     hello: HostMessage,
@@ -205,7 +211,7 @@ async fn run_once(
                 Some(Line::TooLong) => log::info!("plugin: dropped an over-long line"),
                 Some(Line::Text(line)) => match PluginMessage::parse(&line) {
                     Some(PluginMessage::Ready { capabilities, .. })
-                        if !capabilities.iter().any(|c| c == capability) =>
+                        if !capabilities.iter().any(|c| known.contains(&c.as_str())) =>
                     {
                         let _ = child.start_kill();
                         return Ok(Exit::Unsupported);

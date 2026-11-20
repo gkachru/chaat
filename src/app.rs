@@ -1646,6 +1646,8 @@ impl App {
                     self.toast(ToastKind::Error, message);
                 }
             }
+            // T5 wires these into the plugin list.
+            Event::Plugin { .. } | Event::PluginSecretSaved { .. } => {}
         }
     }
 

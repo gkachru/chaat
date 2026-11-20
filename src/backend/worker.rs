@@ -122,6 +122,11 @@ const PUSH_CLEANUP: Duration = Duration::from_secs(3);
 /// How long presence notices gather before one fetch for all of them.
 const PRESENCE_BATCH: Duration = Duration::from_millis(1500);
 
+/// The credential store key of a plugin's secret option.
+fn plugin_secret_key(plugin: &str, option: &str) -> String {
+    format!("plugin-option:{plugin}:{option}")
+}
+
 struct Worker {
     dirs: AppDirs,
     http: reqwest::Client,
@@ -155,6 +160,8 @@ struct Worker {
     stop_push: Option<(watch::Sender<bool>, tokio::task::JoinHandle<()>)>,
     /// The external call-alerts plugin process reader, and its stop signal.
     call_alerts: Option<crate::plugin::host::Plugin>,
+    /// The plugins of the plugin list, by id.
+    plugins: HashMap<String, crate::plugin::host::Plugin>,
     /// Whether Chaat keeps a presence session (setting), and when it last
     /// refreshed it.
     session_enabled: bool,
@@ -187,6 +194,7 @@ pub(super) async fn run(
         relay: None,
         stop_push: None,
         call_alerts: None,
+        plugins: HashMap::new(),
         session_enabled: true,
         session_refreshed: None,
         sign_in_browser: None,
@@ -220,6 +228,7 @@ pub(super) async fn run(
     }
     worker.stop_push().await;
     worker.stop_call_alerts().await;
+    worker.stop_plugins().await;
     worker.end_presence_session().await;
 }
 
@@ -472,6 +481,70 @@ impl Worker {
                     running: false,
                     message: None,
                 });
+            }
+            Command::StartPlugin { id, path, hello } => self.start_plugin(id, path, hello),
+            Command::PluginSend { id, message } => {
+                if let Some(plugin) = self.plugins.get(&id) {
+                    plugin.send(message);
+                }
+            }
+            Command::PluginHello {
+                id,
+                accounts,
+                forget,
+            } => {
+                if let Some(plugin) = self.plugins.get(&id) {
+                    plugin.set_hello(move |hello| {
+                        if let crate::plugin::protocol::HostMessage::Hello {
+                            accounts: current_accounts,
+                            forget: current_forget,
+                            ..
+                        } = hello
+                        {
+                            if let Some(accounts) = accounts {
+                                *current_accounts = accounts;
+                            }
+                            if let Some(forget) = forget {
+                                *current_forget = forget;
+                            }
+                        }
+                    });
+                }
+            }
+            Command::PluginOptions {
+                id,
+                values,
+                secrets,
+            } => self.plugin_options(id, values, secrets),
+            Command::SavePluginSecret {
+                plugin,
+                option,
+                value,
+            } => {
+                let store = Arc::clone(&self.secrets);
+                let out = self.out.clone();
+                tokio::task::spawn_blocking(move || {
+                    let key = plugin_secret_key(&plugin, &option);
+                    let set = value.is_some();
+                    let result = match value {
+                        Some(value) => store.write(&key, &value),
+                        None => store.delete(&key),
+                    };
+                    if result.is_err() {
+                        log::warn!("could not save a plugin secret");
+                    }
+                    out.send(Event::PluginSecretSaved {
+                        plugin,
+                        option,
+                        set,
+                        ok: result.is_ok(),
+                    });
+                });
+            }
+            Command::StopPlugin { id } => {
+                if let Some(plugin) = self.plugins.remove(&id) {
+                    plugin.stop().await;
+                }
             }
             Command::Shutdown => {}
         }
@@ -833,7 +906,7 @@ impl Worker {
         let plugin = crate::plugin::host::Plugin::start(
             path,
             alerts::hello(accounts, forget),
-            alerts::CAPABILITY,
+            &[crate::plugin::registry::CALL_ALERTS],
             move |reported| {
                 if let Some(event) = alerts::event(reported) {
                     out.send(event);
@@ -843,6 +916,72 @@ impl Worker {
         if let Some(old) = self.call_alerts.replace(plugin) {
             old.abort();
         }
+    }
+
+    /// Launches (or relaunches) one plugin of the plugin list. Only that id's
+    /// host is replaced.
+    fn start_plugin(
+        &mut self,
+        id: String,
+        path: std::path::PathBuf,
+        hello: crate::plugin::protocol::HostMessage,
+    ) {
+        let out = self.out.clone();
+        let tag = id.clone();
+        let plugin = crate::plugin::host::Plugin::start(
+            path,
+            hello,
+            crate::plugin::registry::KNOWN,
+            move |reported| {
+                if let Some(event) = crate::plugin::event::event(reported) {
+                    out.send(Event::Plugin {
+                        id: tag.clone(),
+                        event,
+                    });
+                }
+            },
+        );
+        if let Some(old) = self.plugins.insert(id, plugin) {
+            old.abort();
+        }
+    }
+
+    /// Sends a plugin its options, with the stored secret values merged in.
+    /// Values are never logged.
+    fn plugin_options(
+        &self,
+        id: String,
+        mut values: std::collections::BTreeMap<String, serde_json::Value>,
+        secrets: Vec<String>,
+    ) {
+        let Some(plugin) = self.plugins.get(&id) else {
+            return;
+        };
+        let store = Arc::clone(&self.secrets);
+        let outgoing = plugin.sender();
+        tokio::spawn(async move {
+            let read = tokio::task::spawn_blocking(move || {
+                for option in secrets {
+                    if let Ok(Some(value)) = store.read(&plugin_secret_key(&id, &option)) {
+                        values.insert(option, serde_json::Value::String(value));
+                    }
+                }
+                values
+            })
+            .await;
+            if let Ok(values) = read {
+                let _ = outgoing.send(crate::plugin::protocol::HostMessage::Options { values });
+            }
+        });
+    }
+
+    /// Stops every plugin of the plugin list, all at once.
+    async fn stop_plugins(&mut self) {
+        let mut stops = tokio::task::JoinSet::new();
+        for (_, plugin) in self.plugins.drain() {
+            stops.spawn(plugin.stop());
+        }
+        while stops.join_next().await.is_some() {}
     }
 
     /// Stops the call-alerts plugin, if one is running.

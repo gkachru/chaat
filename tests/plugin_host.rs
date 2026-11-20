@@ -5,11 +5,15 @@
 
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
+use chaat::backend::{Backend, BackendOptions, Command, Event, Waker};
+use chaat::paths::AppDirs;
+use chaat::plugin::event::PluginEvent;
 use chaat::plugin::host::{HostEvent, Plugin};
 use chaat::plugin::protocol::{HostMessage, PluginMessage};
+use chaat::secrets::{MemoryStore, SecretStore};
 
 /// The fake plugin. Its mode comes from the copy's name, `fake-<mode>`.
 #[test]
@@ -30,6 +34,7 @@ fn fake_plugin_serve() {
     match mode {
         "crash" => std::process::exit(3),
         "unsupported" => say(r#"{"v":1,"type":"ready","capabilities":["presence"]}"#),
+        "display" => say(r#"{"v":1,"type":"ready","capabilities":["presence_display","x"]}"#),
         _ => say(r#"{"v":1,"type":"ready","capabilities":["call_alerts"]}"#),
     }
     for line in std::io::stdin().lock().lines() {
@@ -69,7 +74,7 @@ fn hello() -> HostMessage {
 fn start(path: PathBuf) -> (Plugin, mpsc::Receiver<HostEvent>) {
     let (events, received) = mpsc::channel();
     let events = std::sync::Mutex::new(events);
-    let plugin = Plugin::start(path, hello(), "call_alerts", move |event| {
+    let plugin = Plugin::start(path, hello(), &["call_alerts"], move |event| {
         let _ = events.lock().unwrap().send(event);
     });
     (plugin, received)
@@ -110,7 +115,7 @@ async fn a_plugin_starts_hears_hello_and_gets_queued_messages_before_shutdown() 
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_plugin_without_the_capability_is_stopped_and_not_restarted() {
+async fn a_plugin_offering_only_unknown_capabilities_is_unsupported() {
     let dir = tempfile::tempdir().unwrap();
     let (_plugin, events) = start(fake(dir.path(), "unsupported"));
     assert!(matches!(next(&events).await, HostEvent::Unsupported));
@@ -162,4 +167,218 @@ async fn a_missing_plugin_reports_once_and_dropping_the_handle_stops_the_host() 
         }
     });
     assert!(ended, "the host task ended and dropped its sink");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_plugin_offering_a_known_capability_among_others_is_kept() {
+    let dir = tempfile::tempdir().unwrap();
+    let (events, received) = mpsc::channel();
+    let events = std::sync::Mutex::new(events);
+    let plugin = Plugin::start(
+        fake(dir.path(), "display"),
+        hello(),
+        &["call_alerts", "presence_display"],
+        move |event| {
+            let _ = events.lock().unwrap().send(event);
+        },
+    );
+    assert!(matches!(
+        next(&received).await,
+        HostEvent::Message(PluginMessage::Ready { .. })
+    ));
+    plugin.stop().await;
+}
+
+// The worker: a backend with fake plugins and a memory credential store.
+
+fn backend(dir: &Path, store: Arc<MemoryStore>) -> Backend {
+    Backend::spawn_with(
+        AppDirs::under(dir),
+        Waker::default(),
+        BackendOptions {
+            secrets: store,
+            open_browser: false,
+            ..BackendOptions::default()
+        },
+    )
+}
+
+fn start_command(id: &str, path: PathBuf) -> Command {
+    Command::StartPlugin {
+        id: id.into(),
+        path,
+        hello: hello(),
+    }
+}
+
+fn wait_for<T>(backend: &Backend, mut pick: impl FnMut(Event) -> Option<T>) -> T {
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        for event in backend.poll() {
+            if let Some(found) = pick(event) {
+                return found;
+            }
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for an event"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn wait_ready(backend: &Backend, plugin: &str) {
+    wait_for(backend, |event| match event {
+        Event::Plugin {
+            id,
+            event: PluginEvent::Ready { .. },
+        } if id == plugin => Some(()),
+        _ => None,
+    });
+}
+
+/// Waits until the fake's log has a line holding all of `needles`.
+fn wait_log(dir: &Path, mode: &str, needles: &[&str]) -> String {
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        if let Some(line) = log_lines(dir, mode)
+            .into_iter()
+            .find(|line| needles.iter().all(|n| line.contains(n)))
+        {
+            return line;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no log line with {needles:?}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn two_plugins_run_and_stopping_one_keeps_the_other() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut backend = backend(dir.path(), Arc::default());
+    backend.send(start_command("a", fake(dir.path(), "display")));
+    backend.send(start_command("b", fake(dir.path(), "echo")));
+    wait_ready(&backend, "a");
+    wait_ready(&backend, "b");
+    backend.send(Command::StopPlugin { id: "a".into() });
+    wait_log(dir.path(), "display", &[r#""type":"shutdown""#]);
+    // b still takes messages.
+    backend.send(Command::PluginSend {
+        id: "b".into(),
+        message: HostMessage::Forget {
+            account: "o2.t2".into(),
+        },
+    });
+    wait_log(dir.path(), "echo", &[r#""type":"forget""#, "o2.t2"]);
+    backend.shutdown();
+}
+
+#[test]
+fn restarting_one_id_replaces_only_that_host() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut backend = backend(dir.path(), Arc::default());
+    // One copy: a running executable cannot be overwritten on Windows.
+    let display = fake(dir.path(), "display");
+    backend.send(start_command("a", display.clone()));
+    backend.send(start_command("b", fake(dir.path(), "echo")));
+    wait_ready(&backend, "a");
+    wait_ready(&backend, "b");
+    backend.send(start_command("a", display));
+    wait_ready(&backend, "a");
+    let starts = |mode| {
+        log_lines(dir.path(), mode)
+            .iter()
+            .filter(|line| *line == "start")
+            .count()
+    };
+    assert_eq!(starts("display"), 2);
+    assert_eq!(starts("echo"), 1);
+    backend.shutdown();
+}
+
+#[test]
+fn shutdown_stops_every_plugin() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut backend = backend(dir.path(), Arc::default());
+    backend.send(start_command("a", fake(dir.path(), "display")));
+    backend.send(start_command("b", fake(dir.path(), "echo")));
+    wait_ready(&backend, "a");
+    wait_ready(&backend, "b");
+    backend.shutdown();
+    for mode in ["display", "echo"] {
+        assert!(
+            log_lines(dir.path(), mode)
+                .iter()
+                .any(|line| line.contains(r#""type":"shutdown""#)),
+            "{mode} got a shutdown"
+        );
+    }
+}
+
+#[test]
+fn options_include_stored_secrets() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(MemoryStore::default());
+    store.write("plugin-option:b:local_key", "k").unwrap();
+    let mut backend = backend(dir.path(), store);
+    backend.send(start_command("b", fake(dir.path(), "echo")));
+    wait_ready(&backend, "b");
+    backend.send(Command::PluginOptions {
+        id: "b".into(),
+        values: [("ip".to_owned(), serde_json::json!("10.0.0.5"))].into(),
+        secrets: vec!["local_key".into()],
+    });
+    let line = wait_log(dir.path(), "echo", &[r#""type":"options""#]);
+    let value: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(
+        value,
+        serde_json::json!({"v":1,"type":"options","values":{"ip":"10.0.0.5","local_key":"k"}})
+    );
+    backend.shutdown();
+}
+
+#[test]
+fn a_missing_secret_is_left_out() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut backend = backend(dir.path(), Arc::default());
+    backend.send(start_command("b", fake(dir.path(), "echo")));
+    wait_ready(&backend, "b");
+    backend.send(Command::PluginOptions {
+        id: "b".into(),
+        values: [("ip".to_owned(), serde_json::json!("10.0.0.5"))].into(),
+        secrets: vec!["local_key".into()],
+    });
+    let line = wait_log(dir.path(), "echo", &[r#""type":"options""#]);
+    let value: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(value["values"], serde_json::json!({"ip":"10.0.0.5"}));
+    backend.shutdown();
+}
+
+#[test]
+fn saving_a_plugin_secret_writes_and_deletes_the_store_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(MemoryStore::default());
+    let mut backend = backend(dir.path(), store.clone());
+    let save = |backend: &Backend, value: Option<&str>| {
+        backend.send(Command::SavePluginSecret {
+            plugin: "b".into(),
+            option: "local_key".into(),
+            value: value.map(str::to_owned),
+        });
+        wait_for(backend, |event| match event {
+            Event::PluginSecretSaved { set, ok, .. } => Some((set, ok)),
+            _ => None,
+        })
+    };
+    assert_eq!(save(&backend, Some("k")), (true, true));
+    assert_eq!(
+        store.read("plugin-option:b:local_key").unwrap().as_deref(),
+        Some("k")
+    );
+    assert_eq!(save(&backend, None), (false, true));
+    assert_eq!(store.read("plugin-option:b:local_key").unwrap(), None);
+    backend.shutdown();
 }
