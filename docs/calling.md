@@ -93,6 +93,8 @@ of failures), and stops it when it is turned off, removed, or Chaat quits. A
 plugin whose `ready` offers no capability Chaat knows is stopped with a
 notice and not restarted. Only one plugin gets rings: the first enabled
 plugin in the list that is running and offers `call_alerts`.
+The order is the list order in Settings › Plugins, which you can change with
+**Reorder**. Settings › Calls has an **Open** link to that plugin's page.
 
 Settings shows the plugin's name and description as it gives them in
 `ready`, as plain shortened text (control and invisible formatting

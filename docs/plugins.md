@@ -14,37 +14,98 @@ live.
 
 ## In Settings
 
-Settings › Plugins lists the plugins you added. Under Chaat's fixed line that
-a plugin is a separate program, each one shows:
+Settings › Plugins has three views: the list, one plugin's page and the add
+flow. Chaat's own sentences (questions, toasts, the add flow's heading) put a
+plugin's name in quotation marks. The plugin's name also shows without them as
+a row's label in the list and as the title of its page, and its description
+shows right under that title (and under the add flow's heading); those two
+sit in Chaat's layout, not in Chaat's sentences. Its option texts and
+statuses show in a card under the caption "Settings · from the plugin".
 
-- its own name and description, as plain shortened text, and an **About this
-  plugin** link when it gives an HTTPS address;
-- its file path and a status: **Off**, **Running**, **Not running** (with
-  the reason after a failure);
-- a **Receives** line saying what Chaat sends it now: "nothing", or a list
-  of "your accounts' IDs and sign-in names", "your presence (availability
-  and activity)", "your update notifications: which chats changed and when,
-  no message text" and "its own settings below";
-- **Turn on** and **Remove**;
-- a question from Chaat when the plugin asks for data you have not decided
-  on, or when its file changed (see [Consent](#consent-for-needs) and
-  [File pinning](#file-pinning));
-- the options it describes (see [Options](#options));
-- for a plugin that needs accounts, one row per Chaat account: **Listening for calls**,
-  **Waiting for sign-in** or **Connecting…**, with a **New code** button
-  while a sign-in waits.
+### The list
 
-**Add plugin…** opens the system file picker. Chaat names the plugin from its
-file name, records the file's SHA-256 hash and turns it on. A plugin starts
-with no data approved. **Remove** stops it, tells a running plugin that
-needs accounts to forget each sign-in, deletes its stored secrets, and drops
-it from the list.
+**Add plugin…** (**Add…** on a narrow window) sits in the header, with
+**Reorder** when there are two or more plugins. Each plugin is one row with
+its name and a one-line summary in Chaat's words, such as **Off**,
+**Starting…**, **Listening on 1 account**, **Tunnel at <host>**, **Needs
+setup**, **Asks for <data>**, **The file changed. Review it**, **Stopped:
+<reason>** or **Finish setup**. Rows that need you (a pending question,
+missing required settings, a changed file, an unfinished setup, a failure)
+are grouped first under **Needs you**. Clicking a row opens that plugin's
+page, or its add flow if setup was never finished.
 
-Plugins are listed in the order you added them. When two enabled plugins
-offer `call_alerts`, the first one in the list that is running gets rings and
-sign-in cards; the other is ignored and Settings says so. Any number of
-plugins may offer `presence_display`. The same holds for `push`: the first
-enabled one that is running is used.
+### A plugin's page
+
+Top to bottom: **‹ Plugins** link, the plugin's name with its on/off switch,
+the turn-off question when you just switched off a plugin that provides
+something, its description and **About this plugin** link (HTTPS only, host
+shown), a **Needs you** box for the other open questions from Chaat (changed
+file, consent for needs, required settings still empty), **Status**, **Gets
+from Chaat** (what Chaat sends it now: "nothing", or a list of "your accounts'
+IDs and sign-in names", "your presence (availability and activity)", "your
+update notifications: which chats changed and when, no message text" and "its
+own settings below"), **Settings · from the plugin** (see
+[Options](#options)), then **Accounts** (for a running plugin that gets
+accounts: **Listening for calls**, **Waiting for sign-in** or
+**Connecting…**, with **New code** while a sign-in waits), and last **File**,
+folded by default, with its path, a line saying "Checked against the file you
+added." or "Not checked yet." (see [File pinning](#file-pinning)) and
+**Remove plugin…**. See [Consent](#consent-for-needs) for the questions.
+
+**Turning off** a plugin that provides push or call alerts first asks, in
+Chaat's words, what happens, with the plugin names in quotation marks. For
+example "Turn off “Name”? “Other” provides push updates
+instead.", "Push updates stop until you turn it back on or set a relay
+address." or "Chaat stops showing incoming calls from this plugin." Nothing
+is asked for a plugin that provides neither. While a relay address is set, no
+plugin counts as providing push, so push is left out of the question.
+
+**Remove plugin…** asks in place: "Remove “Name”? Chaat stops it, deletes its
+saved secrets and tells it to forget your sign-ins.", plus the same sentence
+about what stops or who takes over. **Remove** then stops it, tells a running
+plugin that needs accounts to forget each sign-in, deletes its stored
+secrets and drops it from the list. **Cancel** keeps it.
+
+### Order and Reorder
+
+Plugins are listed in the order you added them until you change it.
+**Reorder** shows every plugin with a drag handle and **Move up** and **Move
+down** buttons; **Done** ends it. The note there says the first plugin that
+offers push or call alerts provides it. When two enabled plugins offer
+`call_alerts`, the first one in the list that is running gets rings and
+sign-in cards; the other is ignored and Settings says so. The same holds for
+`push`: the first enabled one that is running is used. Any number of
+plugins may offer `presence_display`. Moving a plugin up can therefore change
+which one provides push or call alerts.
+
+### Adding a plugin
+
+**Add plugin…** opens the system file picker. Chaat names the plugin from
+its file name, records the file's SHA-256 hash and opens the add flow. The
+plugin starts with no data approved, and runs only while its add flow is
+open.
+
+1. **Starting**: "Starting the plugin…" with a spinner and **Cancel**. If the
+   plugin sends no `ready` within 15 seconds, or stops first, the flow
+   fails.
+2. **Setup**: the plugin's name and description, "From <path>", and, under
+   **It asks for**, one unticked box per need it declared. Nothing is sent
+   until you tick it. Below are its settings, required ones first.
+   **Done** is off until every required setting has a value, then saves
+   your ticks as approvals (unticked needs are refused) and ends setup.
+   **Cancel** removes the plugin.
+3. **Failed**: Chaat says it stopped before saying what it does, with **Try
+   again** and **Remove**. Remove deletes nothing on disk.
+
+A setup you leave open or close Chaat on stays in the list as **Finish
+setup**. Chaat does not start such a plugin at launch; clicking the row
+reopens the add flow and starts it.
+
+### Esc
+
+On a plugin's page Esc goes back to the list. In Reorder it ends Reorder.
+In the add flow it does nothing: use **Cancel** or **Done**. Elsewhere it
+closes Settings.
 
 ## Transport
 

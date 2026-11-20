@@ -179,6 +179,10 @@ Settings › Push updates shows the plugin's name and one of "Tunnel at
 Plugins", and keeps the per-account status. With a relay address set, it
 says the plugin is not used. See [plugins.md](plugins.md#push-plugins).
 
+Its **Open** link goes to the plugin's page. If several plugins offer `push`,
+the first one in the list order of Settings › Plugins (changeable with
+**Reorder**) that is running provides it.
+
 ### Running the relay
 
 ```sh
