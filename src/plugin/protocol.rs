@@ -84,16 +84,16 @@ pub enum PluginMessage {
     /// The reply to `hello`: what the plugin offers, and how it describes
     /// itself (untrusted text; see `PluginInfo::from_ready`).
     Ready {
-        #[serde(default)]
+        #[serde(default, deserialize_with = "lenient_strings")]
         capabilities: Vec<String>,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "lenient_text")]
         name: Option<String>,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "lenient_text")]
         description: Option<String>,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "lenient_text")]
         docs_url: Option<String>,
         /// The `hello.forget` accounts whose sign-ins the plugin cleared.
-        #[serde(default)]
+        #[serde(default, deserialize_with = "lenient_strings")]
         forgotten: Vec<String>,
         /// What the plugin asks for (`accounts`, `presence`); a non-array
         /// reads as none.
@@ -275,7 +275,9 @@ fn clean_option(item: &serde_json::Value) -> Option<OptionSpec> {
             None => None,
             Some(v) => {
                 let text = v.as_str()?;
-                if text.chars().count() > 200 || text.chars().any(|c| c.is_control()) {
+                if text.chars().count() > 200
+                    || text.chars().any(|c| c.is_control() || is_invisible(c))
+                {
                     return None;
                 }
                 Some(v.clone())
@@ -339,6 +341,12 @@ fn is_invisible(c: char) -> bool {
             | '\u{2060}'..='\u{206F}'
             | '\u{FEFF}'
             | '\u{FFF9}'..='\u{FFFB}'
+            | '\u{034F}'
+            | '\u{115F}'
+            | '\u{1160}'
+            | '\u{3164}'
+            | '\u{FFA0}'
+            | '\u{E0000}'..='\u{E007F}'
     )
 }
 
@@ -399,16 +407,12 @@ pub fn plain_text(text: &str, max: usize) -> Option<String> {
 /// `text` without control characters, collapsed to single spaces, cut to
 /// `max` characters (with an ellipsis); `None` when nothing is left.
 fn plain(text: &str, max: usize) -> Option<String> {
-    let words: Vec<&str> = text
+    let visible: String = text.chars().filter(|c| !is_invisible(*c)).collect();
+    let words: Vec<&str> = visible
         .split(|c: char| c.is_whitespace() || c.is_control())
         .filter(|word| !word.is_empty())
         .collect();
-    let text: String = words
-        .join(" ")
-        .chars()
-        .filter(|c| !is_invisible(*c))
-        .collect();
-    let text = text.trim().to_owned();
+    let text = words.join(" ");
     if text.is_empty() {
         return None;
     }
@@ -706,6 +710,40 @@ mod tests {
         let specs =
             opt(serde_json::json!({"id":"a","kind":"text","label":"Sa\u{202E}fe\n\u{200B}x"}));
         assert_eq!(specs[0].label, "Safe x");
+    }
+
+    #[test]
+    fn hostile_text_and_types_in_ready_are_neutralized() {
+        use serde_json::json;
+        // Wrong types in ready's fields do not drop the whole message.
+        let ready = PluginMessage::parse(
+            r#"{"v":1,"type":"ready","capabilities":["presence_display",7],"name":5,"description":[],"docs_url":{},"forgotten":"x"}"#,
+        );
+        assert!(matches!(
+            ready,
+            Some(PluginMessage::Ready { ref capabilities, name: None, description: None, docs_url: None, ref forgotten, .. })
+                if capabilities == &["presence_display".to_owned()] && forgotten.is_empty()
+        ));
+        // Hidden characters never leave a doubled space or survive in labels.
+        let specs = opt(json!({"id":"a","kind":"text","label":"a \u{200B} b\u{E0041}\u{3164}c"}));
+        assert_eq!(specs[0].label, "a bc");
+        // Defaults and choice values with hidden characters are dropped.
+        assert!(opt(json!({"id":"a","kind":"text","label":"x","default":"a\u{202E}b"})).is_empty());
+        let hidden = json!({"id":"c","kind":"choice","label":"x",
+            "choices":[{"value":"a\u{200B}","label":"A"}]});
+        assert!(opt(hidden).is_empty());
+        // Wrong types for choices and values are dropped, not panicked on.
+        assert!(opt(json!({"id":"c","kind":"choice","label":"x","choices":"abc"})).is_empty());
+        assert!(
+            opt(
+                json!({"id":"c","kind":"choice","label":"x","choices":[1,{"value":2,"label":"x"}]})
+            )
+            .is_empty()
+        );
+        // Duplicate choice values drop the option.
+        let dup = json!({"id":"c","kind":"choice","label":"x",
+            "choices":[{"value":"a","label":"A"},{"value":"a","label":"B"}]});
+        assert!(opt(dup).is_empty());
     }
 
     #[test]
