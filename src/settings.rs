@@ -43,6 +43,36 @@ pub struct PluginEntry {
     pub options: BTreeMap<String, serde_json::Value>,
     /// IDs of the secret options that have a value in the credential store.
     pub secrets: Vec<String>,
+    /// The needs the person allowed (`accounts`, `presence`). Chaat sends
+    /// accounts or presence only for a need that is both declared in the
+    /// plugin's current `ready` and listed here.
+    pub approved_needs: Vec<String>,
+    /// The needs the person refused. A need in neither list is pending.
+    pub denied_needs: Vec<String>,
+    /// SHA-256 (lowercase hex) of the plugin file Chaat trusts. `None` trusts
+    /// the file on first use; the host reports the hash and Chaat stores it.
+    pub sha256: Option<String>,
+    /// A random id given when the entry is made. Secret saves carry it, so a
+    /// late answer for a removed plugin of the same id is ignored.
+    pub instance: String,
+}
+
+impl PluginEntry {
+    /// A fresh random instance id (32 lowercase hex digits).
+    pub fn new_instance() -> String {
+        let mut bytes = [0u8; 16];
+        // getrandom only fails when the OS has no entropy source at all; the
+        // instance then falls back to the clock, which is enough to tell two
+        // entries of one id apart.
+        if getrandom::fill(&mut bytes).is_err() {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default();
+            bytes = now.to_le_bytes();
+        }
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -207,6 +237,7 @@ impl Settings {
             settings.accounts.push(account.clone());
         }
         settings.migrate_plugins();
+        settings.tidy_plugins();
         settings.zoom = settings.zoom.clamp(0.5, 3.0);
         settings.sidebar_width = settings.sidebar_width.clamp(220.0, 520.0);
         settings
@@ -225,11 +256,31 @@ impl Settings {
                 path,
                 enabled: self.calls.call_alerts,
                 needs: vec!["accounts".into()],
+                // It already received the accounts before consent existed.
+                approved_needs: vec!["accounts".into()],
                 forget: self.calls.call_alerts_forget.clone(),
+                instance: PluginEntry::new_instance(),
                 ..PluginEntry::default()
             });
         }
         true
+    }
+
+    /// Drops plugin entries whose id an earlier entry already has (the first
+    /// is kept), and gives entries that lack an instance one. Returns whether
+    /// anything changed.
+    pub fn tidy_plugins(&mut self) -> bool {
+        let before = self.plugins.len();
+        let mut seen = std::collections::HashSet::new();
+        self.plugins.retain(|entry| seen.insert(entry.id.clone()));
+        let mut changed = self.plugins.len() != before;
+        for entry in &mut self.plugins {
+            if entry.instance.is_empty() {
+                entry.instance = PluginEntry::new_instance();
+                changed = true;
+            }
+        }
+        changed
     }
 
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
@@ -335,6 +386,8 @@ mod tests {
     fn old_call_alerts_fields_migrate_to_one_entry() {
         let mut settings: Settings = serde_json::from_str(OLD).unwrap();
         assert!(settings.migrate_plugins());
+        let instance = settings.plugins[0].instance.clone();
+        assert_eq!(instance.len(), 32);
         assert_eq!(
             settings.plugins,
             [PluginEntry {
@@ -342,7 +395,10 @@ mod tests {
                 path: "C:/p/cca.exe".into(),
                 enabled: true,
                 needs: vec!["accounts".into()],
+                // It already received accounts, so they stay approved.
+                approved_needs: vec!["accounts".into()],
                 forget: vec!["o.t".into()],
+                instance,
                 ..PluginEntry::default()
             }]
         );
@@ -365,6 +421,30 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_plugin_ids_are_dropped_on_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"plugins_migrated":true,"plugins":[
+                {"id":"a","path":"first.exe","instance":"i1"},
+                {"id":"b","path":"b.exe"},
+                {"id":"a","path":"second.exe","instance":"i2"}]}"#,
+        )
+        .unwrap();
+        let settings = Settings::load(&path);
+        let ids: Vec<&str> = settings.plugins.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, ["a", "b"]);
+        assert_eq!(settings.plugins[0].path, Path::new("first.exe"));
+        assert_eq!(settings.plugins[0].instance, "i1");
+        assert_eq!(
+            settings.plugins[1].instance.len(),
+            32,
+            "an entry without an instance gets one"
+        );
+    }
+
+    #[test]
     fn no_old_plugin_means_no_entry_but_migrated() {
         let mut settings = Settings::default();
         assert!(settings.migrate_plugins());
@@ -383,6 +463,10 @@ mod tests {
             forget: vec![],
             options: BTreeMap::from([("brightness".into(), serde_json::json!(3))]),
             secrets: vec!["token".into()],
+            approved_needs: vec!["presence".into()],
+            denied_needs: vec!["accounts".into()],
+            sha256: Some("ab".repeat(32)),
+            instance: "0123456789abcdef0123456789abcdef".into(),
         };
         let settings = Settings {
             plugins: vec![entry.clone()],

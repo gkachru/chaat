@@ -215,6 +215,9 @@ pub enum Command {
     /// it (`None`). Answered with `PluginSecretSaved`.
     SavePluginSecret {
         plugin: String,
+        /// The plugin entry's `instance`, echoed in the answer so a late
+        /// answer for a removed plugin of the same id can be ignored.
+        instance: String,
         option: String,
         value: Option<String>,
     },
@@ -333,6 +336,8 @@ pub enum Event {
     /// stored.
     PluginSecretSaved {
         plugin: String,
+        /// The `instance` of the `SavePluginSecret` this answers.
+        instance: String,
         option: String,
         set: bool,
         ok: bool,

@@ -564,6 +564,7 @@ impl Worker {
             } => self.plugin_options(id, values, secrets),
             Command::SavePluginSecret {
                 plugin,
+                instance,
                 option,
                 value,
             } => {
@@ -581,6 +582,7 @@ impl Worker {
                     }
                     out.send(Event::PluginSecretSaved {
                         plugin,
+                        instance,
                         option,
                         set,
                         ok: result.is_ok(),

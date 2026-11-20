@@ -14,6 +14,9 @@ use crate::plugin::protocol::{HostMessage, OptionKind, OptionSpec, PluginAccount
 use crate::plugin::registry;
 use crate::settings::{PluginEntry, plugin_id_for};
 
+/// The shortest time between two toasts from one plugin.
+const PLUGIN_TOAST_GAP: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// What Chaat knows about one plugin of the plugin list while it runs.
 #[derive(Debug, Default)]
 pub struct PluginState {
@@ -33,6 +36,14 @@ pub struct PluginState {
     pub listening: Vec<String>,
     /// The last notice about it (why it stopped), for the status line.
     pub message: Option<String>,
+    /// Needs its current `ready` declared that the person has neither allowed
+    /// nor refused: Settings › Plugins asks about them.
+    pub pending_needs: Vec<&'static str>,
+    /// The hash of its file when it no longer matches the stored one. The
+    /// plugin did not run; the person decides whether to run the new file.
+    pub file_changed: Option<String>,
+    /// The pending set already announced with a toast.
+    pub(super) notified_pending: Vec<&'static str>,
     /// Accounts whose sign-in it already asked for (and raised the window),
     /// since it last started or that account signed in.
     pub(super) asked: Vec<Option<String>>,
@@ -109,8 +120,34 @@ impl App {
             .map(|entry| entry.id.clone())
     }
 
+    /// Whether the plugin declared `need` in its last `ready` and the person
+    /// allowed it. Only such a need decides what Chaat sends.
+    fn plugin_need_effective(entry: &PluginEntry, need: &str) -> bool {
+        entry.needs.iter().any(|n| n == need) && entry.approved_needs.iter().any(|n| n == need)
+    }
+
     fn plugin_needs_accounts(entry: &PluginEntry) -> bool {
-        entry.needs.iter().any(|need| need == "accounts")
+        Self::plugin_need_effective(entry, "accounts")
+    }
+
+    /// What a plugin receives from Chaat now, for Settings › Plugins:
+    /// `accounts` (account IDs and sign-in names), `presence` (availability
+    /// and activity) and `options` (its own option values).
+    pub fn plugin_receives(&self, id: &str) -> Vec<&'static str> {
+        let Some(entry) = self.settings.plugins.iter().find(|e| e.id == id) else {
+            return Vec::new();
+        };
+        let state = self.plugins.get(id);
+        let mut receives = Vec::new();
+        for need in ["accounts", "presence"] {
+            if Self::plugin_need_effective(entry, need) {
+                receives.push(need);
+            }
+        }
+        if state.is_some_and(|state| !state.options.is_empty()) {
+            receives.push("options");
+        }
+        receives
     }
 
     /// The `hello` for one plugin: accounts only if it needs them.
@@ -123,7 +160,13 @@ impl App {
             } else {
                 Vec::new()
             },
-            forget: entry.forget.clone(),
+            // The sign-out queue is about accounts the plugin holds, which it
+            // only does while it is allowed them.
+            forget: if Self::plugin_needs_accounts(entry) {
+                entry.forget.clone()
+            } else {
+                Vec::new()
+            },
         }
     }
 
@@ -163,17 +206,19 @@ impl App {
             };
             let hello = self.plugin_hello(entry);
             let accounts = Self::plugin_needs_accounts(entry).then(|| self.plugin_accounts());
+            let expected_sha256 = entry.sha256.clone();
             self.plugins_started.insert(id.clone(), path.clone());
             let state = self.plugins.entry(id.clone()).or_default();
             state.stopped();
             state.sent_accounts = accounts;
+            // The host checks the file again and reports a change again.
+            state.file_changed = None;
             let generation = self.next_plugin_generation(&id);
-            // F4: pass the entry's stored `sha256` once the field exists.
             self.service.send(Command::StartPlugin {
                 id,
                 path,
                 hello,
-                expected_sha256: None,
+                expected_sha256,
                 generation,
             });
         }
@@ -287,7 +332,13 @@ impl App {
         let before = entry.forget.len();
         entry.forget.retain(|account| !done.contains(account));
         if entry.forget.len() != before {
-            let forget = entry.forget.clone();
+            // The restart hello carries the queue only while the plugin may
+            // hold accounts.
+            let forget = if Self::plugin_needs_accounts(entry) {
+                entry.forget.clone()
+            } else {
+                Vec::new()
+            };
             self.mark_settings_dirty();
             self.send_service(Command::PluginHello {
                 id: id.to_owned(),
@@ -364,7 +415,13 @@ impl App {
         let key = (availability.clone(), activity.clone());
         let mut to_send = Vec::new();
         for (id, state) in &mut self.plugins {
+            let allowed = self
+                .settings
+                .plugins
+                .iter()
+                .any(|entry| entry.id == *id && Self::plugin_need_effective(entry, "presence"));
             if state.running
+                && allowed
                 && state.needs.contains(&"presence")
                 && state.sent_presence.as_ref() != Some(&key)
             {
@@ -380,29 +437,64 @@ impl App {
         }
     }
 
-    /// Sends a plugin its option values: the stored ones, the default of each
-    /// unset non-secret option, and the names of its stored secrets (the
+    /// Sends a plugin its option values, for the options its current `ready`
+    /// describes only: the stored value or the default of each non-secret
+    /// option, and the names of the stored secrets of its secret options (the
     /// worker adds their values).
     pub(super) fn send_plugin_options(&self, id: &str) {
         let Some(entry) = self.settings.plugins.iter().find(|e| e.id == id) else {
             return;
         };
-        let mut values = entry.options.clone();
-        if let Some(state) = self.plugins.get(id) {
-            for spec in &state.options {
-                if spec.kind != OptionKind::Secret
-                    && !values.contains_key(&spec.id)
-                    && let Some(default) = &spec.default
-                {
-                    values.insert(spec.id.clone(), default.clone());
+        let Some(state) = self.plugins.get(id) else {
+            return;
+        };
+        let mut values = std::collections::BTreeMap::new();
+        let mut secrets = Vec::new();
+        for spec in &state.options {
+            if spec.kind == OptionKind::Secret {
+                if entry.secrets.contains(&spec.id) && !secrets.contains(&spec.id) {
+                    secrets.push(spec.id.clone());
                 }
+            } else if let Some(value) = entry.options.get(&spec.id).or(spec.default.as_ref()) {
+                values.insert(spec.id.clone(), value.clone());
             }
         }
         self.send_service(Command::PluginOptions {
             id: id.to_owned(),
             values,
-            secrets: entry.secrets.clone(),
+            secrets,
         });
+    }
+
+    /// Raises a toast from a plugin as `Plugin “Name”: text` (`Plugin
+    /// “Name” for user: text` for one account), with the name quoted so the plugin cannot pass its words off as Chaat's. A plugin
+    /// gets at most one toast every 10 seconds; the rest are dropped.
+    fn plugin_toast(&mut self, id: &str, kind: ToastKind, user: Option<String>, text: String) {
+        let now = std::time::Instant::now();
+        if self
+            .plugin_toasts
+            .get(id)
+            .is_some_and(|last| now.duration_since(*last) < PLUGIN_TOAST_GAP)
+        {
+            return;
+        }
+        self.plugin_toasts.insert(id.to_owned(), now);
+        let name = self.plugin_name(id).replace(['“', '”'], "'");
+        let text = match user {
+            Some(user) => format!("Plugin “{name}” for {user}: {text}"),
+            None => format!("Plugin “{name}”: {text}"),
+        };
+        self.toast(kind, text);
+    }
+
+    /// Whether an event naming this account (if any) may count: a plugin
+    /// cannot speak for an account Chaat does not have.
+    fn plugin_account_counts(&self, account: Option<&str>) -> bool {
+        account.is_none_or(|account| {
+            self.accounts
+                .iter()
+                .any(|a| a.id.as_deref() == Some(account))
+        })
     }
 
     /// Whether an event about sign-ins and rings from this plugin counts: a
@@ -436,8 +528,7 @@ impl App {
                 }
                 state.message = message.clone();
                 if let Some(message) = message {
-                    let name = self.plugin_name(&id);
-                    self.toast(ToastKind::Error, format!("{name}: {message}"));
+                    self.plugin_toast(&id, ToastKind::Error, None, message);
                 }
             }
             PluginEvent::SignIn {
@@ -445,7 +536,7 @@ impl App {
                 verification_uri,
                 user_code,
             } => {
-                if !self.plugin_counts(&id) {
+                if !self.plugin_counts(&id) || !self.plugin_account_counts(account.as_deref()) {
                     return;
                 }
                 let username = self.plugin_username(account.as_deref());
@@ -475,23 +566,22 @@ impl App {
                 }
             }
             PluginEvent::SignedIn { account } => {
-                if !self.plugin_counts(&id) {
+                if !self.plugin_counts(&id) || !self.plugin_account_counts(account.as_deref()) {
                     return;
                 }
                 let state = self.plugins.entry(id.clone()).or_default();
                 state.sign_in.retain(|s| s.account != account);
                 state.asked.retain(|asked| *asked != account);
-                let name = self.plugin_name(&id);
                 let text = match self.plugin_username(account.as_deref()) {
                     Some(user) if self.accounts.len() > 1 => {
-                        format!("{name}: signed in for {user}.")
+                        format!("signed in for {user}.")
                     }
-                    _ => format!("{name}: signed in."),
+                    _ => "signed in.".to_owned(),
                 };
-                self.toast(ToastKind::Info, text);
+                self.plugin_toast(&id, ToastKind::Info, None, text);
             }
             PluginEvent::Listening { account } => {
-                if !self.plugin_counts(&id) {
+                if !self.plugin_counts(&id) || !self.plugin_account_counts(Some(&account)) {
                     return;
                 }
                 let state = self.plugins.entry(id).or_default();
@@ -500,29 +590,38 @@ impl App {
                 }
             }
             PluginEvent::Error { account, message } => {
-                if !self.plugin_counts(&id) {
+                if !self.plugin_counts(&id) || !self.plugin_account_counts(account.as_deref()) {
                     return;
                 }
                 if let Some(account) = &account {
                     let state = self.plugins.entry(id.clone()).or_default();
                     state.listening.retain(|a| a != account);
                 }
-                let name = self.plugin_name(&id);
-                let text = match self.plugin_username(account.as_deref()) {
-                    Some(user) => format!("{name} for {user}: {message}"),
-                    None => format!("{name}: {message}"),
-                };
-                self.toast(ToastKind::Error, text);
+                let user = self.plugin_username(account.as_deref());
+                self.plugin_toast(&id, ToastKind::Error, user, message);
             }
             PluginEvent::IncomingCall(alert) => {
-                if self.call_alerts_owner().as_deref() == Some(id.as_str()) {
+                if self.call_alerts_owner().as_deref() == Some(id.as_str())
+                    && self.plugin_account_counts(alert.account.as_deref())
+                {
                     self.on_incoming_call(alert);
                 }
             }
-            // F4: store the first hash as the entry's pin (trust on first use).
-            PluginEvent::Fingerprint { .. } => {}
-            // F4: ask whether to run the changed file; the host did not run it.
-            PluginEvent::FileChanged { .. } => {}
+            // Trust on first use: the first hash becomes the entry's pin.
+            PluginEvent::Fingerprint { sha256 } => {
+                if let Some(entry) = self.settings.plugins.iter_mut().find(|e| e.id == id)
+                    && entry.sha256.is_none()
+                {
+                    entry.sha256 = Some(sha256);
+                    self.mark_settings_dirty();
+                }
+            }
+            // The host did not run the changed file: the person decides.
+            PluginEvent::FileChanged { sha256 } => {
+                let state = self.plugins.entry(id).or_default();
+                state.stopped();
+                state.file_changed = Some(sha256);
+            }
         }
     }
 
@@ -535,27 +634,69 @@ impl App {
         options: Vec<OptionSpec>,
         forgotten: Vec<String>,
     ) {
-        let wants_accounts = needs.contains(&"accounts");
+        // Only a need that is declared now and allowed counts.
+        let (approved, denied) = self
+            .settings
+            .plugins
+            .iter()
+            .find(|e| e.id == id)
+            .map(|e| (e.approved_needs.clone(), e.denied_needs.clone()))
+            .unwrap_or_default();
+        let wants_accounts =
+            needs.contains(&"accounts") && approved.iter().any(|n| n == "accounts");
+        let pending: Vec<&'static str> = needs
+            .iter()
+            .copied()
+            .filter(|need| !approved.iter().any(|n| n == need) && !denied.iter().any(|n| n == need))
+            .collect();
         let state = self.plugins.entry(id.to_owned()).or_default();
         state.running = true;
         state.message = None;
         state.info = info;
         state.offers = offers;
         state.needs = needs.clone();
+        state.pending_needs = pending.clone();
+        let announce = !pending.is_empty() && state.notified_pending != pending;
+        state.notified_pending = pending;
         let dropped_accounts = !wants_accounts && state.sent_accounts.take().is_some();
+        if announce {
+            let name = self.plugin_name(id).replace(['“', '”'], "'");
+            self.toast(
+                ToastKind::Info,
+                format!("Plugin “{name}” asks for access. Open Settings › Plugins to allow it."),
+            );
+        }
         if dropped_accounts {
             // A later `ready` that needs them again must be sent them, and a
             // crash-restart must not hand them to a plugin that stopped asking.
             self.send_service(Command::PluginHello {
                 id: id.to_owned(),
                 accounts: Some(Vec::new()),
-                forget: None,
+                forget: Some(Vec::new()),
             });
+        }
+        // A stored plain value for an option that is now secret goes: secrets
+        // live in the credential store only.
+        let now_secret: Vec<String> = options
+            .iter()
+            .filter(|spec| spec.kind == OptionKind::Secret)
+            .map(|spec| spec.id.clone())
+            .collect();
+        if let Some(state) = self.plugins.get_mut(id) {
+            state.options = options;
+        }
+        if let Some(entry) = self.settings.plugins.iter_mut().find(|e| e.id == id) {
+            let before = entry.options.len();
+            entry
+                .options
+                .retain(|option, _| !now_secret.contains(option));
+            if entry.options.len() != before {
+                self.mark_settings_dirty();
+            }
         }
         let Some(state) = self.plugins.get_mut(id) else {
             return;
         };
-        state.options = options;
         // A restarted process has not been sent the presence yet.
         state.sent_presence = None;
         let first_accounts = wants_accounts && state.sent_accounts.is_none();
@@ -587,6 +728,7 @@ impl App {
             id,
             path,
             enabled: true,
+            instance: PluginEntry::new_instance(),
             ..PluginEntry::default()
         });
         self.mark_settings_dirty();
@@ -621,13 +763,25 @@ impl App {
                 });
             }
         }
-        for option in &entry.secrets {
+        // Every secret option the plugin described may have a stored value,
+        // recorded or not (a save can still be in flight), so each goes.
+        let mut secrets = entry.secrets.clone();
+        if let Some(state) = self.plugins.get(id) {
+            for spec in &state.options {
+                if spec.kind == OptionKind::Secret && !secrets.contains(&spec.id) {
+                    secrets.push(spec.id.clone());
+                }
+            }
+        }
+        for option in secrets {
             self.send_service(Command::SavePluginSecret {
                 plugin: id.to_owned(),
-                option: option.clone(),
+                instance: entry.instance.clone(),
+                option,
                 value: None,
             });
         }
+        self.plugin_toasts.remove(id);
         if self.plugins_started.remove(id).is_some() {
             self.retire_plugin_generation(id);
             self.send_service(Command::StopPlugin { id: id.to_owned() });
@@ -664,11 +818,35 @@ impl App {
                 plugin,
                 option,
                 value,
-            } => self.send_service(Command::SavePluginSecret {
-                plugin,
-                option,
-                value,
-            }),
+            } => {
+                let instance = self
+                    .settings
+                    .plugins
+                    .iter()
+                    .find(|e| e.id == plugin)
+                    .map(|e| e.instance.clone());
+                if let Some(instance) = instance {
+                    self.send_service(Command::SavePluginSecret {
+                        plugin,
+                        instance,
+                        option,
+                        value,
+                    });
+                }
+            }
+            Action::ApprovePluginNeeds(id) => self.decide_plugin_needs(&id, true),
+            Action::DenyPluginNeeds(id) => self.decide_plugin_needs(&id, false),
+            Action::TrustPluginFile(id) => self.trust_plugin_file(&id),
+            Action::KeepPluginOff(id) => {
+                if let Some(entry) = self.settings.plugins.iter_mut().find(|e| e.id == id) {
+                    entry.enabled = false;
+                    self.mark_settings_dirty();
+                }
+                if let Some(state) = self.plugins.get_mut(&id) {
+                    state.file_changed = None;
+                }
+                self.sync_plugins();
+            }
             Action::PluginSignIn { plugin, account } => self.send_service(Command::PluginSend {
                 id: plugin,
                 message: HostMessage::SignIn { account },
@@ -682,14 +860,105 @@ impl App {
         }
     }
 
-    /// Records whether a plugin secret was stored.
+    /// Allows or refuses what the plugin's current `ready` asked for and the
+    /// person has not decided yet. Allowed accounts and presence go out now.
+    fn decide_plugin_needs(&mut self, id: &str, allow: bool) {
+        let pending = match self.plugins.get_mut(id) {
+            Some(state) if !state.pending_needs.is_empty() => {
+                std::mem::take(&mut state.pending_needs)
+            }
+            _ => return,
+        };
+        let Some(entry) = self.settings.plugins.iter_mut().find(|e| e.id == id) else {
+            return;
+        };
+        for need in pending {
+            let (add, other) = if allow {
+                (&mut entry.approved_needs, &mut entry.denied_needs)
+            } else {
+                (&mut entry.denied_needs, &mut entry.approved_needs)
+            };
+            other.retain(|n| n != need);
+            if !add.iter().any(|n| n == need) {
+                add.push(need.to_owned());
+            }
+        }
+        self.mark_settings_dirty();
+        if !allow {
+            return;
+        }
+        let Some(entry) = self.settings.plugins.iter().find(|e| e.id == id) else {
+            return;
+        };
+        if Self::plugin_needs_accounts(entry)
+            && self.plugins_started.contains_key(id)
+            && self
+                .plugins
+                .get(id)
+                .is_some_and(|state| state.running && state.sent_accounts.is_none())
+        {
+            let forget = entry.forget.clone();
+            let accounts = self.plugin_accounts();
+            if let Some(state) = self.plugins.get_mut(id) {
+                state.sent_accounts = Some(accounts.clone());
+            }
+            self.send_plugin_accounts(id, accounts);
+            if !forget.is_empty() {
+                self.send_service(Command::PluginHello {
+                    id: id.to_owned(),
+                    accounts: None,
+                    forget: Some(forget),
+                });
+            }
+        }
+        self.sync_plugin_presence();
+    }
+
+    /// Runs a plugin file that no longer matches its stored hash: the new
+    /// hash becomes the pin, what the plugin was allowed is forgotten (the new
+    /// program asks again) and the plugin restarts.
+    fn trust_plugin_file(&mut self, id: &str) {
+        let Some(sha256) = self
+            .plugins
+            .get_mut(id)
+            .and_then(|state| state.file_changed.take())
+        else {
+            return;
+        };
+        let Some(entry) = self.settings.plugins.iter_mut().find(|e| e.id == id) else {
+            return;
+        };
+        entry.sha256 = Some(sha256);
+        entry.approved_needs.clear();
+        entry.denied_needs.clear();
+        self.mark_settings_dirty();
+        if let Some(state) = self.plugins.get_mut(id) {
+            state.pending_needs.clear();
+            state.notified_pending.clear();
+        }
+        self.plugins_started.remove(id);
+        self.sync_plugins();
+    }
+
+    /// Records whether a plugin secret was stored. An answer for another
+    /// instance of the plugin (it was removed and added again meanwhile) is
+    /// ignored.
     pub(super) fn on_plugin_secret_saved(
         &mut self,
         plugin: &str,
+        instance: &str,
         option: String,
         set: bool,
         ok: bool,
     ) {
+        if !self
+            .settings
+            .plugins
+            .iter()
+            .any(|e| e.id == plugin && e.instance == instance)
+        {
+            return;
+        }
         if !ok {
             self.toast(
                 ToastKind::Error,
@@ -730,6 +999,11 @@ mod tests {
         let (service, mut commands) = Backend::recording();
         app.service = service;
         app.id = Some("u-me.t1".into());
+        app.settings.plugins.push(PluginEntry {
+            id: "p".into(),
+            approved_needs: vec!["accounts".into()],
+            ..PluginEntry::default()
+        });
         let ready = |app: &mut App, needs: Vec<&'static str>| {
             app.on_plugin_ready(
                 "p",

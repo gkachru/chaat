@@ -753,6 +753,7 @@ fn saving_a_plugin_secret_writes_and_deletes_the_store_key() {
     let save = |backend: &Backend, value: Option<&str>| {
         backend.send(Command::SavePluginSecret {
             plugin: "b".into(),
+            instance: String::new(),
             option: "local_key".into(),
             value: value.map(str::to_owned),
         });
@@ -780,6 +781,7 @@ fn options_follow_the_secret_saved_before_them_in_order() {
     for i in 0..30 {
         backend.send(Command::SavePluginSecret {
             plugin: "b".into(),
+            instance: String::new(),
             option: "local_key".into(),
             value: Some(format!("k{i}")),
         });
@@ -915,6 +917,7 @@ fn a_blocked_secret_store_for_one_plugin_does_not_hold_another() {
     let save = |plugin: &str| {
         backend.send(Command::SavePluginSecret {
             plugin: plugin.into(),
+            instance: String::new(),
             option: "key".into(),
             value: Some("v".into()),
         });

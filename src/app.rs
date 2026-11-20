@@ -621,6 +621,8 @@ pub struct App {
     /// produced them; a stopped plugin's entry names a generation no host has.
     plugin_generations: std::collections::BTreeMap<String, u64>,
     plugin_generation: u64,
+    /// When each plugin last raised a toast, so a chatty one is limited.
+    plugin_toasts: std::collections::BTreeMap<String, std::time::Instant>,
     next_toast: u64,
     pub actions: Vec<Action>,
 
@@ -762,6 +764,7 @@ impl App {
             plugins_started: Default::default(),
             plugin_generations: Default::default(),
             plugin_generation: 0,
+            plugin_toasts: Default::default(),
             next_toast: 0,
             actions: Vec::new(),
             palette,
@@ -1482,10 +1485,11 @@ impl App {
             } => self.on_plugin_event(id, generation, event),
             Event::PluginSecretSaved {
                 plugin,
+                instance,
                 option,
                 set,
                 ok,
-            } => self.on_plugin_secret_saved(&plugin, option, set, ok),
+            } => self.on_plugin_secret_saved(&plugin, &instance, option, set, ok),
         }
     }
 
@@ -2524,6 +2528,10 @@ impl App {
             action @ (Action::AddPlugin
             | Action::RemovePlugin(_)
             | Action::SetPluginEnabled(..)
+            | Action::ApprovePluginNeeds(_)
+            | Action::DenyPluginNeeds(_)
+            | Action::TrustPluginFile(_)
+            | Action::KeepPluginOff(_)
             | Action::SetPluginOption { .. }
             | Action::SetPluginSecret { .. }
             | Action::PluginSignIn { .. }
@@ -3389,13 +3397,16 @@ mod tests {
         }
     }
 
-    /// An enabled entry in the plugin list, not started.
+    /// An enabled entry in the plugin list, not started, that the person
+    /// already allowed everything to.
     fn plugin_entry(app: &mut App, id: &str, needs: &[&str]) {
         app.settings.plugins.push(crate::settings::PluginEntry {
             id: id.into(),
             path: PathBuf::from(format!("{id}.exe")),
             enabled: true,
             needs: needs.iter().map(|n| (*n).to_owned()).collect(),
+            approved_needs: vec!["accounts".into(), "presence".into()],
+            instance: format!("inst-{id}"),
             ..Default::default()
         });
     }
@@ -3475,6 +3486,7 @@ mod tests {
             path: PathBuf::from("plugin.exe"),
             enabled: false,
             needs: vec!["accounts".into()],
+            approved_needs: vec!["accounts".into()],
             ..Default::default()
         });
         app.sync_plugins();
@@ -3894,7 +3906,7 @@ mod tests {
         for option in ["token", "key"] {
             assert!(after.iter().any(|c| matches!(
                 c,
-                Command::SavePluginSecret { plugin, option: o, value: None }
+                Command::SavePluginSecret { plugin, option: o, value: None, .. }
                     if plugin == "light" && o == option
             )));
         }
@@ -3981,18 +3993,21 @@ mod tests {
             app.settings.plugins[0].options["flash"],
             serde_json::json!(false)
         );
-        // A stored secret appears in the list, and the plugin hears again.
-        app.handle(
-            Event::PluginSecretSaved {
-                plugin: "light".into(),
-                option: "token".into(),
-                set: true,
-                ok: true,
-            },
-            &ctx,
-        );
+        // A cleared secret leaves the list, a stored one joins it, and the
+        // plugin hears each time.
+        let saved = |set: bool| Event::PluginSecretSaved {
+            plugin: "light".into(),
+            instance: "inst-light".into(),
+            option: "key".into(),
+            set,
+            ok: true,
+        };
+        app.handle(saved(false), &ctx);
+        let (_, secrets) = values(&mut commands).expect("options after a clear");
+        assert!(secrets.is_empty());
+        app.handle(saved(true), &ctx);
         let (_, secrets) = values(&mut commands).expect("options after a secret");
-        assert!(secrets.contains(&"token".to_owned()));
+        assert_eq!(secrets, vec!["key".to_owned()]);
     }
 
     #[test]
@@ -4133,11 +4148,10 @@ mod tests {
             &ctx,
         );
         assert!(app.plugins["ca"].listening.is_empty());
-        assert!(
-            app.toasts
-                .iter()
-                .any(|t| t.text.starts_with("Call alerts for alex@fabrikam.com:"))
-        );
+        assert!(app.toasts.iter().any(|t| {
+            t.text
+                .starts_with("Plugin \u{201c}Call alerts\u{201d} for alex@fabrikam.com:")
+        }));
     }
 
     #[test]
@@ -5383,5 +5397,552 @@ mod tests {
         });
         assert!(app.reauth.is_none());
         assert!(app.is_signed_in());
+    }
+
+    fn option_spec(
+        id: &str,
+        kind: crate::plugin::protocol::OptionKind,
+        default: Option<serde_json::Value>,
+    ) -> crate::plugin::protocol::OptionSpec {
+        crate::plugin::protocol::OptionSpec {
+            id: id.into(),
+            kind,
+            label: id.into(),
+            default,
+            choices: Vec::new(),
+        }
+    }
+
+    /// An enabled entry the person has not decided anything about.
+    fn undecided_entry(app: &mut App, id: &str) {
+        plugin_entry(app, id, &[]);
+        let entry = app.settings.plugins.last_mut().unwrap();
+        entry.approved_needs.clear();
+    }
+
+    fn accounts_sent_to(commands: &[Command], id: &str) -> bool {
+        commands.iter().any(|c| {
+            matches!(
+                c,
+                Command::PluginSend { id: to, message: crate::plugin::protocol::HostMessage::Accounts { .. } }
+                    if to == id
+            )
+        })
+    }
+
+    fn presence_sent_to(commands: &[Command], id: &str) -> bool {
+        commands.iter().any(|c| {
+            matches!(
+                c,
+                Command::PluginSend { id: to, message: crate::plugin::protocol::HostMessage::Presence { .. } }
+                    if to == id
+            )
+        })
+    }
+
+    #[test]
+    fn events_for_unknown_accounts_are_dropped() {
+        let (mut app, mut commands) = app_with_service();
+        let ctx = egui::Context::default();
+        call_alerts_plugin(&mut app, "ca");
+        sent(&mut commands);
+        let stranger = Some("u-stranger.t9");
+        app.handle(
+            plugin_event(&app, "ca", sign_in_event(stranger, "AB12")),
+            &ctx,
+        );
+        app.handle(plugin_event(&app, "ca", signed_in_event(stranger)), &ctx);
+        app.handle(
+            plugin_event(
+                &app,
+                "ca",
+                crate::plugin::event::PluginEvent::Listening {
+                    account: "u-stranger.t9".into(),
+                },
+            ),
+            &ctx,
+        );
+        app.handle(
+            plugin_event(
+                &app,
+                "ca",
+                crate::plugin::event::PluginEvent::Error {
+                    account: stranger.map(str::to_owned),
+                    message: "nope".into(),
+                },
+            ),
+            &ctx,
+        );
+        let mut alert = ring("stranger-call", "u-ada");
+        alert.account = stranger.map(str::to_owned);
+        app.handle(
+            plugin_event(
+                &app,
+                "ca",
+                crate::plugin::event::PluginEvent::IncomingCall(alert),
+            ),
+            &ctx,
+        );
+        assert!(app.plugins["ca"].sign_in.is_empty());
+        assert!(app.plugins["ca"].listening.is_empty());
+        assert!(app.toasts.is_empty());
+        assert!(app.rings.is_empty());
+        // The same events for one of Chaat's accounts count.
+        app.handle(
+            plugin_event(&app, "ca", sign_in_event(Some("u-me.t1"), "AB12")),
+            &ctx,
+        );
+        app.handle(
+            plugin_event(
+                &app,
+                "ca",
+                crate::plugin::event::PluginEvent::Listening {
+                    account: "u-me.t1".into(),
+                },
+            ),
+            &ctx,
+        );
+        assert_eq!(app.plugins["ca"].sign_in.len(), 1);
+        assert_eq!(app.plugins["ca"].listening, ["u-me.t1"]);
+    }
+
+    #[test]
+    fn a_new_need_waits_for_approval() {
+        let (mut app, mut commands) = app_with_service();
+        let ctx = egui::Context::default();
+        app.my_presence = Some(busy());
+        undecided_entry(&mut app, "light");
+        app.sync_plugins();
+        sent(&mut commands);
+        let ready = |app: &mut App| {
+            app.handle(
+                plugin_event(
+                    app,
+                    "light",
+                    ready_event(&["accounts", "presence"], &[], Vec::new(), &[]),
+                ),
+                &ctx,
+            );
+        };
+        ready(&mut app);
+        let after = sent(&mut commands);
+        assert!(!accounts_sent_to(&after, "light"));
+        assert!(!presence_sent_to(&after, "light"));
+        assert_eq!(app.plugins["light"].pending_needs, ["accounts", "presence"]);
+        assert!(app.plugin_receives("light").is_empty());
+        assert_eq!(app.toasts.len(), 1);
+        assert_eq!(
+            app.toasts[0].text,
+            "Plugin \u{201c}light\u{201d} asks for access. Open Settings \u{203a} Plugins to allow it."
+        );
+        assert!(
+            !app.wants_show,
+            "asking for access does not raise the window"
+        );
+        // The same pending set does not announce itself again.
+        app.toasts.clear();
+        ready(&mut app);
+        assert!(app.toasts.is_empty());
+        assert!(!accounts_sent_to(&sent(&mut commands), "light"));
+    }
+
+    #[test]
+    fn approved_needs_flow_and_denied_ones_dont() {
+        let ctx = egui::Context::default();
+        let ready = |app: &mut App| {
+            app.handle(
+                plugin_event(
+                    app,
+                    "light",
+                    ready_event(&["accounts", "presence"], &[], Vec::new(), &[]),
+                ),
+                &ctx,
+            );
+        };
+        let (mut app, mut commands) = app_with_service();
+        app.my_presence = Some(busy());
+        undecided_entry(&mut app, "light");
+        app.sync_plugins();
+        ready(&mut app);
+        sent(&mut commands);
+        app.apply(Action::ApprovePluginNeeds("light".into()), &ctx);
+        let after = sent(&mut commands);
+        assert!(accounts_sent_to(&after, "light"));
+        assert!(presence_sent_to(&after, "light"));
+        let entry = &app.settings.plugins[0];
+        assert_eq!(entry.approved_needs, ["accounts", "presence"]);
+        assert!(entry.denied_needs.is_empty());
+        assert!(app.plugins["light"].pending_needs.is_empty());
+        assert_eq!(app.plugin_receives("light"), ["accounts", "presence"]);
+        // A restart hello carries the accounts of an approved plugin.
+        app.settings.plugins[0].path = PathBuf::from("other.exe");
+        app.sync_plugins();
+        assert!(sent(&mut commands).iter().any(|c| matches!(
+            c,
+            Command::StartPlugin { hello: crate::plugin::protocol::HostMessage::Hello { accounts, .. }, .. }
+                if accounts.len() == 1
+        )));
+
+        // A refusal sends nothing, and the same `ready` does not ask again.
+        let (mut app, mut commands) = app_with_service();
+        app.my_presence = Some(busy());
+        undecided_entry(&mut app, "light");
+        app.sync_plugins();
+        ready(&mut app);
+        sent(&mut commands);
+        app.apply(Action::DenyPluginNeeds("light".into()), &ctx);
+        assert_eq!(
+            app.settings.plugins[0].denied_needs,
+            ["accounts", "presence"]
+        );
+        assert!(app.settings.plugins[0].approved_needs.is_empty());
+        app.toasts.clear();
+        ready(&mut app);
+        let after = sent(&mut commands);
+        assert!(!accounts_sent_to(&after, "light"));
+        assert!(!presence_sent_to(&after, "light"));
+        assert!(app.plugins["light"].pending_needs.is_empty());
+        assert!(app.toasts.is_empty());
+        assert!(app.plugin_receives("light").is_empty());
+    }
+
+    #[test]
+    fn a_changed_file_waits_and_trust_resets_needs() {
+        use crate::plugin::event::PluginEvent;
+        let (mut app, mut commands) = app_with_service();
+        let ctx = egui::Context::default();
+        plugin_entry(&mut app, "light", &["accounts"]);
+        {
+            let entry = &mut app.settings.plugins[0];
+            entry.sha256 = Some("old".into());
+            entry.denied_needs = vec!["presence".into()];
+        }
+        app.sync_plugins();
+        assert!(matches!(
+            sent(&mut commands).first(),
+            Some(Command::StartPlugin { expected_sha256: Some(pin), .. }) if pin == "old"
+        ));
+        app.handle(
+            plugin_event(
+                &app,
+                "light",
+                PluginEvent::FileChanged {
+                    sha256: "new".into(),
+                },
+            ),
+            &ctx,
+        );
+        assert_eq!(app.plugins["light"].file_changed.as_deref(), Some("new"));
+        assert!(!app.plugins["light"].running);
+        assert!(
+            sent(&mut commands).is_empty(),
+            "the changed file is not run"
+        );
+        app.sync_plugins();
+        assert!(sent(&mut commands).is_empty(), "nor restarted by a sync");
+
+        app.apply(Action::TrustPluginFile("light".into()), &ctx);
+        let entry = &app.settings.plugins[0];
+        assert_eq!(entry.sha256.as_deref(), Some("new"));
+        assert!(entry.approved_needs.is_empty() && entry.denied_needs.is_empty());
+        assert!(app.plugins["light"].file_changed.is_none());
+        assert!(matches!(
+            sent(&mut commands).first(),
+            Some(Command::StartPlugin { expected_sha256: Some(pin), hello: crate::plugin::protocol::HostMessage::Hello { accounts, .. }, .. })
+                if pin == "new" && accounts.is_empty()
+        ));
+
+        // Keeping it off turns the plugin off and drops the question.
+        app.handle(
+            plugin_event(
+                &app,
+                "light",
+                PluginEvent::FileChanged {
+                    sha256: "newer".into(),
+                },
+            ),
+            &ctx,
+        );
+        app.apply(Action::KeepPluginOff("light".into()), &ctx);
+        assert!(!app.settings.plugins[0].enabled);
+        assert!(app.plugins["light"].file_changed.is_none());
+        assert_eq!(app.settings.plugins[0].sha256.as_deref(), Some("new"));
+        assert!(sent(&mut commands).iter().any(|c| matches!(
+            c,
+            Command::StopPlugin { id } if id == "light"
+        )));
+    }
+
+    #[test]
+    fn the_first_fingerprint_is_stored_and_never_replaced() {
+        use crate::plugin::event::PluginEvent;
+        let (mut app, _commands) = app_with_service();
+        let ctx = egui::Context::default();
+        plugin_entry(&mut app, "light", &[]);
+        let fingerprint = |app: &mut App, sha: &str| {
+            app.handle(
+                plugin_event(
+                    app,
+                    "light",
+                    PluginEvent::Fingerprint { sha256: sha.into() },
+                ),
+                &ctx,
+            );
+        };
+        fingerprint(&mut app, "first");
+        assert_eq!(app.settings.plugins[0].sha256.as_deref(), Some("first"));
+        fingerprint(&mut app, "second");
+        assert_eq!(app.settings.plugins[0].sha256.as_deref(), Some("first"));
+    }
+
+    #[test]
+    fn a_late_secret_answer_for_an_old_instance_is_ignored() {
+        let (mut app, mut commands) = app_with_service();
+        let ctx = egui::Context::default();
+        plugin_entry(&mut app, "light", &[]);
+        app.settings.plugins[0].instance = "new".into();
+        app.plugins.entry("light".into()).or_default();
+        let answer = |instance: &str| Event::PluginSecretSaved {
+            plugin: "light".into(),
+            instance: instance.into(),
+            option: "key".into(),
+            set: true,
+            ok: true,
+        };
+        app.handle(answer("old"), &ctx);
+        assert!(app.settings.plugins[0].secrets.is_empty());
+        assert!(sent(&mut commands).is_empty());
+        app.handle(answer("new"), &ctx);
+        assert_eq!(app.settings.plugins[0].secrets, ["key"]);
+        // Saves carry the entry's instance.
+        app.apply(
+            Action::SetPluginSecret {
+                plugin: "light".into(),
+                option: "key".into(),
+                value: Some("v".into()),
+            },
+            &ctx,
+        );
+        assert!(sent(&mut commands).iter().any(|c| matches!(
+            c,
+            Command::SavePluginSecret { instance, .. } if instance == "new"
+        )));
+        // Each new entry gets its own instance.
+        app.add_plugin(PathBuf::from("C:/x/other.exe"));
+        app.add_plugin(PathBuf::from("D:/y/other.exe"));
+        let instances: Vec<&str> = app
+            .settings
+            .plugins
+            .iter()
+            .skip(1)
+            .map(|e| e.instance.as_str())
+            .collect();
+        assert!(instances.iter().all(|i| i.len() == 32));
+        assert_ne!(instances[0], instances[1]);
+    }
+
+    #[test]
+    fn removing_deletes_every_described_secret() {
+        use crate::plugin::protocol::OptionKind;
+        let (mut app, mut commands) = app_with_service();
+        let ctx = egui::Context::default();
+        plugin_entry(&mut app, "light", &[]);
+        app.settings.plugins[0].secrets = vec!["recorded".into()];
+        app.sync_plugins();
+        sent(&mut commands);
+        app.handle(
+            plugin_event(
+                &app,
+                "light",
+                ready_event(
+                    &[],
+                    &[],
+                    vec![
+                        option_spec("recorded", OptionKind::Secret, None),
+                        option_spec("described", OptionKind::Secret, None),
+                        option_spec("plain", OptionKind::Text, None),
+                    ],
+                    &[],
+                ),
+            ),
+            &ctx,
+        );
+        sent(&mut commands);
+        app.apply(Action::RemovePlugin("light".into()), &ctx);
+        let deleted: Vec<String> = sent(&mut commands)
+            .into_iter()
+            .filter_map(|c| match c {
+                Command::SavePluginSecret {
+                    plugin,
+                    instance,
+                    option,
+                    value: None,
+                } if plugin == "light" && instance == "inst-light" => Some(option),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(deleted.len(), 2);
+        assert!(deleted.contains(&"recorded".to_owned()));
+        assert!(deleted.contains(&"described".to_owned()));
+    }
+
+    #[test]
+    fn forget_needs_the_accounts_need() {
+        let (mut app, mut commands) = app_with_service();
+        let ctx = egui::Context::default();
+        plugin_entry(&mut app, "allowed", &["accounts"]);
+        plugin_entry(&mut app, "unallowed", &["accounts"]);
+        app.settings.plugins[1].approved_needs.clear();
+        for entry in &mut app.settings.plugins {
+            entry.forget = vec!["u-queued.t2".into()];
+        }
+        app.sync_plugins();
+        let started = sent(&mut commands);
+        let hello_forget = |id: &str| {
+            started.iter().find_map(|c| match c {
+                Command::StartPlugin {
+                    id: started,
+                    hello: crate::plugin::protocol::HostMessage::Hello { forget, .. },
+                    ..
+                } if started == id => Some(forget.clone()),
+                _ => None,
+            })
+        };
+        assert_eq!(
+            hello_forget("allowed"),
+            Some(vec!["u-queued.t2".to_owned()])
+        );
+        assert_eq!(hello_forget("unallowed"), Some(Vec::new()));
+        app.apply(Action::SignOut, &ctx);
+        let after = sent(&mut commands);
+        let forgets = |id: &str| {
+            after
+                .iter()
+                .filter(|c| {
+                    matches!(
+                        c,
+                        Command::PluginSend { id: to, message: crate::plugin::protocol::HostMessage::Forget { .. } }
+                            if to == id
+                    )
+                })
+                .count()
+        };
+        assert_eq!(forgets("allowed"), 1);
+        assert_eq!(forgets("unallowed"), 0, "an unallowed plugin is not told");
+        assert!(
+            !app.settings.plugins[1]
+                .forget
+                .contains(&"u-me.t1".to_owned()),
+            "nor is the account queued for it"
+        );
+        assert!(
+            app.settings.plugins[0]
+                .forget
+                .contains(&"u-me.t1".to_owned())
+        );
+    }
+
+    #[test]
+    fn options_follow_the_current_schema() {
+        use crate::plugin::protocol::OptionKind;
+        let (mut app, mut commands) = app_with_service();
+        let ctx = egui::Context::default();
+        plugin_entry(&mut app, "light", &[]);
+        {
+            let entry = &mut app.settings.plugins[0];
+            entry
+                .options
+                .insert("ip".into(), serde_json::json!("10.0.0.5"));
+            entry.options.insert("old".into(), serde_json::json!(1));
+            entry
+                .options
+                .insert("was_plain".into(), serde_json::json!("leaked"));
+            entry.secrets = vec!["key".into(), "gone".into(), "ip".into()];
+        }
+        app.sync_plugins();
+        sent(&mut commands);
+        app.handle(
+            plugin_event(
+                &app,
+                "light",
+                ready_event(
+                    &[],
+                    &[],
+                    vec![
+                        option_spec("ip", OptionKind::Text, None),
+                        option_spec("was_plain", OptionKind::Secret, None),
+                        option_spec("key", OptionKind::Secret, None),
+                    ],
+                    &[],
+                ),
+            ),
+            &ctx,
+        );
+        let (values, secrets) = sent(&mut commands)
+            .into_iter()
+            .find_map(|c| match c {
+                Command::PluginOptions {
+                    id,
+                    values,
+                    secrets,
+                } if id == "light" => Some((values, secrets)),
+                _ => None,
+            })
+            .expect("options after ready");
+        assert_eq!(
+            values.keys().collect::<Vec<_>>(),
+            ["ip"],
+            "only described plain options"
+        );
+        assert_eq!(secrets, ["key"], "only secret options with a stored value");
+        let stored = &app.settings.plugins[0].options;
+        assert!(
+            !stored.contains_key("was_plain"),
+            "a plain value for an option that is now secret is deleted"
+        );
+        assert!(stored.contains_key("old"), "unknown options are withheld");
+        assert!(stored.contains_key("ip"));
+    }
+
+    #[test]
+    fn plugin_toasts_are_quoted_and_limited() {
+        let (mut app, _commands) = app_with_service();
+        let ctx = egui::Context::default();
+        plugin_entry(&mut app, "light", &[]);
+        app.plugins.entry("light".into()).or_default().info.name =
+            Some("Busy \u{201d}light".into());
+        let stopped = |app: &mut App, id: &str, message: &str| {
+            app.handle(
+                plugin_event(
+                    app,
+                    id,
+                    crate::plugin::event::PluginEvent::Status {
+                        running: false,
+                        message: Some(message.into()),
+                    },
+                ),
+                &ctx,
+            );
+        };
+        stopped(&mut app, "light", "first");
+        assert_eq!(app.toasts.len(), 1);
+        assert_eq!(
+            app.toasts[0].text,
+            "Plugin \u{201c}Busy 'light\u{201d}: first"
+        );
+        stopped(&mut app, "light", "second");
+        assert_eq!(app.toasts.len(), 1, "a second toast within 10 s is dropped");
+        // Another plugin is not held back by this one.
+        plugin_entry(&mut app, "other", &[]);
+        stopped(&mut app, "other", "hi");
+        assert_eq!(app.toasts.len(), 2);
+        // After the gap, the plugin may toast again.
+        if let Some(past) =
+            std::time::Instant::now().checked_sub(std::time::Duration::from_secs(11))
+        {
+            app.plugin_toasts.insert("light".into(), past);
+            stopped(&mut app, "light", "third");
+            assert!(app.toasts.iter().any(|t| t.text.ends_with(": third")));
+        }
     }
 }

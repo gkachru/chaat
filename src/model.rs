@@ -954,6 +954,17 @@ pub enum Action {
     /// Stops a plugin and removes it, with its stored secrets.
     RemovePlugin(String),
     SetPluginEnabled(String, bool),
+    /// Allows everything the plugin's `ready` asked for that is still
+    /// pending (account IDs, presence), and sends it.
+    ApprovePluginNeeds(String),
+    /// Refuses what is pending; the plugin keeps running without it.
+    DenyPluginNeeds(String),
+    /// Runs the plugin file that no longer matches its stored hash: stores
+    /// the new hash, clears the approved and denied needs (the new program
+    /// must ask again) and restarts it.
+    TrustPluginFile(String),
+    /// Turns a plugin off whose file changed, and drops the question.
+    KeepPluginOff(String),
     /// Changes one of a plugin's described options (never a secret).
     SetPluginOption {
         plugin: String,
