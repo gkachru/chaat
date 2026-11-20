@@ -21,8 +21,9 @@ a plugin is a separate program, each one shows:
   the reason after a failure);
 - **Turn on** and **Remove**;
 - the options it describes (see [Options](#options));
-- for a plugin that needs accounts, one row per Chaat account: **Listening**,
-  **Waiting for sign-in** or **Not signed in**, with a **Sign in** button.
+- for a plugin that needs accounts, one row per Chaat account: **Listening for calls**,
+  **Waiting for sign-in** or **Connecting…**, with a **New code** button
+  while a sign-in waits.
 
 **Add plugin…** opens the system file picker. Chaat names the plugin from its
 file name and turns it on. **Remove** stops it, tells a running plugin that

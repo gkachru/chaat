@@ -92,7 +92,7 @@ background runtime, restarts it with backoff if it exits (one notice per run
 of failures), and stops it when it is turned off, removed, or Chaat quits. A
 plugin whose `ready` offers no capability Chaat knows is stopped with a
 notice and not restarted. Only one plugin gets rings: the first enabled
-plugin in the list that offers `call_alerts`.
+plugin in the list that is running and offers `call_alerts`.
 
 Settings shows the plugin's name and description as it gives them in
 `ready`, as plain shortened text (control and invisible formatting
@@ -133,10 +133,10 @@ the same call replaces its card; at most three show.
 
 Chaat tells the plugin the ID (`oid.tid`) and sign-in name of each of its
 accounts, never a token, and the plugin signs in to each separately.
-Settings › Plugins lists every account under the plugin as **Listening**
+Settings › Plugins lists every account under the plugin as **Listening for calls**
 (its connection came up, and the plugin has reported no problem with it
-since), **Waiting for sign-in** (with a **Sign in** button for a new code) or
-**Not signed in**. Errors about an account name it.
+since), **Waiting for sign-in** (with a **New code** button) or
+**Connecting…**. Errors about an account name it.
 
 A ring says which account it came in on. When Chaat has several accounts,
 the card names it, and **Place call** and **Open chat** switch to that
