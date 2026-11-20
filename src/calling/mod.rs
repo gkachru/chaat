@@ -17,6 +17,31 @@ use serde::{Deserialize, Serialize};
 
 use browser::{Browser, BrowserKind};
 
+/// An incoming call reported by the external call-alerts plugin (Graph cannot
+/// signal a ringing call; see docs/calling.md). Chaat shows a ring toast from
+/// this and, on the person's click, opens the chat or places a call back.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RingAlert {
+    /// The plugin's call id, used to dedupe repeated rings.
+    pub id: String,
+    /// The caller's display name, as the push gave it.
+    pub caller: String,
+    /// The caller's MRI, `8:orgid:<aad-object-id>`. The object id is how Chaat
+    /// resolves the caller to a known person for the toast's actions.
+    pub caller_mri: String,
+    pub video: bool,
+    pub group: bool,
+    /// The chat thread, when the push carried one (usually only group calls).
+    pub thread_id: Option<String>,
+}
+
+impl RingAlert {
+    /// The caller's Entra object id, parsed from `8:orgid:<object-id>`.
+    pub fn caller_object_id(&self) -> Option<&str> {
+        self.caller_mri.strip_prefix("8:orgid:")
+    }
+}
+
 /// Where calls and meetings open (a setting).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CallsOpenIn {

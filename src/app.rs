@@ -689,6 +689,7 @@ impl App {
                 .as_ref()
                 .and_then(|active| ids.iter().position(|id| id == active))
                 .unwrap_or(0);
+            app.sync_call_alerts();
         }
         app
     }
@@ -790,6 +791,22 @@ impl App {
                 .backend
                 .send(Command::Relay(self.settings.relay_url.clone()));
         }
+    }
+
+    /// Starts or stops the external call-alerts plugin to match the settings.
+    /// The plugin is process-wide (one external process), so it runs on the
+    /// service backend, not a per-account one.
+    pub(crate) fn sync_call_alerts(&self) {
+        if self.demo {
+            return;
+        }
+        let command = match &self.settings.calls.call_alerts_plugin {
+            Some(path) if self.settings.calls.call_alerts && !path.as_os_str().is_empty() => {
+                Command::StartCallAlerts(path.clone())
+            }
+            _ => Command::StopCallAlerts,
+        };
+        self.service.send(command);
     }
 
     fn start_account(&mut self, index: usize) {
@@ -1449,7 +1466,37 @@ impl App {
                 // Reconnect every account with the new key.
                 self.send_relay();
             }
+            Event::IncomingCall(alert) => self.on_incoming_call(alert),
+            Event::CallAlertsSignIn {
+                verification_uri,
+                user_code,
+            } => {
+                self.toast(
+                    ToastKind::Error,
+                    format!(
+                        "Call alerts: to sign in, open {verification_uri} and enter code {user_code}"
+                    ),
+                );
+            }
+            Event::CallAlertsStatus {
+                running: _,
+                message,
+            } => {
+                if let Some(message) = message {
+                    self.toast(ToastKind::Error, message);
+                }
+            }
         }
+    }
+
+    /// A call is ringing, as reported by the call-alerts plugin. Show it and
+    /// bring Chaat forward so the person sees it. The richer two-button ring
+    /// toast (Place call / Open chat) is still to come; for now this surfaces
+    /// the caller and raises the window.
+    fn on_incoming_call(&mut self, alert: crate::calling::RingAlert) {
+        let what = if alert.group { "Group call" } else { "Call" };
+        self.toast(ToastKind::Error, format!("{what} from {}", alert.caller));
+        self.wants_show = true;
     }
 
     fn on_auth(&mut self, status: AuthStatus) {

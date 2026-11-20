@@ -153,6 +153,8 @@ struct Worker {
     /// Stops the running push loop, and the loop itself, to wait for its
     /// cleanup.
     stop_push: Option<(watch::Sender<bool>, tokio::task::JoinHandle<()>)>,
+    /// The external call-alerts plugin process reader, and its stop signal.
+    call_alerts: Option<(watch::Sender<bool>, tokio::task::JoinHandle<()>)>,
     /// Whether Chaat keeps a presence session (setting), and when it last
     /// refreshed it.
     session_enabled: bool,
@@ -184,6 +186,7 @@ pub(super) async fn run(
         options,
         relay: None,
         stop_push: None,
+        call_alerts: None,
         session_enabled: true,
         session_refreshed: None,
         sign_in_browser: None,
@@ -216,6 +219,7 @@ pub(super) async fn run(
         let _ = cancel.send(true);
     }
     worker.stop_push().await;
+    worker.stop_call_alerts().await;
     worker.end_presence_session().await;
 }
 
@@ -416,6 +420,14 @@ impl Worker {
             Command::UserName(user) => self.user_name(user),
             Command::Media(url) => self.media(url),
             Command::Search(query) => self.search(query),
+            Command::StartCallAlerts(path) => self.restart_call_alerts(path),
+            Command::StopCallAlerts => {
+                self.stop_call_alerts().await;
+                self.out.send(Event::CallAlertsStatus {
+                    running: false,
+                    message: None,
+                });
+            }
             Command::Shutdown => {}
         }
     }
@@ -758,6 +770,33 @@ impl Worker {
                     "push[{}]: cleanup took too long; the next start finishes it",
                     self.me_id().as_deref().map(account_tag).unwrap_or_default()
                 );
+            }
+        }
+    }
+
+    /// Launches (or relaunches) the external call-alerts plugin and reads its
+    /// ring alerts. The plugin is a separate process; Chaat speaks a small JSON
+    /// protocol to it over stdio and never shares tokens with it (docs/calling.md).
+    fn restart_call_alerts(&mut self, path: std::path::PathBuf) {
+        let (stop, stopped) = watch::channel(false);
+        let out = self.out.clone();
+        let task = tokio::spawn(call_alerts_loop(path, out, stopped));
+        if let Some((old_stop, old_task)) = self.call_alerts.replace((stop, task)) {
+            let _ = old_stop.send(true);
+            old_task.abort();
+        }
+    }
+
+    /// Stops the call-alerts plugin, if one is running, and waits briefly for it
+    /// to exit.
+    async fn stop_call_alerts(&mut self) {
+        if let Some((stop, task)) = self.call_alerts.take() {
+            let _ = stop.send(true);
+            if tokio::time::timeout(Duration::from_secs(3), task)
+                .await
+                .is_err()
+            {
+                log::info!("call-alerts: plugin did not stop in time; abandoning it");
             }
         }
     }
@@ -1659,6 +1698,132 @@ impl Worker {
                 Err(error) => log::info!("Microsoft Search unavailable: {error}"),
             }
         });
+    }
+}
+
+/// The handshake Chaat sends the plugin at startup.
+const CALL_ALERTS_HELLO: &str =
+    "{\"v\":1,\"type\":\"hello\",\"host\":\"chaat\",\"capabilities\":[\"call_alerts\"]}\n";
+/// The clean-exit request Chaat sends before stopping the plugin.
+const CALL_ALERTS_SHUTDOWN: &str = "{\"v\":1,\"type\":\"shutdown\"}\n";
+
+/// Runs the external call-alerts plugin, restarting it with backoff if it exits,
+/// until `stop` is set. The plugin is a separate process; we only read its JSON
+/// lines and never pass it any Chaat state or token.
+async fn call_alerts_loop(path: std::path::PathBuf, out: Outbox, mut stop: watch::Receiver<bool>) {
+    let mut backoff = Duration::from_secs(1);
+    while !*stop.borrow() {
+        match run_call_alerts_once(&path, &out, &mut stop).await {
+            Ok(()) => return, // asked to stop
+            Err(error) => {
+                out.send(Event::CallAlertsStatus {
+                    running: false,
+                    message: Some(format!("call-alerts plugin stopped: {error}")),
+                });
+                tokio::select! {
+                    _ = tokio::time::sleep(backoff) => {}
+                    _ = stop.changed() => {}
+                }
+                backoff = (backoff * 2).min(Duration::from_secs(30));
+            }
+        }
+    }
+}
+
+/// One run of the plugin process. Returns `Ok(())` when `stop` asked us to quit,
+/// or an error when the process exited or could not be read.
+async fn run_call_alerts_once(
+    path: &std::path::Path,
+    out: &Outbox,
+    stop: &mut watch::Receiver<bool>,
+) -> std::io::Result<()> {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+
+    let mut child = tokio::process::Command::new(path)
+        .arg("serve")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn()?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| std::io::Error::other("plugin stdin unavailable"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| std::io::Error::other("plugin stdout unavailable"))?;
+    let _ = stdin.write_all(CALL_ALERTS_HELLO.as_bytes()).await;
+    let _ = stdin.flush().await;
+
+    let mut lines = tokio::io::BufReader::new(stdout).lines();
+    loop {
+        tokio::select! {
+            _ = stop.changed() => {
+                if *stop.borrow() {
+                    let _ = stdin.write_all(CALL_ALERTS_SHUTDOWN.as_bytes()).await;
+                    let _ = stdin.flush().await;
+                    let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
+                    let _ = child.start_kill();
+                    return Ok(());
+                }
+            }
+            line = lines.next_line() => match line {
+                Ok(Some(line)) => decode_call_alert(line.trim(), out),
+                Ok(None) => return Err(std::io::Error::other("plugin closed its output")),
+                Err(error) => return Err(error),
+            },
+        }
+    }
+}
+
+/// Turns one JSON line from the plugin into a backend event. Unknown or
+/// unparseable lines are ignored, so a newer plugin cannot break an older Chaat.
+fn decode_call_alert(line: &str, out: &Outbox) {
+    if line.is_empty() {
+        return;
+    }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+        return;
+    };
+    match value["type"].as_str() {
+        Some("incoming_call") => {
+            let Some(id) = value["id"].as_str() else {
+                return;
+            };
+            out.send(Event::IncomingCall(crate::calling::RingAlert {
+                id: id.to_owned(),
+                caller: value["caller"]
+                    .as_str()
+                    .unwrap_or("Unknown caller")
+                    .to_owned(),
+                caller_mri: value["caller_mri"].as_str().unwrap_or_default().to_owned(),
+                video: value["video"].as_bool().unwrap_or(false),
+                group: value["group"].as_bool().unwrap_or(false),
+                thread_id: value["thread_id"].as_str().map(str::to_owned),
+            }));
+        }
+        Some("sign_in_required") => {
+            if let (Some(uri), Some(code)) = (
+                value["verification_uri"].as_str(),
+                value["user_code"].as_str(),
+            ) {
+                out.send(Event::CallAlertsSignIn {
+                    verification_uri: uri.to_owned(),
+                    user_code: code.to_owned(),
+                });
+            }
+        }
+        Some("ready") => out.send(Event::CallAlertsStatus {
+            running: true,
+            message: None,
+        }),
+        Some("error") => out.send(Event::CallAlertsStatus {
+            running: true,
+            message: value["message"].as_str().map(str::to_owned),
+        }),
+        _ => {}
     }
 }
 

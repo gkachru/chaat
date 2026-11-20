@@ -180,6 +180,12 @@ pub enum Command {
     UserName(String),
     Media(String),
     Search(String),
+    /// Launch (or relaunch) the external call-alerts plugin at this path and
+    /// listen for ring alerts. Sent to the service backend. An empty path or a
+    /// disabled setting is sent as `StopCallAlerts` instead.
+    StartCallAlerts(std::path::PathBuf),
+    /// Stop the call-alerts plugin, if one is running.
+    StopCallAlerts,
     Shutdown,
 }
 
@@ -323,6 +329,22 @@ pub enum Event {
     Reachable(bool),
     /// Something the person should hear about, in plain words.
     Error(String),
+    /// A call is ringing now, reported by the call-alerts plugin. Chaat shows a
+    /// ring toast. `caller_mri` is `8:orgid:<aad-object-id>`; `thread_id` is
+    /// usually absent for 1:1 calls, so the caller is resolved from the MRI.
+    IncomingCall(crate::calling::RingAlert),
+    /// The call-alerts plugin needs a one-time sign-in: show the person the URL
+    /// and code. The plugin stores the token and continues on its own.
+    CallAlertsSignIn {
+        verification_uri: String,
+        user_code: String,
+    },
+    /// The call-alerts plugin reported a problem (e.g. not signed in) or its
+    /// status changed. `running` says whether it is currently active.
+    CallAlertsStatus {
+        running: bool,
+        message: Option<String>,
+    },
 }
 
 /// Where the backend signs in and fetches from, and where it keeps secrets.
