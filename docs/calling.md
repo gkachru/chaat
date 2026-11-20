@@ -87,7 +87,7 @@ beyond `serve`. This section describes the call-alerts side of it.
 ### Turning it on
 
 Settings › Plugins › **Add plugin…** picks the executable and turns it on
-(Settings › Calls › Call alerts points there). Chaat runs it on its own
+(the Calls and meetings page has an **Open Plugins** button for it). Chaat runs it on its own
 background runtime, restarts it with backoff if it exits (one notice per run
 of failures), and stops it when it is turned off, removed, or Chaat quits. A
 plugin whose `ready` offers no capability Chaat knows is stopped with a
@@ -97,8 +97,11 @@ plugin in the list that is running and offers `call_alerts`.
 Settings shows the plugin's name and description as it gives them in
 `ready`, as plain shortened text (control and invisible formatting
 characters removed), with an **About this plugin** link only for an HTTPS
-address. Chaat's own line above them, that the plugin is a
-separate program that signs in on its own, always stays.
+address. Chaat's own line above the list always stays: plugins are separate
+programs you install, not part of Chaat, so check what one does before you
+use it. A plugin gets account IDs and sign-in names only after you approve
+that in Settings › Plugins, and its file must match the hash Chaat stored
+when you added it ([plugins.md](plugins.md#file-pinning)).
 
 When the plugin asks to sign in, Chaat shows a **Sign in for call alerts**
 card with the code, **Open sign-in page** and **Copy code**. Its wording is
@@ -106,13 +109,14 @@ Chaat's own: the only variable part is the sign-in name of the Chaat account
 it is for, never the plugin's text. The plugin's name shows on a line of its
 own, in quotes. Codes must be 4 to 32 letters, digits or dashes. Chaat can
 show one kind of sign-in: a code entered on
-an HTTPS page on Microsoft's sign-in hosts (`method: "device_code"`). Other
+one of four exact Microsoft device-login pages (`method: "device_code"`; the
+list is in [plugins.md](plugins.md#accounts-forget-and-sign-in)). Other
 methods and other pages are refused. Only an account's first code brings
 the window forward.
 
 ### When a call rings
 
-Chaat raises its window and shows a ring card at the top right: the caller,
+Chaat shows a ring card (and may raise its window, see below) at the top right: the caller,
 whether it is a video or group call, and two actions:
 
 | Action | What happens |
@@ -123,6 +127,17 @@ whether it is a video or group call, and two actions:
 The caller is matched by the Entra object ID the plugin sends
 (`caller_object_id`), which is the `userId` of chat members Chaat already
 has. Chaat makes no extra Graph request for it.
+
+The card shows the caller's name from Chaat's own chat data when the
+caller matches a chat member of that account. Otherwise it shows the name
+the plugin sent, with a "Name from the plugin" line under it, because Chaat
+cannot vouch for it. A thread from the ring is kept only if the matched
+caller is a member of it; otherwise **Open chat** falls back to the
+one-on-one chat with the caller, if any.
+
+A ring raises the window at most once per call, and at most once every 10
+seconds across all calls, so a plugin cannot keep taking focus. The card
+still shows.
 
 The card cannot answer the call. It closes when the plugin says the call
 stops ringing (`ring_timeout_secs`, kept between 10 seconds and 2 minutes;
@@ -141,9 +156,7 @@ since), **Waiting for sign-in** (with a **New code** button) or
 A ring says which account it came in on. When Chaat has several accounts,
 the card names it, and **Place call** and **Open chat** switch to that
 account first, so the call uses its browser profile and the chat is its
-own. A ring on an account the plugin has but Chaat does not still shows,
-named by its sign-in name; **Place call** opens Teams on the web and **Open
-chat** is unavailable.
+own. A ring that names an account Chaat does not have is dropped.
 
 Signing an account out of Chaat also clears the plugin's sign-in for it. With
 call alerts on, the plugin hears at once (`forget`). Either way Chaat keeps
@@ -179,7 +192,7 @@ identical in the plugin's repository; tests on both sides check against it.
 
 `call_ended` is reserved for when a plugin can report it. Chaat passes a
 plugin account IDs and sign-in names only when it declares the `accounts`
-need, never tokens, settings or messages. It discards the plugin's stderr.
+need and you have approved it, never tokens, settings or messages. It discards the plugin's stderr.
 The fields beyond call alerts (`needs`, `options`, `presence`) are in
 [plugins.md](plugins.md).
 

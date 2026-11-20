@@ -1,5 +1,5 @@
 //! The plugin protocol: newline-delimited JSON, each message with `"v": 1`
-//! and a `type` (docs/calling.md#protocol). The same messages live as test
+//! and a `type` (docs/plugins.md). The same messages live as test
 //! fixtures in `tests/fixtures/plugin-protocol/`, copied unchanged into the
 //! plugin's repository, so the two sides cannot drift apart unnoticed.
 //!

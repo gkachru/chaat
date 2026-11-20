@@ -21,12 +21,14 @@ Microsoft Graph. These rules are for coding agents and contributors. Follow
   repository, never in Chaat; the rule above still binds Chaat itself. Chaat
   never ships, downloads or updates a plugin, and never passes it tokens,
   settings or messages. Only when a plugin declares the need in `ready.needs`
-  may Chaat send it each account's ID (`oid.tid`) and sign-in name
+  and the person has approved it may Chaat send it each account's ID
+  (`oid.tid`) and sign-in name
   (`accounts`), and the busiest presence across accounts, availability and
   activity only, never the status message (`presence`). Beyond that, Chaat
   sends a plugin only the values of that plugin's own options, with secret
   ones read from the credential store by the backend worker, never from
-  settings files, and never logged. Chaat treats every plugin line as
+  settings files, and never logged. A plugin file that changed since the
+  person added it does not run until they say so. Chaat treats every plugin line as
   untrusted: unknown messages are ignored, and beyond showing it (and
   raising the window), nothing happens until the person clicks.
 - **Never poll Graph.** Microsoft's Teams API rules allow fetching when the

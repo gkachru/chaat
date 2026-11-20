@@ -15,10 +15,15 @@
   your settings or message content. Chaat sends it the ID and sign-in name of
   each of your accounts, or your busiest presence (availability and activity
   across accounts, never the status message), only when the plugin declares
-  that need, plus the values of the plugin's own options. Secret option
-  values are kept in the OS credential store, not in files, and are not
-  logged. What a plugin does with that data, and what network access it has,
-  is its own business: read its documentation before you turn it on.
+  that need and you approve it in Settings › Plugins, plus the values of the
+  plugin's own options. Secret option values are kept in the OS credential
+  store, not in files, and are not logged. A plugin file that changed since
+  you added it does not run until you allow it. These needs limit what Chaat
+  sends, not what the program can reach: a plugin runs as you and can read
+  what you can, including your files and, likely, the credential store that
+  holds Chaat's tokens. What a plugin does with its data, and what network
+  access it has, is its own business: read its documentation and add only
+  plugins you trust.
 - **Calls** run in Teams on the web, in your own Edge or Chrome (or the
   browser you choose). Chaat starts the browser with the meeting or call link
   and nothing else, and opens its own Microsoft sign-in page there so Teams
