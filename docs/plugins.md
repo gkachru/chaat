@@ -52,8 +52,10 @@ plugin's stdin and reads its stdout. Each message is one line, an object with
 - A line over 64 KiB is dropped (logged once per run), and so is a line with
   another version.
 - A message type Chaat does not know is ignored, and so are unknown fields,
-  so either side can be newer. In every message, a field of the wrong type
-  reads as absent rather than dropping the message.
+  so either side can be newer. A mistyped optional field reads as
+  absent. A mistyped required field (`incoming_call.id`,
+  `sign_in_required.verification_uri` or `user_code`, `listening.account`)
+  drops that one message.
 - Plugin lines are untrusted. Text is stripped of control and invisible
   characters, collapsed and shortened. Beyond showing it (and raising the
   window), nothing happens until you click.
@@ -68,8 +70,8 @@ plugin's stdin and reads its stdout. Each message is one line, an object with
   Job Object that kills its processes when Chaat ends the run; on Unix it
   runs in its own process group, which Chaat kills as a group. On Windows a
   short gap exists between the process starting and joining the job. The
-  Windows code is tested with fake plugins; the Unix process-group code is
-  compiled but has not been run.
+  code is tested with fake plugins on Windows and Linux, including that
+  stopping a plugin kills its children. It has not been compiled on macOS.
 - **A plugin must exit when its stdin closes.** Chaat sends `shutdown`, waits
   briefly, then ends the process; if Chaat ends without stopping it, a closed
   stdin is the plugin's signal to quit.
@@ -201,11 +203,6 @@ Plugin to Chaat:
   an account's first code brings the window forward. Cards are keyed by
   plugin and account.
 - `signed_in`: `account`, `username`.
-
-An `account` must be the ID of one of Chaat's own accounts. Chaat drops
-`sign_in_required`, `signed_in`, `listening`, `error` and `incoming_call`
-that name an account it does not have. Account text from a plugin is cleaned
-and shortened like other plugin text.
 - `listening`: `account`, `username`; sent each time an account's
   connection is up.
 - `incoming_call`: for `call_alerts` plugins. See
@@ -214,6 +211,11 @@ and shortened like other plugin text.
   (`Plugin “Name”: …`). With
   `account`, the notice names the account too and it no longer shows as
   listening.
+
+An `account` must be the ID of one of Chaat's own accounts. Chaat drops
+`sign_in_required`, `signed_in`, `listening`, `error` and `incoming_call`
+that name an account it does not have. Account text from a plugin is cleaned
+and shortened like other plugin text.
 
 ## Options
 
