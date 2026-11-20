@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use crate::backend::Event;
 use crate::plugin::host::HostEvent;
-use crate::plugin::protocol::{HostMessage, PluginAccount, PluginInfo, PluginMessage};
+use crate::plugin::protocol::{HostMessage, PluginAccount, PluginInfo, PluginMessage, plain_text};
 
 /// The capability a call-alerts plugin must offer in `ready`.
 pub const CAPABILITY: &str = "call_alerts";
@@ -52,12 +52,12 @@ fn message_event(message: PluginMessage) -> Option<Event> {
             name,
             description,
             docs_url,
+            forgotten,
             ..
-        } => Some(Event::CallAlertsReady(PluginInfo::from_ready(
-            name,
-            description,
-            docs_url,
-        ))),
+        } => Some(Event::CallAlertsReady {
+            info: PluginInfo::from_ready(name, description, docs_url),
+            forgotten,
+        }),
         PluginMessage::IncomingCall {
             id,
             caller,
@@ -71,14 +71,14 @@ fn message_event(message: PluginMessage) -> Option<Event> {
         } => Some(Event::IncomingCall(super::RingAlert {
             id,
             caller: caller
-                .filter(|name| !name.trim().is_empty())
+                .and_then(|name| plain_text(&name, 100))
                 .unwrap_or_else(|| "Unknown caller".to_owned()),
             caller_object_id: caller_object_id.filter(|id| !id.is_empty()),
             video,
             group,
             thread_id,
             account,
-            username,
+            username: username.and_then(|name| plain_text(&name, 100)),
             ring_timeout: Some(ring_timeout(ring_timeout_secs)),
         })),
         PluginMessage::SignInRequired {
@@ -98,12 +98,14 @@ fn message_event(message: PluginMessage) -> Option<Event> {
                     ),
                 });
             }
-            is_microsoft_sign_in_page(&verification_uri).then_some(Event::CallAlertsSignIn {
-                account,
-                username,
-                verification_uri,
-                user_code,
-            })
+            (is_microsoft_sign_in_page(&verification_uri) && is_user_code(&user_code)).then_some(
+                Event::CallAlertsSignIn {
+                    account,
+                    username,
+                    verification_uri,
+                    user_code,
+                },
+            )
         }
         PluginMessage::SignedIn { account, .. } => Some(Event::CallAlertsSignedIn { account }),
         PluginMessage::Listening { account, .. } => Some(Event::CallAlertsListening { account }),
@@ -117,6 +119,11 @@ fn message_event(message: PluginMessage) -> Option<Event> {
         }),
         PluginMessage::Other => None,
     }
+}
+
+/// Whether a sign-in code looks like one: short, letters, digits and dashes.
+pub fn is_user_code(code: &str) -> bool {
+    (4..=32).contains(&code.len()) && code.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
 /// Whether a sign-in page the plugin names is an HTTPS page on Microsoft's
@@ -143,6 +150,17 @@ mod tests {
 
     fn event_for(line: &str) -> Option<Event> {
         event(HostEvent::Message(PluginMessage::parse(line)?))
+    }
+
+    #[test]
+    fn only_plain_short_codes_are_shown() {
+        assert!(is_user_code("ABCD1234"));
+        assert!(is_user_code("AB-12"));
+        assert!(!is_user_code("sign in as admin@contoso.com"));
+        assert!(!is_user_code(""));
+        assert!(!is_user_code(&"A".repeat(40)));
+        let line = r#"{"v":1,"type":"sign_in_required","verification_uri":"https://microsoft.com/devicelogin","user_code":"Call IT now"}"#;
+        assert!(event_for(line).is_none());
     }
 
     #[test]
@@ -235,7 +253,7 @@ mod tests {
         ));
         assert!(matches!(
             event_for(r#"{"v":1,"type":"ready","capabilities":["call_alerts"],"name":"N"}"#),
-            Some(Event::CallAlertsReady(info)) if info.name.as_deref() == Some("N")
+            Some(Event::CallAlertsReady { info, .. }) if info.name.as_deref() == Some("N")
         ));
         assert!(event_for(r#"{"v":1,"type":"something_newer"}"#).is_none());
         assert!(event_for(r#"{"v":2,"type":"signed_in"}"#).is_none());

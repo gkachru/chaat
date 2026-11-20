@@ -518,12 +518,23 @@ fn sign_in_card(
     ui.add_space(4.0);
     ui.add(
         egui::Label::new(
-            egui::RichText::new(sign_in_text(plugin, sign_in.username.as_deref()))
+            egui::RichText::new(sign_in_text(sign_in.username.as_deref()))
                 .size(12.0)
                 .color(palette.secondary),
         )
         .wrap(),
     );
+    // The plugin's own name, quoted and apart from Chaat's words.
+    if let Some(plugin) = plugin {
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(format!("Plugin: \u{201C}{plugin}\u{201D}"))
+                    .size(11.0)
+                    .color(palette.dim),
+            )
+            .truncate(),
+        );
+    }
     ui.add_space(6.0);
     ui.label(
         egui::RichText::new(&sign_in.user_code)
@@ -683,15 +694,12 @@ pub fn install(ctx: &egui::Context, reproducible: bool) {
     ctx.options_mut(|options| options.zoom_with_keyboard = false);
 }
 
-/// What the sign-in card says: who signs in (the plugin, by its own name when
-/// it gave one) and as whom. Chaat's own words, not the plugin's.
-fn sign_in_text(plugin: Option<&str>, username: Option<&str>) -> String {
-    let who = plugin.unwrap_or("The call-alerts plugin");
+/// What the sign-in card says. Fixed wording: the only variable part is the
+/// sign-in name of Chaat's own account, never text from the plugin.
+fn sign_in_text(username: Option<&str>) -> String {
+    let intro = "The call-alerts plugin signs in separately from Chaat.";
     match username.filter(|name| !name.is_empty()) {
-        Some(name) => format!(
-            "{who} signs in separately from Chaat. Open the page, enter this code, \
-             and sign in as {name}:"
-        ),
-        None => format!("{who} signs in separately from Chaat. Open the page and enter this code:"),
+        Some(name) => format!("{intro} Open the page, enter this code, and sign in as {name}:"),
+        None => format!("{intro} Open the page and enter this code:"),
     }
 }

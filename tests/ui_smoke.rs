@@ -3348,13 +3348,14 @@ fn the_plugins_own_description_shows_in_settings_and_names_the_sign_in() {
         h.act(Action::SetCallSettings(calls));
         let ctx = h.ctx.clone();
         h.app.handle(
-            chaat::backend::Event::CallAlertsReady(
-                chaat::plugin::protocol::PluginInfo::from_ready(
+            chaat::backend::Event::CallAlertsReady {
+                info: chaat::plugin::protocol::PluginInfo::from_ready(
                     Some("Ring alerts".into()),
                     Some("Tells Chaat who is calling you in Teams.".into()),
                     Some("https://github.com/gkachru/call-alerts".into()),
                 ),
-            ),
+                forgotten: Vec::new(),
+            },
             &ctx,
         );
         h.act(Action::ShowSettingsPage(SettingsPage::Calls));
@@ -3375,19 +3376,28 @@ fn the_plugins_own_description_shows_in_settings_and_names_the_sign_in() {
         h.act(Action::CloseSettings);
         h.app.handle(
             chaat::backend::Event::CallAlertsSignIn {
-                account: None,
-                username: Some("ada@contoso.com".into()),
+                account: Some("u-alex2.fabrikam".into()),
+                // The plugin's claim is ignored: Chaat names its own account.
+                username: Some("someone-else@evil.example".into()),
                 verification_uri: "https://microsoft.com/devicelogin".into(),
                 user_code: "AB12CD34".into(),
             },
             &ctx,
         );
         h.frames(2);
+        let painted = painted_texts(&h);
         assert!(
-            painted_texts(&h).iter().any(|t| t
-                .starts_with("Ring alerts signs in separately from Chaat.")
-                && t.contains("ada@contoso.com")),
-            "the sign-in card names the plugin and the account at {width}"
+            painted.iter().any(|t| t
+                .starts_with("The call-alerts plugin signs in separately from Chaat.")
+                && t.ends_with("sign in as alex@fabrikam.com:")),
+            "the sign-in card names Chaat's own account at {width}"
+        );
+        assert!(!painted.iter().any(|t| t.contains("evil.example")));
+        assert!(
+            painted
+                .iter()
+                .any(|t| t == "Plugin: \u{201C}Ring alerts\u{201D}"),
+            "the plugin's name shows apart, quoted, at {width}"
         );
     }
 }

@@ -93,13 +93,17 @@ removed, or Chaat quits. A plugin whose `ready` doesn't offer
 `call_alerts` is stopped with a notice and not restarted.
 
 Settings shows the plugin's name and description as it gives them in
-`ready`, as plain shortened text, with an **About this plugin** link only
-for an HTTPS address. Chaat's own line above them, that the plugin is a
+`ready`, as plain shortened text (control and invisible formatting
+characters removed), with an **About this plugin** link only for an HTTPS
+address. Chaat's own line above them, that the plugin is a
 separate program that signs in on its own, always stays.
 
 When the plugin asks to sign in, Chaat shows a **Sign in for call alerts**
-card with the code, **Open sign-in page** and **Copy code**, naming the
-account to sign in as. Chaat can show one kind of sign-in: a code entered on
+card with the code, **Open sign-in page** and **Copy code**. Its wording is
+Chaat's own: the only variable part is the sign-in name of the Chaat account
+it is for, never the plugin's text. The plugin's name shows on a line of its
+own, in quotes. Codes must be 4 to 32 letters, digits or dashes. Chaat can
+show one kind of sign-in: a code entered on
 an HTTPS page on Microsoft's sign-in hosts (`method: "device_code"`). Other
 methods and other pages are refused. Only an account's first code brings
 the window forward.
@@ -139,17 +143,20 @@ own. A ring on an account the plugin has but Chaat does not still shows,
 named by its sign-in name; **Place call** opens Teams on the web and **Open
 chat** is unavailable.
 
-Signing an account out of Chaat also clears the plugin's sign-in for it. A
-running plugin hears at once (`forget`); otherwise Chaat keeps the account in
-its settings and lists it in `hello.forget` at the plugin's next start,
-until the plugin answers `ready`. An account only removed from the list
+Signing an account out of Chaat also clears the plugin's sign-in for it. With
+call alerts on, the plugin hears at once (`forget`). Either way Chaat keeps
+the account queued in its settings and lists it in `hello.forget` at every
+start, until the plugin's `ready.forgotten` confirms the sign-in is gone, or
+the account is signed in to Chaat again. A quit, crash or failed
+credential store in between can't lose it. An account only removed from the list
 stops listening but keeps its plugin sign-in.
 
 ### Protocol
 
 Newline-delimited JSON over the plugin's stdin and stdout, each message with
 `"v": 1` and a `type`. Chaat drops lines with another version, lines over
-64 KB, and types it does not know, so either side can be newer. Every
+64 KB, and types it does not know, so either side can be newer. A ring
+field of the wrong type is read as absent rather than dropping the ring. Every
 message below has an example in `tests/fixtures/plugin-protocol/`, kept
 identical in the plugin's repository; tests on both sides check against it.
 
@@ -160,7 +167,7 @@ identical in the plugin's repository; tests on both sides check against it.
 | Chaat → plugin | `forget` | `account`: clear the plugin's sign-in for it (sign-out) |
 | Chaat → plugin | `sign_in` | `account`: offer a fresh code now, if it is waiting for one |
 | Chaat → plugin | `shutdown` | |
-| plugin → Chaat | `ready` | `capabilities` (must include `call_alerts`); `name`, `description`, `docs_url` (optional, shown in Settings) |
+| plugin → Chaat | `ready` | `capabilities` (must include `call_alerts`); `name`, `description`, `docs_url` (optional, shown in Settings); `forgotten`: the `hello.forget` accounts whose sign-ins are now gone. Sent only after clearing them |
 | plugin → Chaat | `sign_in_required` | `method` (`device_code`; absent means the same), `verification_uri`, `user_code`, `account` and `username` (optional) |
 | plugin → Chaat | `signed_in` | `account`, `username` |
 | plugin → Chaat | `listening` | `account`, `username`; sent each time an account's connection comes up |

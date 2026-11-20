@@ -194,6 +194,8 @@ pub enum Command {
     /// The person signed this account (`oid.tid`) out of Chaat: the plugin
     /// forgets its own sign-in for it too.
     CallAlertsForget(String),
+    /// These queued sign-outs reached the plugin: stop resending them.
+    CallAlertsForgetDone(Vec<String>),
     /// Asks the plugin for a fresh sign-in code for this account now.
     CallAlertsSignIn(String),
     /// Stop the call-alerts plugin, if one is running.
@@ -345,7 +347,11 @@ pub enum Event {
     /// ring toast, resolving the caller by their Entra object id.
     IncomingCall(crate::calling::RingAlert),
     /// The call-alerts plugin is ready, and how it describes itself.
-    CallAlertsReady(crate::plugin::protocol::PluginInfo),
+    CallAlertsReady {
+        info: crate::plugin::protocol::PluginInfo,
+        /// Queued sign-out accounts whose plugin sign-ins are now gone.
+        forgotten: Vec<String>,
+    },
     /// The call-alerts plugin needs a one-time sign-in: show the person the URL
     /// and code. The plugin stores the token and continues on its own.
     /// `account` is the Chaat account (`oid.tid`) it is for, when the plugin says.

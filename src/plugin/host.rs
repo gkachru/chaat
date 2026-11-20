@@ -73,11 +73,15 @@ impl Plugin {
     /// Asks the plugin to shut down and waits a little for it.
     pub async fn stop(self) {
         let _ = self.stop.send(true);
+        let abort = self.task.abort_handle();
         if tokio::time::timeout(Duration::from_secs(3), self.task)
             .await
             .is_err()
         {
-            log::info!("plugin: did not stop in time; abandoning it");
+            // Stuck (say, a plugin that stopped reading its input): end the
+            // task, which kills the process with it.
+            log::info!("plugin: did not stop in time; killing it");
+            abort.abort();
         }
     }
 
@@ -124,7 +128,10 @@ async fn run(
                 failing = true;
                 tokio::select! {
                     _ = tokio::time::sleep(backoff) => {}
-                    _ = stop.changed() => {}
+                    // An error means the `Plugin` handle is gone: stop too.
+                    changed = stop.changed() => if changed.is_err() {
+                        return;
+                    },
                 }
                 backoff = (backoff * 2).min(Duration::from_secs(30));
             }
@@ -174,18 +181,24 @@ async fn run_once(
     let mut lines = LineReader::new(tokio::io::BufReader::new(stdout));
     loop {
         tokio::select! {
-            _ = stop.changed() => {
-                if *stop.borrow() {
+            // Messages first: a `forget` sent just before a stop still goes out.
+            biased;
+            Some(message) = outgoing.recv() => {
+                let _ = stdin.write_all(message.to_line().as_bytes()).await;
+                let _ = stdin.flush().await;
+            }
+            // An error means the `Plugin` handle is gone: stop too.
+            changed = stop.changed() => {
+                if changed.is_err() || *stop.borrow() {
+                    while let Ok(message) = outgoing.try_recv() {
+                        let _ = stdin.write_all(message.to_line().as_bytes()).await;
+                    }
                     let _ = stdin.write_all(HostMessage::Shutdown.to_line().as_bytes()).await;
                     let _ = stdin.flush().await;
                     let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
                     let _ = child.start_kill();
                     return Ok(Exit::Stopped);
                 }
-            }
-            Some(message) = outgoing.recv() => {
-                let _ = stdin.write_all(message.to_line().as_bytes()).await;
-                let _ = stdin.flush().await;
             }
             line = lines.next() => match line? {
                 None => return Err(std::io::Error::other("plugin closed its output")),

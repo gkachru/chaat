@@ -617,8 +617,6 @@ pub struct App {
     pub call_alerts_listening: Vec<String>,
     /// The accounts the plugin was last told about.
     call_alerts_sent: Vec<crate::calling::PluginAccount>,
-    /// The pending forgets in the last `hello`, cleared once the plugin is ready.
-    call_alerts_forget_sent: Vec<String>,
     /// How the running call-alerts plugin describes itself.
     pub call_alerts_info: crate::plugin::protocol::PluginInfo,
     next_toast: u64,
@@ -762,7 +760,6 @@ impl App {
             call_alerts_asked: Vec::new(),
             call_alerts_listening: Vec::new(),
             call_alerts_sent: Vec::new(),
-            call_alerts_forget_sent: Vec::new(),
             call_alerts_info: Default::default(),
             next_toast: 0,
             actions: Vec::new(),
@@ -834,10 +831,6 @@ impl App {
             },
             _ => Command::StopCallAlerts,
         };
-        self.call_alerts_forget_sent = match &command {
-            Command::StartCallAlerts { forget, .. } => forget.clone(),
-            _ => Vec::new(),
-        };
         self.call_alerts_sent = accounts;
         self.service.send(command);
     }
@@ -869,6 +862,19 @@ impl App {
 
     /// Tells a running plugin about changes to Chaat's accounts.
     fn sync_call_alerts_accounts(&mut self) {
+        let back: Vec<String> = self
+            .settings
+            .calls
+            .call_alerts_forget
+            .iter()
+            .filter(|id| {
+                self.accounts
+                    .iter()
+                    .any(|a| a.id.as_deref() == Some(id.as_str()))
+            })
+            .cloned()
+            .collect();
+        self.call_alerts_forget_done(back);
         if self.demo || !self.call_alerts_enabled() {
             return;
         }
@@ -882,6 +888,20 @@ impl App {
         if accounts != self.call_alerts_sent {
             self.call_alerts_sent = accounts.clone();
             self.service.send(Command::CallAlertsAccounts(accounts));
+        }
+    }
+
+    /// Takes accounts off the sign-out queue (forgotten by the plugin, or signed
+    /// in to Chaat again) and stops resending them.
+    fn call_alerts_forget_done(&mut self, done: Vec<String>) {
+        let queue = &mut self.settings.calls.call_alerts_forget;
+        let before = queue.len();
+        queue.retain(|id| !done.contains(id));
+        if queue.len() != before {
+            self.mark_settings_dirty();
+        }
+        if !done.is_empty() && !self.demo {
+            self.service.send(Command::CallAlertsForgetDone(done));
         }
     }
 
@@ -1568,10 +1588,9 @@ impl App {
                     self.call_alerts_asked.push(account.clone());
                     self.wants_show = true;
                 }
+                let _ = username; // the plugin's word for it; Chaat names its own
                 let sign_in = crate::model::PluginSignIn {
-                    username: username
-                        .filter(|name| !name.is_empty())
-                        .or_else(|| self.call_alerts_username(account.as_deref())),
+                    username: self.call_alerts_username(account.as_deref()),
                     account,
                     verification_uri,
                     user_code,
@@ -1604,21 +1623,11 @@ impl App {
                 };
                 self.toast(ToastKind::Error, text);
             }
-            Event::CallAlertsReady(info) => {
+            Event::CallAlertsReady { info, forgotten } => {
                 self.call_alerts_running = true;
                 self.call_alerts_info = info;
-                // The forgets in its hello reached the plugin.
-                let sent = std::mem::take(&mut self.call_alerts_forget_sent);
-                if !sent.is_empty() {
-                    self.settings
-                        .calls
-                        .call_alerts_forget
-                        .retain(|id| !sent.contains(id));
-                    self.mark_settings_dirty();
-                    // Restarts say hello without them from now on.
-                    self.service
-                        .send(Command::CallAlertsAccounts(self.call_alerts_accounts()));
-                }
+                // Only what the plugin says it cleared leaves the queue.
+                self.call_alerts_forget_done(forgotten);
             }
             Event::CallAlertsListening { account } => {
                 if !self.call_alerts_listening.contains(&account) {
@@ -3073,8 +3082,8 @@ impl App {
             return;
         }
         // Signing out of Chaat also ends call alerts for that account: a
-        // running plugin hears now; otherwise it is told at its next start, so
-        // it keeps no sign-in for the account either way.
+        // running plugin hears now, and every start hears again until one
+        // confirms, so it keeps no sign-in for the account either way.
         if let Some(id) = self.id.clone()
             && self
                 .settings
@@ -3083,11 +3092,14 @@ impl App {
                 .as_ref()
                 .is_some_and(|path| !path.as_os_str().is_empty())
         {
-            if self.call_alerts_running {
-                self.service.send(Command::CallAlertsForget(id));
-            } else if !self.settings.calls.call_alerts_forget.contains(&id) {
-                self.settings.calls.call_alerts_forget.push(id);
+            // Queued until a plugin confirms it (`ready.forgotten`), so a quit
+            // or restart in between can't lose it.
+            if !self.settings.calls.call_alerts_forget.contains(&id) {
+                self.settings.calls.call_alerts_forget.push(id.clone());
                 self.mark_settings_dirty();
+            }
+            if self.call_alerts_enabled() {
+                self.service.send(Command::CallAlertsForget(id));
             }
         }
         self.sign_out_browser();
@@ -3797,7 +3809,13 @@ mod tests {
             Ok(Command::StartCallAlerts { forget, .. }) if forget == vec!["u-me.t1".to_owned()]
         ));
         // Once the plugin is ready, the queue is done.
-        app.handle(Event::CallAlertsReady(Default::default()), &ctx);
+        app.handle(
+            Event::CallAlertsReady {
+                info: Default::default(),
+                forgotten: vec!["u-me.t1".into()],
+            },
+            &ctx,
+        );
         assert!(app.settings.calls.call_alerts_forget.is_empty());
         assert!(app.call_alerts_running);
     }
@@ -3831,6 +3849,49 @@ mod tests {
         app.on_incoming_call(ring("default", "8:orgid:u-ada"));
         assert_eq!(app.rings[0].shown_for, std::time::Duration::from_secs(15));
         assert_eq!(app.rings[1].shown_for, crate::calling::alerts::DEFAULT_RING);
+    }
+
+    #[test]
+    fn a_sign_out_stays_queued_until_the_plugin_confirms_or_the_account_returns() {
+        let (mut app, _) = app();
+        let (service, mut service_commands) = Backend::recording();
+        app.service = service;
+        app.id = Some("u-me.t1".into());
+        app.settings.calls.call_alerts_plugin = Some(PathBuf::from("plugin.exe"));
+        app.settings.calls.call_alerts = true;
+        app.call_alerts_running = true;
+        let ctx = egui::Context::default();
+        app.apply(Action::SignOut, &ctx);
+        let sent: Vec<Command> = std::iter::from_fn(|| service_commands.try_recv().ok()).collect();
+        // Told at once, and still queued in case it never arrives.
+        assert!(
+            sent.iter()
+                .any(|c| matches!(c, Command::CallAlertsForget(id) if id == "u-me.t1"))
+        );
+        assert_eq!(
+            app.settings.calls.call_alerts_forget,
+            vec!["u-me.t1".to_owned()]
+        );
+        // A ready that didn't clear it keeps it queued.
+        app.handle(
+            Event::CallAlertsReady {
+                info: Default::default(),
+                forgotten: Vec::new(),
+            },
+            &ctx,
+        );
+        assert_eq!(
+            app.settings.calls.call_alerts_forget,
+            vec!["u-me.t1".to_owned()]
+        );
+        // Signing that account in again takes it off the queue.
+        app.id = Some("u-me.t1".into());
+        app.remember_accounts();
+        assert!(app.settings.calls.call_alerts_forget.is_empty());
+        let sent: Vec<Command> = std::iter::from_fn(|| service_commands.try_recv().ok()).collect();
+        assert!(sent.iter().any(
+            |c| matches!(c, Command::CallAlertsForgetDone(done) if done == &vec!["u-me.t1".to_owned()])
+        ));
     }
     #[test]
     fn dismissing_a_ring_removes_only_that_one() {

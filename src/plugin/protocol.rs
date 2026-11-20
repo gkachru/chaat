@@ -79,6 +79,9 @@ pub enum PluginMessage {
         description: Option<String>,
         #[serde(default)]
         docs_url: Option<String>,
+        /// The `hello.forget` accounts whose sign-ins the plugin cleared.
+        #[serde(default)]
+        forgotten: Vec<String>,
     },
     SignInRequired {
         /// How to sign in. Absent means `device_code` (older plugins).
@@ -104,23 +107,23 @@ pub enum PluginMessage {
     },
     IncomingCall {
         id: String,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "lenient_text")]
         caller: Option<String>,
         /// The caller's Entra object id.
-        #[serde(default)]
+        #[serde(default, deserialize_with = "lenient_text")]
         caller_object_id: Option<String>,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "lenient_bool")]
         video: bool,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "lenient_bool")]
         group: bool,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "lenient_text")]
         thread_id: Option<String>,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "lenient_text")]
         account: Option<String>,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "lenient_text")]
         username: Option<String>,
         /// How long the call rings, so the card can close with it.
-        #[serde(default)]
+        #[serde(default, deserialize_with = "lenient_seconds")]
         ring_timeout_secs: Option<u64>,
     },
     Error {
@@ -169,6 +172,52 @@ impl PluginInfo {
     }
 }
 
+/// Invisible formatting characters (direction overrides, zero-width marks)
+/// that could make a plugin's text read differently from what it says.
+fn is_invisible(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00AD}'
+            | '\u{061C}'
+            | '\u{180E}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{206F}'
+            | '\u{FEFF}'
+            | '\u{FFF9}'..='\u{FFFB}'
+    )
+}
+
+/// A string field, or `None` for anything else.
+fn lenient_text<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(match serde_json::Value::deserialize(d)? {
+        serde_json::Value::String(text) => Some(text),
+        _ => None,
+    })
+}
+
+/// `true` only for a JSON `true`.
+fn lenient_bool<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    Ok(serde_json::Value::deserialize(d)? == serde_json::Value::Bool(true))
+}
+
+/// Whole seconds from any non-negative number; `None` for anything else.
+fn lenient_seconds<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
+    Ok(match serde_json::Value::deserialize(d)? {
+        serde_json::Value::Number(n) => n.as_u64().or_else(|| {
+            n.as_f64()
+                .filter(|s| s.is_finite() && *s >= 0.0)
+                .map(|s| s.round().min(u64::MAX as f64) as u64)
+        }),
+        _ => None,
+    })
+}
+
+/// Plugin text made safe to show: `plain`, then trusted no further.
+pub fn plain_text(text: &str, max: usize) -> Option<String> {
+    plain(text, max)
+}
+
 /// `text` without control characters, collapsed to single spaces, cut to
 /// `max` characters (with an ellipsis); `None` when nothing is left.
 fn plain(text: &str, max: usize) -> Option<String> {
@@ -176,7 +225,12 @@ fn plain(text: &str, max: usize) -> Option<String> {
         .split(|c: char| c.is_whitespace() || c.is_control())
         .filter(|word| !word.is_empty())
         .collect();
-    let text = words.join(" ");
+    let text: String = words
+        .join(" ")
+        .chars()
+        .filter(|c| !is_invisible(*c))
+        .collect();
+    let text = text.trim().to_owned();
     if text.is_empty() {
         return None;
     }
@@ -277,6 +331,7 @@ mod tests {
                 name: Some("Ring alerts".into()),
                 description: Some("Tells Chaat who is calling you in Teams.".into()),
                 docs_url: Some("https://github.com/gkachru/call-alerts".into()),
+                forgotten: vec!["o9.t9".into()],
             })
         );
         assert_eq!(
@@ -335,6 +390,34 @@ mod tests {
             PluginMessage::parse(r#"{"v":1,"type":"presence","who":"x"}"#),
             Some(PluginMessage::Other)
         );
+    }
+
+    #[test]
+    fn a_mistyped_ring_field_does_not_drop_the_ring() {
+        let ring = PluginMessage::parse(
+            r#"{"v":1,"type":"incoming_call","id":"c","video":null,"group":"yes","ring_timeout_secs":40.4,"caller":7}"#,
+        );
+        assert!(matches!(
+            ring,
+            Some(PluginMessage::IncomingCall {
+                video: false,
+                group: false,
+                ring_timeout_secs: Some(40),
+                caller: None,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn invisible_formatting_is_stripped_from_plugin_text() {
+        let info = PluginInfo::from_ready(
+            Some("Safe\u{202E}gnp.exe\u{200B}".into()),
+            Some("\u{200B}\u{FEFF}".into()),
+            None,
+        );
+        assert_eq!(info.name.as_deref(), Some("Safegnp.exe"));
+        assert_eq!(info.description, None);
     }
 
     #[test]

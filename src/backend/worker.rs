@@ -427,18 +427,12 @@ impl Worker {
             } => self.restart_call_alerts(path, accounts, forget),
             Command::CallAlertsAccounts(accounts) => {
                 if let Some(plugin) = &self.call_alerts {
-                    // A later restart says hello with these accounts; pending
-                    // forgets were delivered once the plugin was ready.
+                    // A later restart says hello with these accounts.
                     let update = accounts.clone();
                     plugin.set_hello(move |hello| {
-                        if let crate::plugin::protocol::HostMessage::Hello {
-                            accounts,
-                            forget,
-                            ..
-                        } = hello
+                        if let crate::plugin::protocol::HostMessage::Hello { accounts, .. } = hello
                         {
                             *accounts = update;
-                            forget.clear();
                         }
                     });
                     plugin.send(crate::plugin::protocol::HostMessage::Accounts { accounts });
@@ -446,7 +440,25 @@ impl Worker {
             }
             Command::CallAlertsForget(account) => {
                 if let Some(plugin) = &self.call_alerts {
+                    // Now, and in every hello until the plugin confirms it.
+                    let queued = account.clone();
+                    plugin.set_hello(move |hello| {
+                        if let crate::plugin::protocol::HostMessage::Hello { forget, .. } = hello
+                            && !forget.contains(&queued)
+                        {
+                            forget.push(queued);
+                        }
+                    });
                     plugin.send(crate::plugin::protocol::HostMessage::Forget { account });
+                }
+            }
+            Command::CallAlertsForgetDone(done) => {
+                if let Some(plugin) = &self.call_alerts {
+                    plugin.set_hello(move |hello| {
+                        if let crate::plugin::protocol::HostMessage::Hello { forget, .. } = hello {
+                            forget.retain(|id| !done.contains(id));
+                        }
+                    });
                 }
             }
             Command::CallAlertsSignIn(account) => {
