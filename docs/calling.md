@@ -69,31 +69,40 @@ a shell. Join links and browser command lines are not logged.
 ## Call-alerts plugin
 
 Microsoft Graph has no delegated way to learn that a call is ringing: change
-notifications arrive only after the call, and Graph calling is for bots.
-Teams rings its own clients through a push service
-that only accepts Teams' first-party sign-in. Chaat itself never uses either
-(see [AGENTS.md](../AGENTS.md)). The separate, opt-in `call-alerts`
-plugin does, so people who accept that trade-off can see who is calling.
+notifications arrive only after the call, and Graph calling is for bots. A
+call-alerts plugin can supply that signal. It is a separate program the
+person installs and turns on; Chaat does not ship, download or update one.
+How a plugin detects calls, how it signs in and what that means for your
+organization's policy are the plugin's own business and documented with it.
+For `call-alerts`, which uses Teams' own push service and sign-in
+outside Microsoft's documented APIs, see its
+[README](https://github.com/gkachru/call-alerts#readme).
 
-Using it means signing in with Teams' own client ID and an undocumented
-service, outside Microsoft's documented APIs and possibly against your
-organization's policy. It is the person's choice; Chaat does not ship,
-download or update it.
+What Chaat knows about a plugin is the protocol below: it starts the program
+as `<plugin> serve` and exchanges JSON lines with it. Identities are Entra
+object and tenant IDs and sign-in names. Chaat's code holds no Teams formats
+and no assumptions about a plugin's command line beyond `serve`.
 
 ### Turning it on
 
 Settings › Calls › Call alerts: **Choose plugin…** picks the executable and
-turns **Show incoming calls** on. Chaat starts it as `<plugin> serve` on its
-own background runtime, restarts it with backoff if it exits, and stops it
-when the switch is turned off, the plugin is removed, or Chaat quits.
+turns **Show incoming calls** on. Chaat runs it on its own background
+runtime, restarts it with backoff if it exits (one notice per run of
+failures), and stops it when the switch is turned off, the plugin is
+removed, or Chaat quits. A plugin whose `ready` doesn't offer
+`call_alerts` is stopped with a notice and not restarted.
 
-On first use (or when its stored sign-in expires) the plugin asks to sign in.
-Chaat shows a **Sign in for call alerts** panel with the code, **Open
-sign-in page** and **Copy code**. The plugin keeps its refresh token in the
-system's credential store and tells Chaat when sign-in finished. Chaat
-shows the panel only for HTTPS pages on Microsoft's sign-in hosts, and
-brings its window forward for the first code only. If the plugin stops,
-Chaat restarts it with backoff and shows one notice per run of failures.
+Settings shows the plugin's name and description as it gives them in
+`ready`, as plain shortened text, with an **About this plugin** link only
+for an HTTPS address. Chaat's own line above them, that the plugin is a
+separate program that signs in on its own, always stays.
+
+When the plugin asks to sign in, Chaat shows a **Sign in for call alerts**
+card with the code, **Open sign-in page** and **Copy code**, naming the
+account to sign in as. Chaat can show one kind of sign-in: a code entered on
+an HTTPS page on Microsoft's sign-in hosts (`method: "device_code"`). Other
+methods and other pages are refused. Only an account's first code brings
+the window forward.
 
 ### When a call rings
 
@@ -105,56 +114,57 @@ whether it is a video or group call, and two actions:
 | **Place call** | Calls the caller back in Teams, the same way as **Call** in a chat, using the address Chaat knows from chat members. If Chaat does not know it, opens Teams on the web instead |
 | **Open chat** | Opens the call's chat in Chaat: the group's thread when the ring carried one, otherwise the one-on-one chat with the caller, or starts that chat if Chaat knows the caller but has none yet. Unavailable for a caller Chaat has never seen |
 
-The caller is matched by the Entra object ID in the ring (`8:orgid:<id>`),
-which is the `userId` of chat members Chaat already has. Chaat makes no
-extra Graph request for it.
+The caller is matched by the Entra object ID the plugin sends
+(`caller_object_id`), which is the `userId` of chat members Chaat already
+has. Chaat makes no extra Graph request for it.
 
-The card cannot answer the call. Answering needs a Teams client that was
-registered before the call started ringing; Teams on the web opened during
-the ring does not receive it (tested). The plugin also cannot see when a
-call ends, so the card closes after 40 seconds, on either action, or on
-dismiss. A repeat of the same call replaces its card; at most three show.
+The card cannot answer the call. It closes when the plugin says the call
+stops ringing (`ring_timeout_secs`, kept between 10 seconds and 2 minutes;
+40 seconds when not given), on either action, or on dismiss. A repeat of
+the same call replaces its card; at most three show.
 
 ### Several accounts
 
 Chaat tells the plugin the ID (`oid.tid`) and sign-in name of each of its
-accounts, never a token. The plugin listens for each one on its own
-connection, in one process, and asks to sign in to each separately: the
-panel names the account to sign in as, and a sign-in to a different account
-is turned down with a new code. Settings lists every account as **Listening
-for calls** (its connection came up, and the plugin has reported no problem
-with it since), **Waiting for sign-in** (with **New code**) or
-**Connecting…**. Errors reach Chaat once per run of failures, naming the
-account.
+accounts, never a token, and the plugin signs in to each separately.
+Settings lists every account as **Listening for calls** (its connection came
+up, and the plugin has reported no problem with it since), **Waiting for
+sign-in** (with **New code**) or **Connecting…**. Errors about an account
+name it.
 
 A ring says which account it came in on. When Chaat has several accounts,
 the card names it, and **Place call** and **Open chat** switch to that
 account first, so the call uses its browser profile and the chat is its
 own. A ring on an account the plugin has but Chaat does not still shows,
 named by its sign-in name; **Place call** opens Teams on the web and **Open
-chat** is unavailable. Signing an account out of Chaat also clears the
-plugin's sign-in for it, even with call alerts off (Chaat then runs
-`<plugin> logout <account>` once); an account only removed from the list stops
-listening but keeps its plugin sign-in.
+chat** is unavailable.
+
+Signing an account out of Chaat also clears the plugin's sign-in for it. A
+running plugin hears at once (`forget`); otherwise Chaat keeps the account in
+its settings and lists it in `hello.forget` at the plugin's next start,
+until the plugin answers `ready`. An account only removed from the list
+stops listening but keeps its plugin sign-in.
 
 ### Protocol
 
 Newline-delimited JSON over the plugin's stdin and stdout, each message with
-`"v": 1` and a `type`. Chaat ignores lines it does not understand, so either
-side can be newer.
+`"v": 1` and a `type`. Chaat drops lines with another version, lines over
+64 KB, and types it does not know, so either side can be newer. Every
+message below has an example in `tests/fixtures/plugin-protocol/`, kept
+identical in the plugin's repository; tests on both sides check against it.
 
 | Direction | `type` | Fields |
 |---|---|---|
-| Chaat → plugin | `hello` | `host: "chaat"`, `capabilities: ["call_alerts"]`, `accounts: [{id, username}]` (without `accounts`, the plugin serves every account it has stored) |
+| Chaat → plugin | `hello` | `host: "chaat"`, `capabilities: ["call_alerts"]`, `accounts: [{id, username}]`, `forget` (optional: accounts signed out while the plugin was off) |
 | Chaat → plugin | `accounts` | `accounts`: the new list. Removed accounts stop listening and keep their sign-in |
 | Chaat → plugin | `forget` | `account`: clear the plugin's sign-in for it (sign-out) |
 | Chaat → plugin | `sign_in` | `account`: offer a fresh code now, if it is waiting for one |
 | Chaat → plugin | `shutdown` | |
-| plugin → Chaat | `ready` | `capabilities` |
-| plugin → Chaat | `sign_in_required` | `verification_uri`, `user_code`, `account` and `username` (optional) |
+| plugin → Chaat | `ready` | `capabilities` (must include `call_alerts`); `name`, `description`, `docs_url` (optional, shown in Settings) |
+| plugin → Chaat | `sign_in_required` | `method` (`device_code`; absent means the same), `verification_uri`, `user_code`, `account` and `username` (optional) |
 | plugin → Chaat | `signed_in` | `account`, `username` |
 | plugin → Chaat | `listening` | `account`, `username`; sent each time an account's connection comes up |
-| plugin → Chaat | `incoming_call` | `id`, `caller`, `caller_mri`, `video`, `group`, `account`, `username`, `thread_id` (optional, usually absent for one-on-one calls). A call ringing two accounts shows a card for each |
+| plugin → Chaat | `incoming_call` | `id`, `caller`, `caller_object_id`, `video`, `group`, `account`, `username`, `ring_timeout_secs`, `thread_id` (optional). A call ringing two accounts shows a card for each |
 | plugin → Chaat | `error` | `message`, shown as an error notice; with `account`, the notice names it and the account is no longer shown as listening |
 
 `call_ended` is reserved for when a plugin can report it. Chaat passes the
