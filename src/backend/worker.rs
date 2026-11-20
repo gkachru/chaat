@@ -866,6 +866,7 @@ impl Worker {
             path,
             hello,
             crate::plugin::registry::KNOWN,
+            None,
             move |reported| {
                 if let Some(event) = crate::plugin::event::event(reported) {
                     out.send(Event::Plugin {

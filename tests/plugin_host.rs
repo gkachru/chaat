@@ -38,9 +38,70 @@ fn fake_plugin_serve() {
     };
     match mode {
         "crash" => std::process::exit(3),
+        // Crashes on its first start only.
+        "crash-first" => {
+            let starts = log_lines_at(&log).iter().filter(|l| *l == "start").count();
+            if starts == 1 {
+                std::process::exit(3);
+            }
+            say(READY);
+        }
+        // Ready, then a flood of valid lines.
+        "flood" => {
+            say(READY);
+            for _ in 0..400 {
+                say(r#"{"v":1,"type":"error","message":"flood"}"#);
+            }
+        }
+        // Ready, then a line now and then, and never a read of stdin.
+        "stall" => {
+            say(READY);
+            for _ in 0..300 {
+                std::thread::sleep(Duration::from_millis(200));
+                say(r#"{"v":1,"type":"error","message":"alive"}"#);
+            }
+            return;
+        }
+        // Starts a child that outlives it (see "sleeper"), then ready.
+        "grandchild" => {
+            let sleeper =
+                exe.with_file_name(format!("fake-sleeper{}", std::env::consts::EXE_SUFFIX));
+            // Never waited on: it is meant to outlive this process.
+            #[allow(clippy::zombie_processes)]
+            let _child = std::process::Command::new(sleeper)
+                .arg("serve")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .unwrap();
+            say(READY);
+        }
+        // Logs a line ten times a second, for two minutes at most.
+        "sleeper" => {
+            for _ in 0..1200 {
+                note(&log, "beat");
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            return;
+        }
+        // Reports what it inherited.
+        "env" => {
+            let mut chaat: Vec<String> = std::env::vars_os()
+                .map(|(name, _)| name.to_string_lossy().into_owned())
+                .filter(|name| name.to_ascii_uppercase().starts_with("CHAAT_"))
+                .collect();
+            chaat.sort();
+            note(&log, &format!("env-chaat:{}", chaat.join(",")));
+            let keep = std::env::var("HOST_TEST_KEEP").unwrap_or_default();
+            note(&log, &format!("env-keep:{keep}"));
+            let cwd = std::env::current_dir().unwrap();
+            note(&log, &format!("env-cwd:{}", cwd.display()));
+            say(READY);
+        }
         "unsupported" => say(r#"{"v":1,"type":"ready","capabilities":["presence"]}"#),
         "display" => say(r#"{"v":1,"type":"ready","capabilities":["presence_display","x"]}"#),
-        _ => say(r#"{"v":1,"type":"ready","capabilities":["call_alerts"]}"#),
+        _ => say(READY),
     }
     for line in std::io::stdin().lock().lines() {
         let Ok(line) = line else { break };
@@ -49,6 +110,16 @@ fn fake_plugin_serve() {
             std::process::exit(0);
         }
     }
+}
+
+const READY: &str = r#"{"v":1,"type":"ready","capabilities":["call_alerts"]}"#;
+
+fn log_lines_at(log: &Path) -> Vec<String> {
+    std::fs::read_to_string(log)
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_owned)
+        .collect()
 }
 
 fn note(log: &Path, line: &str) {
@@ -77,17 +148,56 @@ fn hello() -> HostMessage {
 }
 
 fn start(path: PathBuf) -> (Plugin, mpsc::Receiver<HostEvent>) {
+    start_pinned(path, None)
+}
+
+fn start_pinned(path: PathBuf, pin: Option<String>) -> (Plugin, mpsc::Receiver<HostEvent>) {
     let (events, received) = mpsc::channel();
     let events = std::sync::Mutex::new(events);
-    let plugin = Plugin::start(path, hello(), &["call_alerts"], move |event| {
+    let plugin = Plugin::start(path, hello(), &["call_alerts"], pin, move |event| {
         let _ = events.lock().unwrap().send(event);
     });
     (plugin, received)
 }
 
+/// Every event until the host ends and drops its sink.
+async fn until_the_host_ends(events: &mpsc::Receiver<HostEvent>) -> Vec<HostEvent> {
+    tokio::task::block_in_place(|| {
+        let deadline = std::time::Instant::now() + PATIENCE;
+        let mut all = Vec::new();
+        loop {
+            match events.recv_timeout(Duration::from_millis(200)) {
+                Ok(event) => all.push(event),
+                Err(mpsc::RecvTimeoutError::Disconnected) => return all,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    assert!(std::time::Instant::now() < deadline, "the host never ended");
+                }
+            }
+        }
+    })
+}
+
+fn sha256_of(path: &Path) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(std::fs::read(path).unwrap())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
 /// The next event, waiting off the runtime so the host keeps running.
-async fn next(events: &mpsc::Receiver<HostEvent>) -> HostEvent {
+async fn next_any(events: &mpsc::Receiver<HostEvent>) -> HostEvent {
     tokio::task::block_in_place(|| events.recv_timeout(PATIENCE)).expect("an event in time")
+}
+
+/// The next event other than a fingerprint (every unpinned start reports one).
+async fn next(events: &mpsc::Receiver<HostEvent>) -> HostEvent {
+    loop {
+        let event = next_any(events).await;
+        if !matches!(event, HostEvent::Fingerprint { .. }) {
+            return event;
+        }
+    }
 }
 
 fn log_lines(dir: &Path, mode: &str) -> Vec<String> {
@@ -182,6 +292,7 @@ async fn a_plugin_offering_a_known_capability_among_others_is_kept() {
         fake(dir.path(), "display"),
         hello(),
         &["call_alerts", "presence_display"],
+        None,
         move |event| {
             let _ = events.lock().unwrap().send(event);
         },
@@ -191,6 +302,248 @@ async fn a_plugin_offering_a_known_capability_among_others_is_kept() {
         HostEvent::Message(PluginMessage::Ready { .. })
     ));
     plugin.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unpinned_file_reports_its_fingerprint() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = fake(dir.path(), "echo");
+    let sha = sha256_of(&path);
+    let (plugin, events) = start(path);
+    match next_any(&events).await {
+        HostEvent::Fingerprint { sha256 } => assert_eq!(sha256, sha),
+        other => panic!("expected the fingerprint first, got {other:?}"),
+    }
+    assert!(matches!(
+        next_any(&events).await,
+        HostEvent::Message(PluginMessage::Ready { .. })
+    ));
+    plugin.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_file_matching_its_pin_runs_without_a_fingerprint() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = fake(dir.path(), "echo");
+    let sha = sha256_of(&path).to_uppercase();
+    let (plugin, events) = start_pinned(path, Some(sha));
+    assert!(matches!(
+        next_any(&events).await,
+        HostEvent::Message(PluginMessage::Ready { .. })
+    ));
+    plugin.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_changed_file_is_not_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = fake(dir.path(), "echo");
+    let sha = sha256_of(&path);
+    let (_plugin, events) = start_pinned(path, Some("0".repeat(64)));
+    let all = until_the_host_ends(&events).await;
+    assert!(
+        matches!(all.as_slice(), [HostEvent::FileChanged { sha256 }] if *sha256 == sha),
+        "{all:?}"
+    );
+    assert!(
+        log_lines(dir.path(), "echo").is_empty(),
+        "the file was never started"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_plugin_that_stops_reading_cannot_stall_the_host() {
+    let dir = tempfile::tempdir().unwrap();
+    let (plugin, events) = start(fake(dir.path(), "stall"));
+    assert!(matches!(
+        next(&events).await,
+        HostEvent::Message(PluginMessage::Ready { .. })
+    ));
+    // Far more than any pipe holds; the plugin reads none of it.
+    let big = serde_json::json!("x".repeat(60 * 1024));
+    for _ in 0..64 {
+        plugin.send(HostMessage::Options {
+            values: [("k".to_owned(), big.clone())].into(),
+        });
+    }
+    // The host still reads the plugin's lines while its writes are stuck...
+    let mut alive = 0;
+    let error = loop {
+        match next(&events).await {
+            HostEvent::Message(_) => alive += 1,
+            // ...until the write times out and ends the run.
+            HostEvent::Stopped { error, .. } => break error,
+            other => panic!("unexpected {other:?}"),
+        }
+    };
+    assert!(alive >= 2, "read {alive} lines while writing was stuck");
+    assert!(error.contains("stopped reading"), "{error}");
+    let began = std::time::Instant::now();
+    plugin.stop().await;
+    assert!(began.elapsed() < Duration::from_secs(10));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_flood_is_cut_and_reported_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let began = std::time::Instant::now();
+    let (plugin, events) = start(fake(dir.path(), "flood"));
+    let (mut messages, mut floods) = (0, 0);
+    while floods == 0 {
+        match next(&events).await {
+            HostEvent::Message(_) => messages += 1,
+            HostEvent::Flooding => floods += 1,
+            _ => {}
+        }
+    }
+    // The rest of the flood arrives and is dropped.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    for event in events.try_iter() {
+        match event {
+            HostEvent::Message(_) => messages += 1,
+            HostEvent::Flooding => floods += 1,
+            _ => {}
+        }
+    }
+    plugin.stop().await;
+    assert_eq!(floods, 1, "one notice per run");
+    // A burst of 50, plus what the rate allows in the time it took.
+    let allowed = 50 + 20 * (began.elapsed().as_secs() + 1);
+    assert!(messages >= 40, "{messages} lines got through");
+    assert!(
+        messages as u64 <= allowed,
+        "{messages} lines got through, at most {allowed} allowed"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stopping_kills_the_plugins_children() {
+    let dir = tempfile::tempdir().unwrap();
+    fake(dir.path(), "sleeper");
+    let (plugin, events) = start(fake(dir.path(), "grandchild"));
+    assert!(matches!(
+        next(&events).await,
+        HostEvent::Message(PluginMessage::Ready { .. })
+    ));
+    // The child the plugin started is running.
+    tokio::task::block_in_place(|| wait_log(dir.path(), "sleeper", &["beat"]));
+    plugin.stop().await;
+    // It stops beating once the plugin's run is over.
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    let before = log_lines(dir.path(), "sleeper").len();
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    assert_eq!(
+        log_lines(dir.path(), "sleeper").len(),
+        before,
+        "the plugin's child was left running"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stale_messages_are_not_sent_to_the_next_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let sender = Arc::new(std::sync::OnceLock::<chaat::plugin::host::PluginSender>::new());
+    let (events, received) = mpsc::channel();
+    let events = std::sync::Mutex::new(events);
+    let queued = sender.clone();
+    let plugin = Plugin::start(
+        fake(dir.path(), "crash-first"),
+        hello(),
+        &["call_alerts"],
+        None,
+        move |event| {
+            // Queued while the plugin is down, before its next run begins.
+            if matches!(event, HostEvent::Stopped { .. }) {
+                for _ in 0..3 {
+                    queued.get().unwrap().send(HostMessage::Forget {
+                        account: "stale.account".into(),
+                    });
+                }
+            }
+            let _ = events.lock().unwrap().send(event);
+        },
+    );
+    sender.set(plugin.sender()).ok().unwrap();
+    // The first run crashes; the second reports ready.
+    loop {
+        if matches!(
+            next(&received).await,
+            HostEvent::Message(PluginMessage::Ready { .. })
+        ) {
+            break;
+        }
+    }
+    plugin.send(HostMessage::Forget {
+        account: "o3.t3".into(),
+    });
+    tokio::task::block_in_place(|| wait_log(dir.path(), "crash-first", &["forget", "o3.t3"]));
+    plugin.stop().await;
+    let lines = log_lines(dir.path(), "crash-first");
+    assert!(
+        lines.iter().any(|l| l.contains(r#""type":"hello""#)),
+        "{lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|l| l.contains("stale.account")),
+        "a message from before the restart reached the new run: {lines:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_missing_file_is_not_retried() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_plugin, events) = start(dir.path().join("no-such-plugin"));
+    let all = until_the_host_ends(&events).await;
+    assert!(
+        matches!(all.as_slice(), [HostEvent::Stopped { notify: true, .. }]),
+        "{all:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_relative_path_is_refused() {
+    let (_plugin, events) = start(PathBuf::from("plugins").join("some-plugin"));
+    let all = until_the_host_ends(&events).await;
+    assert!(
+        matches!(all.as_slice(), [HostEvent::Stopped { notify: true, error }] if error.contains("absolute")),
+        "{all:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn chaat_variables_are_not_inherited() {
+    // SAFETY: the threads of this test binary read the environment only
+    // through std, which locks it, including the host starting the fakes.
+    unsafe {
+        std::env::set_var("CHAAT_HOST_TEST_SECRET", "s3cret");
+        std::env::set_var("HOST_TEST_KEEP", "kept");
+        if cfg!(windows) {
+            // Names are case-insensitive there.
+            std::env::set_var("Chaat_Host_Test_Mixed", "s3cret");
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let (plugin, events) = start(fake(dir.path(), "env"));
+    assert!(matches!(
+        next(&events).await,
+        HostEvent::Message(PluginMessage::Ready { .. })
+    ));
+    plugin.stop().await;
+    let lines = log_lines(dir.path(), "env");
+    let value = |key: &str| {
+        lines
+            .iter()
+            .find_map(|l| l.strip_prefix(key))
+            .unwrap_or_else(|| panic!("no {key} line in {lines:?}"))
+            .to_owned()
+    };
+    assert_eq!(value("env-chaat:"), "", "CHAAT_ variables were inherited");
+    assert_eq!(value("env-keep:"), "kept", "other variables still are");
+    // It runs in its own folder.
+    assert_eq!(
+        std::fs::canonicalize(value("env-cwd:")).unwrap(),
+        std::fs::canonicalize(dir.path()).unwrap()
+    );
 }
 
 // The worker: a backend with fake plugins and a memory credential store.

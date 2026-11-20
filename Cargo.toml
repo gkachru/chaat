@@ -114,11 +114,19 @@ futures-util = { version = "0.3", default-features = false, features = ["sink", 
 # Refresh tokens never go into ordinary state files.
 keyring-core = "1"
 
+# kill(2) on a plugin's process group when its run ends (src/plugin/host.rs).
+# Already in the lock file through tokio and others.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 apple-native-keyring-store = { version = "1.0.2", features = ["keychain"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-native-keyring-store = { version = "1.1", default-features = false }
+# Job Objects: a plugin's process tree dies with its run (src/plugin/host.rs).
+# Already in the lock file through other crates; only these four features.
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus-secret-service-keyring-store = { version = "1.0.1", features = ["rt-tokio-crypto-rust"] }

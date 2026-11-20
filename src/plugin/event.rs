@@ -56,6 +56,8 @@ pub fn event(reported: HostEvent) -> Option<PluginEvent> {
             message: Some("This plugin offers nothing Chaat can use.".into()),
         }),
         HostEvent::Message(message) => message_event(message),
+        // Mapped by the backend (pinning, flood notice).
+        HostEvent::Fingerprint { .. } | HostEvent::FileChanged { .. } | HostEvent::Flooding => None,
     }
 }
 
