@@ -3704,6 +3704,122 @@ fn a_secret_buffer_does_not_survive_leaving_the_page() {
     );
 }
 
+fn secret_memory_is_empty(h: &Harness) -> bool {
+    let field = egui::Id::new(("plugin-option", "secret", "demo-light", "token"));
+    let buffers = h.ctx.data(|d| {
+        d.get_temp::<std::collections::HashMap<(String, String), String>>(egui::Id::new(
+            "plugin-secret-buffers",
+        ))
+    });
+    // A redraw stores a fresh state; it must hold no typed text to undo.
+    let empty = (egui::text::CCursorRange::default(), String::new());
+    buffers.is_none_or(|b| b.is_empty())
+        && egui::TextEdit::load_state(&h.ctx, field)
+            .is_none_or(|state| !state.undoer().has_undo(&empty))
+}
+
+fn type_demo_secret(h: &mut Harness) {
+    plugins_page_click(h, "New value");
+    plugins_page_frame(h, vec![egui::Event::Text("hunter2".into())]);
+    plugins_page_frame(h, vec![]);
+}
+
+#[test]
+fn a_secret_buffer_is_gone_after_closing_settings() {
+    let mut h = plugins_settings_harness(900.0, ThemeChoice::Dark);
+    let pos = ring_text_pos(&h, "New value").expect("field");
+    h.frame_with(vec![
+        egui::Event::PointerMoved(pos),
+        egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        },
+    ]);
+    h.frame_with(vec![egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    }]);
+    h.frame_with(vec![egui::Event::Text("hunter2".into())]);
+    h.frames(2);
+    assert!(!secret_memory_is_empty(&h), "control: the secret is held");
+    h.act(Action::CloseSettings);
+    h.frames(2);
+    assert!(secret_memory_is_empty(&h));
+}
+
+#[test]
+fn a_secret_buffer_is_gone_after_switching_page() {
+    let mut h = plugins_settings_harness(900.0, ThemeChoice::Dark);
+    let pos = ring_text_pos(&h, "New value").expect("field");
+    h.frame_with(vec![
+        egui::Event::PointerMoved(pos),
+        egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        },
+    ]);
+    h.frame_with(vec![egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    }]);
+    h.frame_with(vec![egui::Event::Text("hunter2".into())]);
+    h.frames(2);
+    assert!(!secret_memory_is_empty(&h), "control: the secret is held");
+    h.act(Action::ShowSettingsPage(SettingsPage::General));
+    h.frames(2);
+    assert!(secret_memory_is_empty(&h));
+}
+
+#[test]
+fn saving_clearing_or_forgetting_leaves_no_text_edit_state() {
+    let mut h = plugins_page_harness();
+    type_demo_secret(&mut h);
+    assert!(!secret_memory_is_empty(&h), "control: the secret is held");
+    plugins_page_click(&mut h, "Save");
+    assert!(secret_memory_is_empty(&h), "after Save");
+
+    let mut h = plugins_page_harness();
+    type_demo_secret(&mut h);
+    plugins_page_click(&mut h, "Clear");
+    assert!(secret_memory_is_empty(&h), "after Clear");
+
+    let mut h = plugins_page_harness();
+    type_demo_secret(&mut h);
+    chaat::ui::plugins::forget_secret_buffers(&h.ctx);
+    assert!(secret_memory_is_empty(&h), "after forget");
+}
+
+#[test]
+fn account_rows_need_approved_accounts() {
+    let mut h = plugins_settings_harness(900.0, ThemeChoice::Dark);
+    assert!(painted_texts(&h).iter().any(|t| t == "Listening for calls"));
+    let entry = h
+        .app
+        .settings
+        .plugins
+        .iter_mut()
+        .find(|e| e.id == "demo-alerts")
+        .unwrap();
+    entry.approved_needs.clear();
+    h.frames(2);
+    let painted = painted_texts(&h);
+    for text in [
+        "Listening for calls",
+        "Waiting for sign-in",
+        "Connecting\u{2026}",
+    ] {
+        assert!(!painted.iter().any(|t| t == text), "{text:?} is hidden");
+    }
+}
+
 #[test]
 fn a_plugin_sign_in_card_names_chaats_account_not_the_plugins_claim() {
     for width in [480.0, 1280.0] {

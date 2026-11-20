@@ -41,6 +41,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 });
             });
     }
+    if app.settings_page.is_none() {
+        settings::closed(ui.ctx());
+    }
     if app.shows_workspace() && !app.demo {
         session_banner(app, ui);
     }

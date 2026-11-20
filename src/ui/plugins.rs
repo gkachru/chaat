@@ -93,7 +93,7 @@ pub fn page(app: &App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
             for option in &state.options {
                 option_row(app, ui, entry, option, actions);
             }
-            if state.running && state.needs.contains(&"accounts") {
+            if state.running && app.plugin_receives(&entry.id).contains(&"accounts") {
                 account_rows(app, ui, entry, state, actions);
             }
         }
@@ -300,7 +300,29 @@ fn secret_buffers_id() -> egui::Id {
 /// Drops every unsaved secret the person typed. The page calls it when it was
 /// not drawn in the frame before; Settings may call it when it closes.
 pub fn forget_secret_buffers(ctx: &egui::Context) {
-    ctx.data_mut(|d| d.remove_temp::<SecretBuffers>(secret_buffers_id()));
+    ctx.data_mut(|d| {
+        d.remove_temp::<SecretBuffers>(secret_buffers_id());
+        // The text edit's own state (cursor, undo history) can hold the typed
+        // text too, so it goes with the buffers.
+        for id in d
+            .remove_temp::<SecretFields>(secret_fields_id())
+            .unwrap_or_default()
+        {
+            d.remove::<egui::text_edit::TextEditState>(id);
+        }
+    });
+}
+
+/// The ids of the secret fields drawn so far, so their edit state can be
+/// dropped even when the buffer is empty.
+type SecretFields = Vec<egui::Id>;
+
+fn secret_fields_id() -> egui::Id {
+    egui::Id::new("plugin-secret-fields")
+}
+
+fn forget_secret_edit_state(ctx: &egui::Context, field: egui::Id) {
+    ctx.data_mut(|d| d.remove::<egui::text_edit::TextEditState>(field));
 }
 
 /// An unsaved secret does not survive leaving the page: if the page was not
@@ -453,14 +475,26 @@ fn option_row(
             );
             // The stored value is never read back into the interface.
             let mut buffer = secret_buffer(ui, &entry.id, &option.id);
+            let field = buffer_id(&entry.id, &option.id, "secret");
+            ui.data_mut(|d| {
+                let mut fields = d
+                    .get_temp::<SecretFields>(secret_fields_id())
+                    .unwrap_or_default();
+                if !fields.contains(&field) {
+                    fields.push(field);
+                    d.insert_temp(secret_fields_id(), fields);
+                }
+            });
             ui.horizontal(|ui| {
                 ui.add(
                     widgets::text_field(&mut buffer, "New value", theme::regular(14.0))
+                        .id(field)
                         .password(true)
                         .desired_width((ui.available_width() - 150.0).max(80.0)),
                 );
                 let typed = !buffer.is_empty();
                 if ui.add_enabled(typed, egui::Button::new("Save")).clicked() {
+                    forget_secret_edit_state(ui.ctx(), field);
                     actions.push(Action::SetPluginSecret {
                         plugin: entry.id.clone(),
                         option: option.id.clone(),
@@ -469,6 +503,7 @@ fn option_row(
                 }
                 if ui.add_enabled(saved, egui::Button::new("Clear")).clicked() {
                     buffer.clear();
+                    forget_secret_edit_state(ui.ctx(), field);
                     actions.push(Action::SetPluginSecret {
                         plugin: entry.id.clone(),
                         option: option.id.clone(),

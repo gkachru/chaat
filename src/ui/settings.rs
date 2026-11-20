@@ -188,6 +188,10 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
     let palette = app.palette;
     let page = app.settings_page.unwrap_or_default();
     let mut actions = Vec::new();
+    if page != SettingsPage::Plugins {
+        // An unsaved plugin secret does not outlive its page.
+        super::plugins::forget_secret_buffers(ui.ctx());
+    }
     egui::CentralPanel::no_frame()
         .frame(Frame::new().fill(palette.window))
         .show(ui, |ui| {
@@ -1020,4 +1024,10 @@ fn about(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
             ));
         }
     });
+}
+
+/// Called every frame the settings window is closed: nothing typed into it
+/// stays in memory.
+pub fn closed(ctx: &egui::Context) {
+    super::plugins::forget_secret_buffers(ctx);
 }
