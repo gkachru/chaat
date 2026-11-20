@@ -3415,19 +3415,47 @@ fn plugin_text_is_quoted_under_chaats_line() {
 }
 
 #[test]
-fn the_plugins_page_lists_each_account_and_whether_it_listens() {
-    let mut h = plugins_page_harness();
-    let painted = painted_texts(&h);
-    for text in [
-        "alex@contoso.com",
-        "Listening",
-        "alex@fabrikam.com",
-        "Waiting for sign-in",
-    ] {
-        assert!(painted.iter().any(|t| t == text), "{text:?} shows");
+fn each_account_row_says_whether_the_plugin_listens_waits_or_connects() {
+    for width in [480.0, 1280.0] {
+        for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+            let mut h = Harness::new();
+            h.size = egui::vec2(width, 3000.0);
+            h.app.settings.theme = theme.clone();
+            h.act(Action::ShowSettingsPage(SettingsPage::Plugins));
+            h.frames(2);
+            let painted = painted_texts(&h);
+            for text in [
+                "alex@contoso.com",
+                "Listening for calls",
+                "alex@fabrikam.com",
+                "Waiting for sign-in",
+                "New code",
+            ] {
+                assert!(
+                    painted.iter().any(|t| t == text),
+                    "{text:?} shows at {width} in {theme:?}"
+                );
+            }
+            // Nothing heard yet from the plugin about either account.
+            let state = h.app.plugins.get_mut("demo-alerts").unwrap();
+            state.listening.clear();
+            state.sign_in.clear();
+            h.frames(2);
+            let painted = painted_texts(&h);
+            assert_eq!(
+                painted
+                    .iter()
+                    .filter(|t| *t == "Connecting\u{2026}")
+                    .count(),
+                2,
+                "both accounts are connecting at {width} in {theme:?}"
+            );
+            assert!(!painted.iter().any(|t| t == "New code"));
+        }
     }
+    let mut h = plugins_page_harness();
     let second = h.app.plugin_accounts()[1].id.clone();
-    let actions = plugins_page_click(&mut h, "Sign in");
+    let actions = plugins_page_click(&mut h, "New code");
     assert!(actions.contains(&Action::PluginSignIn {
         plugin: "demo-alerts".into(),
         account: second,
@@ -3435,17 +3463,80 @@ fn the_plugins_page_lists_each_account_and_whether_it_listens() {
 }
 
 #[test]
-fn a_plugin_sign_in_card_names_the_plugin() {
-    let mut h = Harness::new();
-    h.frames(3);
-    let painted = painted_texts(&h);
-    assert!(
-        painted
-            .iter()
-            .any(|t| t == "Plugin: \u{201C}Ring alerts\u{201D}"),
-        "the card quotes the name of the plugin"
-    );
-    assert!(painted.iter().any(|t| t == "DEMO1234"));
+fn the_plugins_own_name_and_description_show_apart_from_chaats_words() {
+    for width in [480.0, 1280.0] {
+        for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+            let mut h = Harness::new();
+            h.size = egui::vec2(width, 3000.0);
+            h.app.settings.theme = theme.clone();
+            h.act(Action::ShowSettingsPage(SettingsPage::Plugins));
+            h.frames(2);
+            let painted = painted_texts(&h);
+            for text in [
+                "Plugin: \u{201C}Ring alerts\u{201D}",
+                "Tells Chaat who is calling you in Teams.",
+                "About this plugin",
+            ] {
+                assert!(
+                    painted.iter().any(|t| t == text),
+                    "{text:?} shows at {width} in {theme:?}"
+                );
+            }
+            // The link comes from the plugin's docs_url, and only when set.
+            h.app.plugins.get_mut("demo-alerts").unwrap().info.docs_url = None;
+            h.frames(2);
+            assert!(!painted_texts(&h).iter().any(|t| t == "About this plugin"));
+        }
+    }
+}
+
+#[test]
+fn a_plugin_sign_in_card_names_chaats_account_not_the_plugins_claim() {
+    for width in [480.0, 1280.0] {
+        for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+            let mut h = Harness::new();
+            h.size.x = width;
+            h.app.settings.theme = theme.clone();
+            // Only the plugin with the sign-in, so its card is the one shown.
+            h.app
+                .plugins
+                .get_mut("demo-alerts")
+                .unwrap()
+                .sign_in
+                .clear();
+            let me = h.app.plugin_accounts()[0].id.clone();
+            let ctx = h.ctx.clone();
+            h.app.handle(
+                chaat::backend::Event::Plugin {
+                    id: "demo-alerts".into(),
+                    event: chaat::plugin::event::PluginEvent::SignIn {
+                        account: Some(me),
+                        verification_uri: "https://microsoft.com/devicelogin".into(),
+                        user_code: "ZZ99YY88".into(),
+                    },
+                },
+                &ctx,
+            );
+            h.frames(3);
+            let painted = painted_texts(&h);
+            for text in [
+                "Sign in for call alerts",
+                "ZZ99YY88",
+                "Plugin: \u{201C}Ring alerts\u{201D}",
+            ] {
+                assert!(
+                    painted.iter().any(|t| t == text),
+                    "{text:?} shows at {width} in {theme:?}"
+                );
+            }
+            assert!(
+                painted
+                    .iter()
+                    .any(|t| t.ends_with("sign in as alex@contoso.com:")),
+                "the card names Chaat's own account at {width} in {theme:?}"
+            );
+        }
+    }
 }
 
 #[test]

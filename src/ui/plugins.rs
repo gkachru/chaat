@@ -276,18 +276,18 @@ fn account_rows(
                 .truncate(),
             );
             let (text, color) = if listening {
-                ("Listening", palette.success)
+                ("Listening for calls", palette.success)
             } else if waiting {
                 ("Waiting for sign-in", palette.warning)
             } else {
-                ("Not signed in", palette.dim)
+                ("Connecting\u{2026}", palette.dim)
             };
             ui.label(
                 egui::RichText::new(text)
                     .font(theme::regular(12.0))
                     .color(color),
             );
-            if !listening && widgets::secondary_button(ui, &palette, "Sign in").clicked() {
+            if waiting && widgets::secondary_button(ui, &palette, "New code").clicked() {
                 actions.push(Action::PluginSignIn {
                     plugin: entry.id.clone(),
                     account: account.id.clone(),
