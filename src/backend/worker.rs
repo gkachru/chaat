@@ -1712,14 +1712,25 @@ const CALL_ALERTS_SHUTDOWN: &str = "{\"v\":1,\"type\":\"shutdown\"}\n";
 /// lines and never pass it any Chaat state or token.
 async fn call_alerts_loop(path: std::path::PathBuf, out: Outbox, mut stop: watch::Receiver<bool>) {
     let mut backoff = Duration::from_secs(1);
+    // Only the first failure in a row is worth a notice; a plugin that is
+    // missing or crashes at once would otherwise repeat it every restart.
+    let mut failing = false;
     while !*stop.borrow() {
+        let started = std::time::Instant::now();
         match run_call_alerts_once(&path, &out, &mut stop).await {
             Ok(()) => return, // asked to stop
             Err(error) => {
+                // A run that lasted a while was healthy: start over.
+                if started.elapsed() > Duration::from_secs(60) {
+                    backoff = Duration::from_secs(1);
+                    failing = false;
+                }
                 out.send(Event::CallAlertsStatus {
                     running: false,
-                    message: Some(format!("call-alerts plugin stopped: {error}")),
+                    message: (!failing)
+                        .then(|| format!("Call alerts: the plugin stopped ({error}).")),
                 });
+                failing = true;
                 tokio::select! {
                     _ = tokio::time::sleep(backoff) => {}
                     _ = stop.changed() => {}
@@ -1739,13 +1750,20 @@ async fn run_call_alerts_once(
 ) -> std::io::Result<()> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
-    let mut child = tokio::process::Command::new(path)
+    let mut command = tokio::process::Command::new(path);
+    command
         .arg("serve")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
-        .kill_on_drop(true)
-        .spawn()?;
+        .kill_on_drop(true);
+    // Chaat is a windowed app; without this a console plugin opens a console.
+    #[cfg(target_os = "windows")]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    let mut child = command.spawn()?;
     let mut stdin = child
         .stdin
         .take()
@@ -1778,6 +1796,23 @@ async fn run_call_alerts_once(
     }
 }
 
+/// Whether a sign-in page the plugin names is an HTTPS page on Microsoft's
+/// own sign-in hosts. Plugin lines are untrusted; Chaat offers to open only
+/// these.
+fn is_microsoft_sign_in_page(uri: &str) -> bool {
+    let Some(rest) = uri.strip_prefix("https://") else {
+        return false;
+    };
+    let host = rest
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    matches!(
+        host.as_str(),
+        "microsoft.com" | "www.microsoft.com" | "login.microsoftonline.com" | "login.microsoft.com"
+    )
+}
 /// Turns one JSON line from the plugin into a backend event. Unknown or
 /// unparseable lines are ignored, so a newer plugin cannot break an older Chaat.
 fn decode_call_alert(line: &str, out: &Outbox) {
@@ -1806,7 +1841,9 @@ fn decode_call_alert(line: &str, out: &Outbox) {
         }
         Some("sign_in_required") => {
             if let (Some(uri), Some(code)) = (
-                value["verification_uri"].as_str(),
+                value["verification_uri"]
+                    .as_str()
+                    .filter(|uri| is_microsoft_sign_in_page(uri)),
                 value["user_code"].as_str(),
             ) {
                 out.send(Event::CallAlertsSignIn {
@@ -2903,6 +2940,25 @@ mod tests {
     use super::*;
     use crate::model::{Chat, ChatKind, Member};
 
+    #[test]
+    fn only_microsoft_sign_in_pages_are_offered() {
+        assert!(is_microsoft_sign_in_page(
+            "https://microsoft.com/devicelogin"
+        ));
+        assert!(is_microsoft_sign_in_page(
+            "https://login.microsoftonline.com/common/oauth2/deviceauth"
+        ));
+        assert!(!is_microsoft_sign_in_page(
+            "http://microsoft.com/devicelogin"
+        ));
+        assert!(!is_microsoft_sign_in_page(
+            "https://microsoft.com.evil.example/x"
+        ));
+        assert!(!is_microsoft_sign_in_page(
+            "https://evil.example/?microsoft.com"
+        ));
+        assert!(!is_microsoft_sign_in_page("https://user@evil.example/"));
+    }
     #[test]
     fn plugin_lines_become_events_and_unknown_ones_are_ignored() {
         let (events, received) = std::sync::mpsc::channel();

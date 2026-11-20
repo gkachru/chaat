@@ -610,6 +610,9 @@ pub struct App {
     pub call_alerts_sign_in: Option<crate::model::PluginSignIn>,
     /// Whether the call-alerts plugin last said it is running.
     pub call_alerts_running: bool,
+    /// Whether the plugin already asked to sign in (and raised the window)
+    /// since it last started or signed in.
+    call_alerts_asked: bool,
     next_toast: u64,
     pub actions: Vec<Action>,
 
@@ -748,6 +751,7 @@ impl App {
             rings: Vec::new(),
             call_alerts_sign_in: None,
             call_alerts_running: false,
+            call_alerts_asked: false,
             next_toast: 0,
             actions: Vec::new(),
             palette,
@@ -1484,10 +1488,16 @@ impl App {
                     verification_uri,
                     user_code,
                 });
-                self.wants_show = true;
+                // Bring Chaat forward for the first code only; later codes (an
+                // expired or declined one) update the panel quietly.
+                if !self.call_alerts_asked {
+                    self.call_alerts_asked = true;
+                    self.wants_show = true;
+                }
             }
             Event::CallAlertsSignedIn => {
                 self.call_alerts_sign_in = None;
+                self.call_alerts_asked = false;
                 self.toast(ToastKind::Info, "Call alerts are on.");
             }
             Event::CallAlertsStatus { running, message } => {
@@ -1495,6 +1505,7 @@ impl App {
                 // A stopped plugin no longer waits for its sign-in.
                 if !running {
                     self.call_alerts_sign_in = None;
+                    self.call_alerts_asked = false;
                 }
                 if let Some(message) = message {
                     self.toast(ToastKind::Error, message);
@@ -3399,6 +3410,45 @@ mod tests {
             service_commands.try_recv(),
             Ok(Command::StopCallAlerts)
         ));
+    }
+
+    #[test]
+    fn calling_back_a_group_ring_follows_the_callers_own_chat() {
+        let (mut app, _dir) = demo_app();
+        let ctx = egui::Context::default();
+        let mut alert = ring("group-1", "8:orgid:u-ada");
+        alert.group = true;
+        alert.thread_id = Some(LAUNCH.into());
+        app.on_incoming_call(alert);
+        assert_eq!(app.rings[0].chat, Some(ConversationId::Chat(LAUNCH.into())));
+        app.apply(Action::RingPlaceCall("group-1".into()), &ctx);
+        let call = app.call.as_ref().expect("the call back starts");
+        assert_eq!(call.chat, Some(ada_chat(&app)));
+    }
+
+    #[test]
+    fn only_the_first_sign_in_code_raises_the_window() {
+        let (mut app, _dir) = demo_app();
+        let ctx = egui::Context::default();
+        let ask = |code: &str| Event::CallAlertsSignIn {
+            verification_uri: "https://microsoft.com/devicelogin".into(),
+            user_code: code.into(),
+        };
+        app.wants_show = false;
+        app.handle(ask("FIRST"), &ctx);
+        assert!(app.wants_show);
+        app.wants_show = false;
+        app.apply(Action::HideCallAlertsSignIn, &ctx);
+        app.handle(ask("SECOND"), &ctx);
+        assert!(!app.wants_show, "a later code doesn't pull Chaat forward");
+        assert_eq!(
+            app.call_alerts_sign_in.as_ref().unwrap().user_code,
+            "SECOND"
+        );
+        // After signing in, a future expiry may raise it again.
+        app.handle(Event::CallAlertsSignedIn, &ctx);
+        app.handle(ask("THIRD"), &ctx);
+        assert!(app.wants_show);
     }
     #[test]
     fn dismissing_a_ring_removes_only_that_one() {

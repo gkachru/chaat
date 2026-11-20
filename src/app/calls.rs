@@ -648,7 +648,13 @@ impl App {
         match ring.email() {
             Some(email) => {
                 let users = vec![email.to_owned()];
-                let chat = ring.chat.clone().or_else(|| self.one_on_one_with(&users));
+                // A group ring's chat is the group's; the call back dials only
+                // the caller, so it follows their one-on-one chat instead.
+                let chat = if ring.group {
+                    self.one_on_one_with(&users)
+                } else {
+                    ring.chat.clone().or_else(|| self.one_on_one_with(&users))
+                };
                 self.call_people(users, ring.video, chat, ctx);
             }
             None => {

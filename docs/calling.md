@@ -90,7 +90,10 @@ when the switch is turned off, the plugin is removed, or Chaat quits.
 On first use (or when its stored sign-in expires) the plugin asks to sign in.
 Chaat shows a **Sign in for call alerts** panel with the code, **Open
 sign-in page** and **Copy code**. The plugin keeps its refresh token in the
-system's credential store and tells Chaat when sign-in finished.
+system's credential store and tells Chaat when sign-in finished. Chaat
+shows the panel only for HTTPS pages on Microsoft's sign-in hosts, and
+brings its window forward for the first code only. If the plugin stops,
+Chaat restarts it with backoff and shows one notice per run of failures.
 
 ### When a call rings
 
