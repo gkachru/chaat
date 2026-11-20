@@ -221,10 +221,7 @@ fn wait_for<T>(backend: &Backend, mut pick: impl FnMut(Event) -> Option<T>) -> T
     let deadline = std::time::Instant::now() + Duration::from_secs(20);
     loop {
         PENDING.with(|pending| pending.borrow_mut().extend(backend.poll()));
-        loop {
-            let Some(event) = PENDING.with(|pending| pending.borrow_mut().pop_front()) else {
-                break;
-            };
+        while let Some(event) = PENDING.with(|pending| pending.borrow_mut().pop_front()) {
             if let Some(found) = pick(event) {
                 return found;
             }
