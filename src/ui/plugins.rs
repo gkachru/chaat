@@ -826,16 +826,26 @@ fn option_footer(cx: &OptionsCx, ui: &mut egui::Ui, option: &OptionSpec) {
             if !cx.state.action_working(&option.id, cx.now) {
                 return;
             }
-            let text = match quoted {
-                Some(quoted) => format!("{quoted}\u{2026}"),
+            let text = match (quoted, message) {
+                (Some(quoted), Some(message)) => working_text(&quoted, message),
                 // A button already says "Working…".
-                None if option.kind == OptionKind::Action => return,
-                None => "Working\u{2026}".into(),
+                _ if option.kind == OptionKind::Action => return,
+                _ => "Working\u{2026}".into(),
             };
             (text, palette.dim)
         }
     };
     line(ui, text, color);
+}
+
+/// The quoted working message, with an ellipsis added only when the message
+/// does not already end in one.
+fn working_text(quoted: &str, message: &str) -> String {
+    if message.ends_with('\u{2026}') || message.ends_with("...") {
+        quoted.to_owned()
+    } else {
+        format!("{quoted}\u{2026}")
+    }
 }
 
 fn option_row(cx: &OptionsCx, ui: &mut egui::Ui, option: &OptionSpec, actions: &mut Vec<Action>) {
@@ -1098,5 +1108,35 @@ fn account_rows(
                 });
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn working_text_adds_an_ellipsis_only_when_missing() {
+        assert_eq!(
+            working_text("\u{201C}Scan\u{201D}", "Scan"),
+            "\u{201C}Scan\u{201D}\u{2026}"
+        );
+        assert_eq!(
+            working_text("\u{201C}Scan\u{2026}\u{201D}", "Scan\u{2026}"),
+            "\u{201C}Scan\u{2026}\u{201D}"
+        );
+        assert_eq!(
+            working_text("\u{201C}Scan...\u{201D}", "Scan..."),
+            "\u{201C}Scan...\u{201D}"
+        );
+    }
+
+    #[test]
+    fn link_host_is_empty_for_a_missing_host() {
+        assert_eq!(link_host("https://:443/x"), None);
+        assert_eq!(
+            link_host("https://example.com:443/x").as_deref(),
+            Some("example.com")
+        );
     }
 }

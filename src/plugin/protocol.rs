@@ -228,10 +228,18 @@ pub(super) fn is_https_url(url: &str) -> bool {
     let Some(rest) = url.strip_prefix("https://") else {
         return false;
     };
-    let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    // The host without a port: `https://:443/` has none.
+    let host = if authority.starts_with('[') {
+        authority.split_inclusive(']').next().unwrap_or_default()
+    } else {
+        authority.split(':').next().unwrap_or_default()
+    };
     url.len() <= 300
         && !host.is_empty()
-        && !url.chars().any(|c| c.is_whitespace() || c.is_control())
+        && !url
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control() || is_invisible(c))
         && !has_userinfo(url)
 }
 
@@ -1525,5 +1533,13 @@ mod tests {
                 kind: "dial".into()
             }
         );
+    }
+
+    #[test]
+    fn https_urls_need_a_host_and_no_invisible_characters() {
+        assert!(is_https_url("https://example.com:443/x"));
+        assert!(!is_https_url("https://:443/x"));
+        assert!(!is_https_url("https://exam\u{202E}ple.com/x"));
+        assert!(!is_https_url("https://example.com/\u{200B}x"));
     }
 }

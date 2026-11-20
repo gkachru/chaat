@@ -1006,22 +1006,7 @@ impl App {
                 plugin,
                 option,
                 value,
-            } => {
-                let instance = self
-                    .settings
-                    .plugins
-                    .iter()
-                    .find(|e| e.id == plugin)
-                    .map(|e| e.instance.clone());
-                if let Some(instance) = instance {
-                    self.send_service(Command::SavePluginSecret {
-                        plugin,
-                        instance,
-                        option,
-                        value,
-                    });
-                }
-            }
+            } => self.set_plugin_secret(plugin, option, value),
             Action::ApprovePluginNeeds(id) => self.decide_plugin_needs(&id, true),
             Action::DenyPluginNeeds(id) => self.decide_plugin_needs(&id, false),
             Action::TrustPluginFile(id) => self.trust_plugin_file(&id),
@@ -1078,6 +1063,60 @@ impl App {
             entry.options.insert(option, checked);
             self.mark_settings_dirty();
             self.send_plugin_options(&plugin);
+        }
+    }
+
+    /// Checks and saves (or, with `None`, clears) a secret option value. Only
+    /// a secret option the plugin described takes one; the value is trimmed
+    /// and must be non-empty plain text. A refused value is not sent: its
+    /// error waits in `plugin_option_errors` for the page.
+    fn set_plugin_secret(&mut self, plugin: String, option: String, value: Option<String>) {
+        let Some(spec) = self
+            .plugins
+            .get(&plugin)
+            .and_then(|state| state.options.iter().find(|spec| spec.id == option))
+        else {
+            return;
+        };
+        let key = (plugin.clone(), option.clone());
+        let is_secret = spec.kind == OptionKind::Secret;
+        let value = match value {
+            None if is_secret => None,
+            None => return,
+            Some(raw) => {
+                let checked = if is_secret {
+                    options::check_value(spec, &serde_json::Value::String(raw)).and_then(
+                        |v| match v.as_str().unwrap_or_default() {
+                            "" => Err("Enter a value.".to_owned()),
+                            text => Ok(text.to_owned()),
+                        },
+                    )
+                } else {
+                    Err("This setting is not a secret.".to_owned())
+                };
+                match checked {
+                    Ok(text) => Some(text),
+                    Err(error) => {
+                        self.plugin_option_errors.insert(key, error);
+                        return;
+                    }
+                }
+            }
+        };
+        self.plugin_option_errors.remove(&key);
+        let instance = self
+            .settings
+            .plugins
+            .iter()
+            .find(|e| e.id == plugin)
+            .map(|e| e.instance.clone());
+        if let Some(instance) = instance {
+            self.send_service(Command::SavePluginSecret {
+                plugin,
+                instance,
+                option,
+                value,
+            });
         }
     }
 
@@ -1914,5 +1953,44 @@ mod tests {
             .insert("bulb".into(), json!("x".repeat(65)));
         ready_with(&mut app, vec![choice_spec("bulb", &["a"])]);
         assert!(!app.settings.plugins[0].options.contains_key("bulb"));
+    }
+
+    #[test]
+    fn secrets_are_checked_and_trimmed_before_saving() {
+        let (mut app, mut commands) = option_app();
+        ready_with(
+            &mut app,
+            vec![
+                spec("key", OptionKind::Secret),
+                spec("note", OptionKind::Text),
+            ],
+        );
+        drain(&mut commands);
+        let set = |app: &mut App, option: &str, value: &str| {
+            app.apply_plugin_action(Action::SetPluginSecret {
+                plugin: "p".into(),
+                option: option.into(),
+                value: Some(value.to_owned()),
+            });
+        };
+        set(&mut app, "key", "  k3y \n");
+        let saved: Vec<_> = drain(&mut commands)
+            .into_iter()
+            .filter_map(|c| match c {
+                Command::SavePluginSecret { value, .. } => Some(value),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(saved, [Some("k3y".to_owned())]);
+        let key = ("p".to_owned(), "key".to_owned());
+        for bad in ["   ", "a\nb", "a\u{202E}b", &"x".repeat(1001)] {
+            set(&mut app, "key", bad);
+            assert!(drain(&mut commands).is_empty(), "{bad:?} not saved");
+            assert!(app.plugin_option_errors.contains_key(&key));
+        }
+        set(&mut app, "note", "v");
+        assert!(drain(&mut commands).is_empty(), "not a secret");
+        set(&mut app, "missing", "v");
+        assert!(drain(&mut commands).is_empty());
     }
 }

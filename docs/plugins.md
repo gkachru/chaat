@@ -327,9 +327,10 @@ This describes the page from the design note ([plans/2026-11-20-plugin-options.m
 - After **Add plugin...**, the first `ready` that leaves required options
   unset opens that plugin's setup view: the required options first, then the
   rest.
-- A status under an option is shown as the plugin's own words, in the
-  palette's success, warning or error color, so it does not pass as Chaat's
-  text.
+- A status under an option is shown as the plugin's own words, in quotation
+  marks: `ok` in the palette's success color, `error` in its error color and
+  `working` in its dim color (with an ellipsis added unless the message
+  already ends in one), so it does not pass as Chaat's text.
 
 ### Statuses, choices and actions
 

@@ -5718,7 +5718,14 @@ mod tests {
         let ctx = egui::Context::default();
         plugin_entry(&mut app, "light", &[]);
         app.settings.plugins[0].instance = "new".into();
-        app.plugins.entry("light".into()).or_default();
+        app.plugins.entry("light".into()).or_default().options.push(
+            crate::plugin::protocol::OptionSpec {
+                id: "key".into(),
+                kind: crate::plugin::protocol::OptionKind::Secret,
+                label: "Key".into(),
+                ..Default::default()
+            },
+        );
         let answer = |instance: &str| Event::PluginSecretSaved {
             plugin: "light".into(),
             instance: instance.into(),

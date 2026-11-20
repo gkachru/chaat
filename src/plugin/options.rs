@@ -179,7 +179,10 @@ pub fn is_visible(spec: &OptionSpec, values: &Map<String, Value>) -> bool {
 pub fn effective_values(specs: &[OptionSpec], stored: &Map<String, Value>) -> Map<String, Value> {
     let mut values = Map::new();
     for spec in specs {
-        if matches!(spec.kind, OptionKind::Secret | OptionKind::Action) {
+        if matches!(
+            spec.kind,
+            OptionKind::Secret | OptionKind::Action | OptionKind::Unsupported { .. }
+        ) {
             continue;
         }
         if let Some(value) = stored
@@ -680,5 +683,19 @@ mod tests {
         );
         assert_eq!(defaults_for_section(&specs, None), map(json!({"g": "hi"})));
         assert!(defaults_for_section(&specs, Some("Nope")).is_empty());
+    }
+
+    #[test]
+    fn unsupported_kinds_are_not_sent_even_when_a_value_is_stored() {
+        let future = spec(OptionKind::Unsupported {
+            kind: "dial".into(),
+        });
+        let specs = [OptionSpec {
+            id: "x".into(),
+            ..future
+        }];
+        let mut stored = Map::new();
+        stored.insert("x".into(), json!(5));
+        assert!(effective_values(&specs, &stored).is_empty());
     }
 }
