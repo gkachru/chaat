@@ -128,6 +128,7 @@ fn need_words(need: &str) -> &'static str {
         "accounts" => "your accounts' IDs and sign-in names",
         "presence" => "your presence (availability and activity)",
         "options" => "its own settings below",
+        "push" => "your update notifications: which chats changed and when, no message text",
         _ => "something Chaat does not know",
     }
 }

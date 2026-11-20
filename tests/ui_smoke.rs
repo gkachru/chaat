@@ -10,6 +10,9 @@ use chaat::paths::AppDirs;
 use chaat::settings::{Settings, ThemeChoice};
 use egui::load::BytesLoader as _;
 
+/// One day in `Message::created` units (milliseconds).
+const DAY_MS: i64 = 24 * 60 * 60 * 1000;
+
 struct Harness {
     app: App,
     ctx: egui::Context,
@@ -2118,10 +2121,19 @@ fn messages_of_only_emoji_draw_large_inside_their_bubble() {
 
 #[test]
 fn single_reactions_show_only_the_emoji() {
+    let ada = ConversationId::Chat("19:demo-ada@unq.gbl.spaces".into());
     let mut h = Harness::new();
-    h.act(Action::OpenConversation(ConversationId::Chat(
-        "19:demo-ada@unq.gbl.spaces".into(),
-    )));
+    // The demo dates its messages from the clock: after midnight Ada's
+    // last message falls on a new day, and the extra day divider scrolled
+    // the first reaction out of an 820-point window. Span three days at any
+    // hour, in a window tall enough for the whole history.
+    let view = h.app.conversations.get_mut(&ada).unwrap();
+    let last = view.messages.len() - 1;
+    for message in &mut view.messages[..last] {
+        message.created -= DAY_MS;
+    }
+    h.size.y = 2000.0;
+    h.act(Action::OpenConversation(ada));
     h.frames(5);
     let texts = painted_texts(&h);
     assert!(texts.iter().any(|t| t == "👍"), "one reaction: emoji only");
@@ -2756,13 +2768,19 @@ fn membership_lines_name_people_graph_left_unnamed() {
 fn a_missed_call_offers_call_back_in_both_themes_and_widths() {
     for width in [720.0, 1280.0] {
         for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+            let grace = ConversationId::Chat("19:demo-grace@unq.gbl.spaces".into());
             let mut h = Harness::new();
             h.size.x = width;
             h.app.settings.theme = theme.clone();
+            // Older than yesterday, the call is dated by weekday and month
+            // (as after midnight, when the demo's yesterday becomes two
+            // days ago): the longest line Call back must still fit beside.
+            let view = h.app.conversations.get_mut(&grace).unwrap();
+            for message in &mut view.messages {
+                message.created -= 4 * DAY_MS;
+            }
             h.frames(2);
-            h.act(Action::OpenConversation(ConversationId::Chat(
-                "19:demo-grace@unq.gbl.spaces".into(),
-            )));
+            h.act(Action::OpenConversation(grace));
             h.frames(2);
             let texts = painted_texts(&h);
             assert!(
@@ -4620,4 +4638,207 @@ fn settings_opens_the_plugins_page_once_when_a_setup_starts() {
     h.act(Action::ShowSettingsPage(SettingsPage::General));
     h.frames(2);
     assert_eq!(h.app.settings_page, Some(SettingsPage::General));
+}
+
+/// Settings › Push updates with the demo call-alerts plugin also offering
+/// `push`. `allowed` is whether the person allowed the `push` need.
+fn push_plugin_harness(width: f32, theme: ThemeChoice, allowed: bool) -> Harness {
+    let mut h = Harness::new();
+    h.size = egui::vec2(width, 3000.0);
+    h.app.settings.theme = theme;
+    h.app.demo = false;
+    let entry = h
+        .app
+        .settings
+        .plugins
+        .iter_mut()
+        .find(|e| e.id == "demo-alerts")
+        .unwrap();
+    entry.needs.push("push".into());
+    if allowed {
+        entry.approved_needs.push("push".into());
+    }
+    let state = h.app.plugins.get_mut("demo-alerts").unwrap();
+    state.offers.push("push");
+    state.needs.push("push");
+    if !allowed {
+        state.pending_needs.push("push");
+    }
+    h.act(Action::ShowSettingsPage(SettingsPage::Push));
+    h.frames(2);
+    h
+}
+
+fn push_plugin_event(h: &mut Harness, event: chaat::plugin::event::PushEvent) {
+    let ctx = h.ctx.clone();
+    h.app.handle(
+        chaat::backend::Event::Plugin {
+            id: "demo-alerts".into(),
+            generation: 0,
+            event: chaat::plugin::event::PluginEvent::Push(event),
+        },
+        &ctx,
+    );
+    h.frames(2);
+}
+
+#[test]
+fn push_settings_show_the_plugin_tunnel() {
+    use chaat::plugin::event::PushEvent;
+    let mut h = push_plugin_harness(900.0, ThemeChoice::Dark, true);
+    push_plugin_event(
+        &mut h,
+        PushEvent::Ready {
+            url: "https://a.trycloudflare.com".into(),
+        },
+    );
+    let painted = painted_texts(&h);
+    assert!(
+        painted.iter().any(|t| t == "Tunnel at a.trycloudflare.com"),
+        "{painted:?}"
+    );
+    assert!(
+        painted
+            .iter()
+            .any(|t| t == "Plugin: \u{201C}Ring alerts\u{201D}")
+    );
+}
+
+#[test]
+fn push_settings_say_relay_wins() {
+    let mut h = push_plugin_harness(900.0, ThemeChoice::Dark, true);
+    h.app.settings.relay_url = Some("https://relay.example.com".into());
+    h.frames(2);
+    let painted = painted_texts(&h);
+    assert!(
+        painted
+            .iter()
+            .any(|t| t.contains("relay address is used instead")),
+        "{painted:?}"
+    );
+    // The relay field stays available.
+    assert!(painted.iter().any(|t| t == "RELAY"));
+}
+
+#[test]
+fn plugins_page_lists_the_push_need() {
+    let mut h = plugins_settings_harness(900.0, ThemeChoice::Dark);
+    h.app
+        .plugins
+        .get_mut("demo-light")
+        .unwrap()
+        .pending_needs
+        .push("push");
+    h.frames(2);
+    let painted = painted_texts(&h);
+    assert!(
+        painted.iter().any(
+            |t| t == "your update notifications: which chats changed and when, no message text"
+        ),
+        "{painted:?}"
+    );
+}
+
+#[test]
+fn push_plugin_states_draw() {
+    use chaat::plugin::event::PushEvent;
+    for width in [380.0, 1280.0] {
+        for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+            let want = |h: &Harness, text: &str| {
+                let painted = painted_texts(h);
+                assert!(
+                    painted.iter().any(|t| t == text),
+                    "{text:?} shows at {width} in {theme:?}: {painted:?}"
+                );
+            };
+            let mut h = push_plugin_harness(width, theme.clone(), false);
+            want(&h, "Allow it in Settings \u{203A} Plugins");
+            let mut h2 = push_plugin_harness(width, theme.clone(), true);
+            want(&h2, "Waiting for the plugin's tunnel");
+            push_plugin_event(
+                &mut h2,
+                PushEvent::Ready {
+                    url: "https://a.trycloudflare.com".into(),
+                },
+            );
+            want(&h2, "Tunnel at a.trycloudflare.com");
+            push_plugin_event(
+                &mut h2,
+                PushEvent::Down {
+                    reason: Some("cloudflared not found".into()),
+                },
+            );
+            want(&h2, "The plugin's tunnel is down");
+            want(&h2, "\u{201C}cloudflared not found\u{201D}");
+            push_plugin_event(&mut h2, PushEvent::Down { reason: None });
+            want(&h2, "The plugin's tunnel is down");
+            h.frames(1);
+        }
+    }
+}
+
+#[test]
+fn push_settings_open_plugins_button_pushes_the_action() {
+    let mut h = push_plugin_harness(900.0, ThemeChoice::Dark, false);
+    let pos = text_pos_nth(&h, "Open Plugins", 0).expect("button shows");
+    h.click(pos);
+    // The view only queued the action; the page changes when it is applied.
+    assert!(
+        h.app
+            .actions
+            .contains(&Action::ShowSettingsPage(SettingsPage::Plugins))
+            || h.app.settings_page == Some(SettingsPage::Plugins)
+    );
+}
+
+#[test]
+fn push_settings_relay_note_hides_the_plugin_state() {
+    let mut h = push_plugin_harness(900.0, ThemeChoice::Light, false);
+    h.app.settings.relay_url = Some("https://relay.example.com".into());
+    h.frames(2);
+    let painted = painted_texts(&h);
+    assert!(
+        painted
+            .iter()
+            .any(|t| t.contains("relay address is used instead"))
+    );
+    assert!(
+        !painted
+            .iter()
+            .any(|t| t == "Allow it in Settings \u{203A} Plugins")
+    );
+    assert!(!painted.iter().any(|t| t == "Open Plugins"));
+}
+
+#[test]
+fn push_settings_wrap_long_plugin_words_at_380() {
+    use chaat::plugin::event::PushEvent;
+    let mut h = push_plugin_harness(380.0, ThemeChoice::Dark, true);
+    let name = "N".repeat(40) + " " + &"name ".repeat(30);
+    h.app.plugins.get_mut("demo-alerts").unwrap().info.name = Some(name);
+    let reason = "reason ".repeat(60);
+    push_plugin_event(
+        &mut h,
+        PushEvent::Down {
+            reason: Some(reason),
+        },
+    );
+    let mut seen = 0;
+    for shape in painted_shapes(&h) {
+        if let egui::epaint::Shape::Text(text) = shape {
+            let t = &text.galley.job.text;
+            // Not the sign-in banner's truncated "Plugin:" line.
+            if !text.galley.elided
+                && (t.starts_with("Plugin: \u{201C}N") || t.starts_with("\u{201C}reason"))
+            {
+                seen += 1;
+                assert!(text.galley.rows.len() > 1, "wraps: {t}");
+                assert!(
+                    text.pos.x + text.galley.rect.right() <= 380.5,
+                    "inside the window: {t}"
+                );
+            }
+        }
+    }
+    assert_eq!(seen, 2);
 }

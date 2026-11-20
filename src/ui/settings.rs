@@ -799,6 +799,9 @@ fn push(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         &palette,
         "With a chaat-relay you run, Microsoft Graph tells Chaat about new messages as they happen, also in the background. Only chat and message IDs pass through the relay.",
     );
+    if let Some(view) = app.push_plugin_view() {
+        push_plugin(app, ui, &view, actions);
+    }
     group(ui, &palette, "Relay");
     ui.horizontal(|ui| {
         ui.add(
@@ -861,6 +864,76 @@ fn push(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
             actions.push(Action::RetryRelay);
         }
     });
+}
+
+/// What the push plugin says about its tunnel. The plugin's name and reason
+/// are quoted, so they read as the plugin's words and not Chaat's.
+fn push_plugin(
+    app: &App,
+    ui: &mut egui::Ui,
+    view: &crate::app::PushPluginView,
+    actions: &mut Vec<Action>,
+) {
+    use crate::app::PushPluginState;
+    let palette = app.palette;
+    group(ui, &palette, "Plugin");
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new(format!("Plugin: \u{201C}{}\u{201D}", view.name))
+                .font(theme::regular(14.0))
+                .color(palette.text),
+        )
+        .wrap(),
+    );
+    if view.relay_set {
+        note(
+            ui,
+            &palette,
+            format!(
+                "Plugin \u{201C}{}\u{201D} is not used: the relay address is used instead.",
+                view.name
+            ),
+        );
+        return;
+    }
+    let (text, color) = match &view.state {
+        PushPluginState::Up { host } => (format!("Tunnel at {host}"), palette.success),
+        PushPluginState::Waiting => (
+            "Waiting for the plugin's tunnel".to_owned(),
+            palette.secondary,
+        ),
+        PushPluginState::Down { .. } => ("The plugin's tunnel is down".to_owned(), palette.danger),
+        PushPluginState::NeedsApproval => (
+            "Allow it in Settings \u{203A} Plugins".to_owned(),
+            palette.secondary,
+        ),
+    };
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new(text)
+                .font(theme::regular(13.0))
+                .color(color),
+        )
+        .wrap(),
+    );
+    if let PushPluginState::Down {
+        reason: Some(reason),
+    } = &view.state
+    {
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(format!("\u{201C}{reason}\u{201D}"))
+                    .font(theme::regular(13.0))
+                    .color(palette.secondary),
+            )
+            .wrap(),
+        );
+    }
+    if view.state == PushPluginState::NeedsApproval
+        && widgets::secondary_button(ui, &palette, "Open Plugins").clicked()
+    {
+        actions.push(Action::ShowSettingsPage(SettingsPage::Plugins));
+    }
 }
 
 fn shortcuts(app: &App, ui: &mut egui::Ui) {
