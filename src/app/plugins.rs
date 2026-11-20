@@ -498,10 +498,19 @@ impl App {
         state.info = info;
         state.offers = offers;
         state.needs = needs.clone();
-        if !wants_accounts {
-            // A later `ready` that needs them again must be sent them.
-            state.sent_accounts = None;
+        let dropped_accounts = !wants_accounts && state.sent_accounts.take().is_some();
+        if dropped_accounts {
+            // A later `ready` that needs them again must be sent them, and a
+            // crash-restart must not hand them to a plugin that stopped asking.
+            self.send_service(Command::PluginHello {
+                id: id.to_owned(),
+                accounts: Some(Vec::new()),
+                forget: None,
+            });
         }
+        let Some(state) = self.plugins.get_mut(id) else {
+            return;
+        };
         state.options = options;
         // A restarted process has not been sent the presence yet.
         state.sent_presence = None;
@@ -652,5 +661,47 @@ impl App {
         }
         self.mark_settings_dirty();
         self.send_plugin_options(plugin);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::{Backend, Waker};
+    use crate::paths::AppDirs;
+    use crate::settings::Settings;
+
+    #[test]
+    fn a_ready_that_drops_accounts_clears_the_stored_restart_hello() {
+        let (backend, _) = Backend::recording();
+        let dir = std::env::temp_dir().join("chaat-test-unused");
+        let mut app = App::with_backend(
+            AppDirs::under(&dir),
+            Settings::default(),
+            Waker::default(),
+            backend,
+            false,
+        );
+        let (service, mut commands) = Backend::recording();
+        app.service = service;
+        app.id = Some("u-me.t1".into());
+        let ready = |app: &mut App, needs: Vec<&'static str>| {
+            app.on_plugin_ready(
+                "p",
+                PluginInfo::default(),
+                Vec::new(),
+                needs,
+                Vec::new(),
+                Vec::new(),
+            );
+        };
+        ready(&mut app, vec!["accounts"]);
+        while commands.try_recv().is_ok() {}
+        ready(&mut app, Vec::new());
+        let sent: Vec<Command> = std::iter::from_fn(|| commands.try_recv().ok()).collect();
+        assert!(sent.iter().any(|c| matches!(
+            c,
+            Command::PluginHello { id, accounts: Some(a), .. } if id == "p" && a.is_empty()
+        )));
     }
 }
