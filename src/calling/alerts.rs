@@ -21,21 +21,30 @@ pub fn is_user_code(code: &str) -> bool {
     (4..=32).contains(&code.len()) && code.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
-/// Whether a sign-in page the plugin names is an HTTPS page on Microsoft's
-/// own sign-in hosts. Plugin lines are untrusted; Chaat offers to open only
-/// these.
+/// The longest sign-in page address Chaat accepts from a plugin.
+const MAX_SIGN_IN_PAGE: usize = 200;
+
+/// Whether a sign-in page the plugin names is one of Microsoft's device
+/// sign-in pages, matched exactly: HTTPS, no user info, port, query or
+/// fragment, host in any case, exact path. Plugin lines are untrusted; Chaat
+/// offers to open only these.
 pub fn is_microsoft_sign_in_page(uri: &str) -> bool {
+    if uri.len() > MAX_SIGN_IN_PAGE || uri.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return false;
+    }
     let Some(rest) = uri.strip_prefix("https://") else {
         return false;
     };
-    let host = rest
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or_default()
-        .to_ascii_lowercase();
+    let Some((host, path)) = rest.split_once('/') else {
+        return false;
+    };
+    let host = host.to_ascii_lowercase();
     matches!(
-        host.as_str(),
-        "microsoft.com" | "www.microsoft.com" | "login.microsoftonline.com" | "login.microsoft.com"
+        (host.as_str(), path),
+        ("microsoft.com", "devicelogin")
+            | ("www.microsoft.com", "devicelogin")
+            | ("login.microsoftonline.com", "common/oauth2/deviceauth")
+            | ("login.microsoft.com", "device")
     )
 }
 
@@ -70,6 +79,48 @@ mod tests {
             "https://evil.example/?microsoft.com"
         ));
         assert!(!is_microsoft_sign_in_page("https://user@evil.example/"));
+    }
+
+    #[test]
+    fn sign_in_pages_must_match_exactly() {
+        for ok in [
+            "https://microsoft.com/devicelogin",
+            "https://www.microsoft.com/devicelogin",
+            "https://LOGIN.MicrosoftOnline.com/common/oauth2/deviceauth",
+            "https://login.microsoft.com/device",
+        ] {
+            assert!(is_microsoft_sign_in_page(ok), "{ok}");
+        }
+        for bad in [
+            "https://microsoft.com/",
+            "https://microsoft.com",
+            "https://microsoft.com/devicelogin/",
+            "https://microsoft.com/devicelogin?otc=1",
+            "https://microsoft.com/devicelogin#x",
+            "https://microsoft.com:443/devicelogin",
+            "https://user@microsoft.com/devicelogin",
+            "https://microsoft.com@evil.example/devicelogin",
+            "https://microsoft.com/DeviceLogin",
+            "https://microsoft.com/devicelogin ",
+            "https://microsoft.com/device\tlogin",
+            "https://microsoft.com/devicelogin\n",
+            "https://login.microsoft.com/devicelogin",
+            "https://login.microsoftonline.com/common/oauth2/authorize",
+        ] {
+            assert!(!is_microsoft_sign_in_page(bad), "{bad:?}");
+        }
+        let long = format!("https://microsoft.com/devicelogin/{}", "a".repeat(200));
+        assert!(!is_microsoft_sign_in_page(&long));
+    }
+
+    #[test]
+    fn consent_urls_on_microsoft_hosts_are_refused() {
+        assert!(!is_microsoft_sign_in_page(
+            "https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=x&scope=Mail.Read"
+        ));
+        assert!(!is_microsoft_sign_in_page(
+            "https://login.microsoftonline.com/common/adminconsent?client_id=x"
+        ));
     }
 
     #[test]

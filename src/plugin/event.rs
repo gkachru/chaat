@@ -5,7 +5,9 @@
 use crate::calling::RingAlert;
 use crate::calling::alerts::{is_microsoft_sign_in_page, is_user_code, ring_timeout};
 use crate::plugin::host::HostEvent;
-use crate::plugin::protocol::{OptionSpec, PluginInfo, PluginMessage, clean_options, plain_text};
+use crate::plugin::protocol::{
+    OptionSpec, PluginInfo, PluginMessage, account_id, clean_options, plain_text,
+};
 use crate::plugin::registry;
 
 /// Something a plugin did, for the app to act on.
@@ -93,7 +95,7 @@ fn message_event(message: PluginMessage) -> Option<PluginEvent> {
             video,
             group,
             thread_id,
-            account,
+            account: account.as_deref().and_then(account_id),
             username: username.and_then(|name| plain_text(&name, 100)),
             ring_timeout: Some(ring_timeout(ring_timeout_secs)),
         })),
@@ -114,17 +116,24 @@ fn message_event(message: PluginMessage) -> Option<PluginEvent> {
             }
             (is_microsoft_sign_in_page(&verification_uri) && is_user_code(&user_code)).then_some(
                 PluginEvent::SignIn {
-                    account,
+                    account: account.as_deref().and_then(account_id),
                     verification_uri,
                     user_code,
                 },
             )
         }
-        PluginMessage::SignedIn { account, .. } => Some(PluginEvent::SignedIn { account }),
-        PluginMessage::Listening { account, .. } => Some(PluginEvent::Listening { account }),
+        PluginMessage::SignedIn { account, .. } => Some(PluginEvent::SignedIn {
+            account: account.as_deref().and_then(account_id),
+        }),
+        PluginMessage::Listening { account, .. } => Some(PluginEvent::Listening {
+            account: account_id(&account)?,
+        }),
         PluginMessage::Error { message, account } => {
             let message = plain_text(&message?, 200)?;
-            Some(PluginEvent::Error { account, message })
+            Some(PluginEvent::Error {
+                account: account.as_deref().and_then(account_id),
+                message,
+            })
         }
         PluginMessage::Other => None,
     }
@@ -252,6 +261,42 @@ mod tests {
     }
 
     #[test]
+    fn odd_account_ids_are_dropped() {
+        let error = |account: &str| {
+            event(HostEvent::Message(parsed(
+                json!({"v":1,"type":"error","message":"boom","account":account}),
+            )))
+        };
+        assert!(matches!(
+            error("o1.t1"),
+            Some(PluginEvent::Error {
+                account: Some(_),
+                ..
+            })
+        ));
+        for bad in ["not an id", "a.b.c", "x\u{202E}.y", &"a".repeat(150)] {
+            assert!(matches!(
+                error(bad),
+                Some(PluginEvent::Error { account: None, .. })
+            ));
+        }
+        let signed_in = parsed(json!({"v":1,"type":"signed_in","account":"bad id"}));
+        assert_eq!(
+            event(HostEvent::Message(signed_in)),
+            Some(PluginEvent::SignedIn { account: None })
+        );
+        let listening = parsed(json!({"v":1,"type":"listening","account":"bad id"}));
+        assert_eq!(event(HostEvent::Message(listening)), None);
+        let ring = parsed(json!({"v":1,"type":"incoming_call","id":"c",
+            "account":"a b","username":"Ada\u{202E}\nL"}));
+        let Some(PluginEvent::IncomingCall(alert)) = event(HostEvent::Message(ring)) else {
+            panic!("ring");
+        };
+        assert_eq!(alert.account, None);
+        assert_eq!(alert.username.as_deref(), Some("Ada L"));
+    }
+
+    #[test]
     fn errors_and_other_messages() {
         let with_account = parsed(json!({"v":1,"type":"error","message":"boom","account":"o1.t1"}));
         assert_eq!(
@@ -271,6 +316,11 @@ mod tests {
             None
         );
         assert_eq!(event(HostEvent::Message(PluginMessage::Other)), None);
+        let unclean = parsed(json!({"v":1,"type":"error","message":"boom","account":"a b"}));
+        assert!(matches!(
+            event(HostEvent::Message(unclean)),
+            Some(PluginEvent::Error { account: None, .. })
+        ));
         let listening = parsed(json!({"v":1,"type":"listening","account":"o1.t1"}));
         assert_eq!(
             event(HostEvent::Message(listening)),

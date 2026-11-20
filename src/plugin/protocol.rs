@@ -106,24 +106,24 @@ pub enum PluginMessage {
     },
     SignInRequired {
         /// How to sign in. Absent means `device_code` (older plugins).
-        #[serde(default)]
+        #[serde(default, deserialize_with = "lenient_text")]
         method: Option<String>,
         verification_uri: String,
         user_code: String,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "lenient_text")]
         account: Option<String>,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "lenient_text")]
         username: Option<String>,
     },
     SignedIn {
-        #[serde(default)]
+        #[serde(default, deserialize_with = "lenient_text")]
         account: Option<String>,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "lenient_text")]
         username: Option<String>,
     },
     Listening {
         account: String,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "lenient_text")]
         username: Option<String>,
     },
     IncomingCall {
@@ -148,9 +148,9 @@ pub enum PluginMessage {
         ring_timeout_secs: Option<u64>,
     },
     Error {
-        #[serde(default)]
+        #[serde(default, deserialize_with = "lenient_text")]
         message: Option<String>,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "lenient_text")]
         account: Option<String>,
     },
     #[serde(other)]
@@ -188,9 +188,28 @@ impl PluginInfo {
             description: description.and_then(|text| plain(&text, 300)),
             docs_url: docs_url
                 .filter(|url| url.starts_with("https://") && url.len() <= 300)
-                .filter(|url| !url.chars().any(|c| c.is_whitespace() || c.is_control())),
+                .filter(|url| !url.chars().any(|c| c.is_whitespace() || c.is_control()))
+                .filter(|url| !has_userinfo(url)),
         }
     }
+}
+
+/// Whether an `https://` address has user info: an `@` in its authority,
+/// before the first `/`, `?` or `#`.
+fn has_userinfo(url: &str) -> bool {
+    let rest = url.strip_prefix("https://").unwrap_or(url);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    authority.contains('@')
+}
+
+/// An account id (`oid.tid`) from a plugin: letters, digits and dashes around
+/// one dot, at most 100 characters. Anything else is `None`.
+pub fn account_id(text: &str) -> Option<String> {
+    let (oid, tid) = text.split_once('.')?;
+    let part_ok = |part: &str| {
+        !part.is_empty() && part.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+    };
+    (text.len() <= 100 && part_ok(oid) && part_ok(tid)).then(|| text.to_owned())
 }
 
 /// The most options a plugin may describe.
@@ -618,6 +637,70 @@ mod tests {
         let info = PluginInfo::from_ready(None, Some(" \n ".into()), Some("https://a.b/c".into()));
         assert_eq!(info.description, None);
         assert_eq!(info.docs_url.as_deref(), Some("https://a.b/c"));
+    }
+
+    #[test]
+    fn docs_url_with_userinfo_is_dropped() {
+        let info = |url: &str| PluginInfo::from_ready(None, None, Some(url.into())).docs_url;
+        assert_eq!(info("https://user@example.com/x"), None);
+        assert_eq!(info("https://github.com@evil.example/x"), None);
+        assert_eq!(info("https://u:p@example.com"), None);
+        assert_eq!(info("ftp://example.com/x"), None);
+        assert_eq!(
+            info("https://example.com/a@b").as_deref(),
+            Some("https://example.com/a@b")
+        );
+    }
+
+    #[test]
+    fn an_error_with_a_number_message_still_parses() {
+        assert_eq!(
+            PluginMessage::parse(r#"{"v":1,"type":"error","message":5,"account":[1]}"#),
+            Some(PluginMessage::Error {
+                message: None,
+                account: None
+            })
+        );
+        assert_eq!(
+            PluginMessage::parse(r#"{"v":1,"type":"signed_in","account":3,"username":{}}"#),
+            Some(PluginMessage::SignedIn {
+                account: None,
+                username: None
+            })
+        );
+        assert_eq!(
+            PluginMessage::parse(r#"{"v":1,"type":"listening","account":"o.t","username":4}"#),
+            Some(PluginMessage::Listening {
+                account: "o.t".into(),
+                username: None
+            })
+        );
+        assert_eq!(
+            PluginMessage::parse(
+                r#"{"v":1,"type":"sign_in_required","verification_uri":"u","user_code":"c","method":1,"account":false}"#
+            ),
+            Some(PluginMessage::SignInRequired {
+                method: None,
+                verification_uri: "u".into(),
+                user_code: "c".into(),
+                account: None,
+                username: None
+            })
+        );
+        // A mistyped required field drops just that message.
+        assert_eq!(
+            PluginMessage::parse(r#"{"v":1,"type":"listening","account":5}"#),
+            None
+        );
+    }
+
+    #[test]
+    fn account_ids_have_a_fixed_shape() {
+        assert!(account_id("o-1.t-2").is_some());
+        for bad in ["", "a", "a.", ".b", "a.b.c", "a b.c", "a\n.b", "a_b.c"] {
+            assert_eq!(account_id(bad), None, "{bad:?}");
+        }
+        assert_eq!(account_id(&format!("{}.t", "a".repeat(99))), None);
     }
 
     fn opt(v: serde_json::Value) -> Vec<OptionSpec> {
