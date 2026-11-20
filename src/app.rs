@@ -1517,6 +1517,8 @@ impl App {
             }
             AuthStatus::SignedOut => {
                 self.clear_data();
+                // The account has no presence now; plugins hear it.
+                self.sync_plugin_presence();
             }
             AuthStatus::Failed(reason) => {
                 // Signing in again did not finish: back to the cached
@@ -3682,6 +3684,53 @@ mod tests {
             &ctx,
         );
         assert_eq!(count(&mut commands), 1);
+    }
+
+    #[test]
+    fn presence_is_resent_when_the_account_signs_out() {
+        let (mut app, mut commands) = app_with_service();
+        let ctx = egui::Context::default();
+        app.my_presence = Some(busy());
+        plugin_entry(&mut app, "light", &[]);
+        app.sync_plugins();
+        app.handle(
+            plugin_event("light", ready_event(&["presence"], &[], Vec::new(), &[])),
+            &ctx,
+        );
+        sent(&mut commands);
+        app.handle(Event::Auth(AuthStatus::SignedOut), &ctx);
+        assert!(sent(&mut commands).iter().any(|c| matches!(
+            c,
+            Command::PluginSend {
+                message: crate::plugin::protocol::HostMessage::Presence { availability, .. },
+                ..
+            } if availability == "Unknown"
+        )));
+    }
+
+    #[test]
+    fn a_plugin_that_drops_and_regains_the_accounts_need_is_sent_them_again() {
+        let (mut app, mut commands) = app_with_service();
+        let ctx = egui::Context::default();
+        plugin_entry(&mut app, "p", &["accounts"]);
+        app.sync_plugins();
+        app.handle(
+            plugin_event("p", ready_event(&[], &[], Vec::new(), &[])),
+            &ctx,
+        );
+        assert!(app.plugins["p"].sent_accounts.is_none());
+        sent(&mut commands);
+        app.handle(
+            plugin_event("p", ready_event(&["accounts"], &[], Vec::new(), &[])),
+            &ctx,
+        );
+        assert!(sent(&mut commands).iter().any(|c| matches!(
+            c,
+            Command::PluginSend {
+                message: crate::plugin::protocol::HostMessage::Accounts { .. },
+                ..
+            }
+        )));
     }
 
     #[test]

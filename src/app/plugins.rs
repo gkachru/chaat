@@ -489,6 +489,10 @@ impl App {
         state.info = info;
         state.offers = offers;
         state.needs = needs.clone();
+        if !wants_accounts {
+            // A later `ready` that needs them again must be sent them.
+            state.sent_accounts = None;
+        }
         state.options = options;
         // A restarted process has not been sent the presence yet.
         state.sent_presence = None;
