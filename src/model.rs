@@ -946,7 +946,9 @@ pub enum Action {
     /// Closes a ring toast (by its call id).
     DismissRing(String),
     /// Hides the call-alerts sign-in panel; the plugin keeps waiting.
-    HideCallAlertsSignIn,
+    HideCallAlertsSignIn(Option<String>),
+    /// Asks the call-alerts plugin for a sign-in code for this account now.
+    CallAlertsSignIn(String),
     /// Picks the call-alerts plugin's executable with the system's file picker.
     ChooseCallAlertsPlugin,
     Quit,
@@ -970,6 +972,10 @@ pub struct Toast {
 /// code at the page. The plugin signs in on its own; Chaat only shows this.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PluginSignIn {
+    /// The Chaat account (`oid.tid`) it is for; `None` from an older plugin.
+    pub account: Option<String>,
+    /// That account's sign-in name, to say whom to sign in as.
+    pub username: Option<String>,
     pub verification_uri: String,
     pub user_code: String,
 }
@@ -990,6 +996,11 @@ pub struct Ring {
     /// The caller, when Chaat knows them from a chat's members. Their email
     /// address is what a call back dials.
     pub member: Option<Member>,
+    /// The Chaat account (`oid.tid`) it rang on, when Chaat has that account.
+    /// Its buttons switch to that account first.
+    pub account: Option<String>,
+    /// The account to name on the card, when that isn't obvious.
+    pub account_name: Option<String>,
     /// When the ring arrived, for the toast's expiry.
     pub arrived: std::time::Instant,
 }

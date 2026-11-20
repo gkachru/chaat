@@ -183,7 +183,17 @@ pub enum Command {
     /// Launch (or relaunch) the external call-alerts plugin at this path and
     /// listen for ring alerts. Sent to the service backend. An empty path or a
     /// disabled setting is sent as `StopCallAlerts` instead.
-    StartCallAlerts(std::path::PathBuf),
+    StartCallAlerts {
+        path: std::path::PathBuf,
+        accounts: Vec<crate::calling::PluginAccount>,
+    },
+    /// Tells the running plugin which of Chaat's accounts to listen for.
+    CallAlertsAccounts(Vec<crate::calling::PluginAccount>),
+    /// The person signed this account (`oid.tid`) out of Chaat: the plugin
+    /// forgets its own sign-in for it too.
+    CallAlertsForget(String),
+    /// Asks the plugin for a fresh sign-in code for this account now.
+    CallAlertsSignIn(String),
     /// Stop the call-alerts plugin, if one is running.
     StopCallAlerts,
     Shutdown,
@@ -335,12 +345,21 @@ pub enum Event {
     IncomingCall(crate::calling::RingAlert),
     /// The call-alerts plugin needs a one-time sign-in: show the person the URL
     /// and code. The plugin stores the token and continues on its own.
+    /// `account` is the Chaat account (`oid.tid`) it is for, when the plugin says.
     CallAlertsSignIn {
+        account: Option<String>,
+        username: Option<String>,
         verification_uri: String,
         user_code: String,
     },
     /// The sign-in the plugin asked for finished.
-    CallAlertsSignedIn,
+    CallAlertsSignedIn {
+        account: Option<String>,
+    },
+    /// The plugin is listening for this account's calls.
+    CallAlertsListening {
+        account: String,
+    },
     /// The call-alerts plugin reported a problem (e.g. not signed in) or its
     /// status changed. `running` says whether it is currently active.
     CallAlertsStatus {

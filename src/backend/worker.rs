@@ -154,7 +154,7 @@ struct Worker {
     /// cleanup.
     stop_push: Option<(watch::Sender<bool>, tokio::task::JoinHandle<()>)>,
     /// The external call-alerts plugin process reader, and its stop signal.
-    call_alerts: Option<(watch::Sender<bool>, tokio::task::JoinHandle<()>)>,
+    call_alerts: Option<CallAlerts>,
     /// Whether Chaat keeps a presence session (setting), and when it last
     /// refreshed it.
     session_enabled: bool,
@@ -420,7 +420,22 @@ impl Worker {
             Command::UserName(user) => self.user_name(user),
             Command::Media(url) => self.media(url),
             Command::Search(query) => self.search(query),
-            Command::StartCallAlerts(path) => self.restart_call_alerts(path),
+            Command::StartCallAlerts { path, accounts } => {
+                self.restart_call_alerts(path, accounts);
+            }
+            Command::CallAlertsAccounts(accounts) => {
+                if let Some(plugin) = &self.call_alerts {
+                    plugin.accounts.send_replace(accounts);
+                }
+            }
+            Command::CallAlertsForget(account) => self.call_alerts_request(serde_json::json!({
+                "type": "forget",
+                "account": account,
+            })),
+            Command::CallAlertsSignIn(account) => self.call_alerts_request(serde_json::json!({
+                "type": "sign_in",
+                "account": account,
+            })),
             Command::StopCallAlerts => {
                 self.stop_call_alerts().await;
                 self.out.send(Event::CallAlertsStatus {
@@ -776,23 +791,49 @@ impl Worker {
 
     /// Launches (or relaunches) the external call-alerts plugin and reads its
     /// ring alerts. The plugin is a separate process; Chaat speaks a small JSON
-    /// protocol to it over stdio and never shares tokens with it (docs/calling.md).
-    fn restart_call_alerts(&mut self, path: std::path::PathBuf) {
+    /// protocol to it over stdio, telling it only its accounts' ids and sign-in
+    /// names, never a token (docs/calling.md).
+    fn restart_call_alerts(
+        &mut self,
+        path: std::path::PathBuf,
+        accounts: Vec<crate::calling::PluginAccount>,
+    ) {
         let (stop, stopped) = watch::channel(false);
+        let (accounts, accounts_rx) = watch::channel(accounts);
+        let (requests, requests_rx) = tokio::sync::mpsc::unbounded_channel();
         let out = self.out.clone();
-        let task = tokio::spawn(call_alerts_loop(path, out, stopped));
-        if let Some((old_stop, old_task)) = self.call_alerts.replace((stop, task)) {
-            let _ = old_stop.send(true);
-            old_task.abort();
+        let task = tokio::spawn(call_alerts_loop(
+            path,
+            out,
+            stopped,
+            accounts_rx,
+            requests_rx,
+        ));
+        let plugin = CallAlerts {
+            stop,
+            accounts,
+            requests,
+            task,
+        };
+        if let Some(old) = self.call_alerts.replace(plugin) {
+            let _ = old.stop.send(true);
+            old.task.abort();
+        }
+    }
+
+    /// Sends the running plugin one host message; dropped if none runs.
+    fn call_alerts_request(&self, message: serde_json::Value) {
+        if let Some(plugin) = &self.call_alerts {
+            let _ = plugin.requests.send(host_line(message));
         }
     }
 
     /// Stops the call-alerts plugin, if one is running, and waits briefly for it
     /// to exit.
     async fn stop_call_alerts(&mut self) {
-        if let Some((stop, task)) = self.call_alerts.take() {
-            let _ = stop.send(true);
-            if tokio::time::timeout(Duration::from_secs(3), task)
+        if let Some(plugin) = self.call_alerts.take() {
+            let _ = plugin.stop.send(true);
+            if tokio::time::timeout(Duration::from_secs(3), plugin.task)
                 .await
                 .is_err()
             {
@@ -1701,23 +1742,55 @@ impl Worker {
     }
 }
 
-/// The handshake Chaat sends the plugin at startup.
-const CALL_ALERTS_HELLO: &str =
-    "{\"v\":1,\"type\":\"hello\",\"host\":\"chaat\",\"capabilities\":[\"call_alerts\"]}\n";
-/// The clean-exit request Chaat sends before stopping the plugin.
-const CALL_ALERTS_SHUTDOWN: &str = "{\"v\":1,\"type\":\"shutdown\"}\n";
+/// The running call-alerts plugin, and the ways to reach it.
+struct CallAlerts {
+    stop: watch::Sender<bool>,
+    /// Chaat's accounts, for the plugin to listen for. Sent in `hello`, and as
+    /// an `accounts` message whenever it changes.
+    accounts: watch::Sender<Vec<crate::calling::PluginAccount>>,
+    /// Other host messages (`forget`, `sign_in`), as JSON lines.
+    requests: tokio::sync::mpsc::UnboundedSender<String>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+/// One host message as a JSON line.
+fn host_line(mut message: serde_json::Value) -> String {
+    message["v"] = 1.into();
+    let mut line = message.to_string();
+    line.push('\n');
+    line
+}
+
+fn hello_line(accounts: &[crate::calling::PluginAccount]) -> String {
+    host_line(serde_json::json!({
+        "type": "hello",
+        "host": "chaat",
+        "capabilities": ["call_alerts"],
+        "accounts": accounts,
+    }))
+}
+
+fn accounts_line(accounts: &[crate::calling::PluginAccount]) -> String {
+    host_line(serde_json::json!({ "type": "accounts", "accounts": accounts }))
+}
 
 /// Runs the external call-alerts plugin, restarting it with backoff if it exits,
-/// until `stop` is set. The plugin is a separate process; we only read its JSON
-/// lines and never pass it any Chaat state or token.
-async fn call_alerts_loop(path: std::path::PathBuf, out: Outbox, mut stop: watch::Receiver<bool>) {
+/// until `stop` is set. The plugin is a separate process; it learns only the
+/// ids and sign-in names of Chaat's accounts, never a token.
+async fn call_alerts_loop(
+    path: std::path::PathBuf,
+    out: Outbox,
+    mut stop: watch::Receiver<bool>,
+    mut accounts: watch::Receiver<Vec<crate::calling::PluginAccount>>,
+    mut requests: tokio::sync::mpsc::UnboundedReceiver<String>,
+) {
     let mut backoff = Duration::from_secs(1);
     // Only the first failure in a row is worth a notice; a plugin that is
     // missing or crashes at once would otherwise repeat it every restart.
     let mut failing = false;
     while !*stop.borrow() {
         let started = std::time::Instant::now();
-        match run_call_alerts_once(&path, &out, &mut stop).await {
+        match run_call_alerts_once(&path, &out, &mut stop, &mut accounts, &mut requests).await {
             Ok(()) => return, // asked to stop
             Err(error) => {
                 // A run that lasted a while was healthy: start over.
@@ -1747,6 +1820,8 @@ async fn run_call_alerts_once(
     path: &std::path::Path,
     out: &Outbox,
     stop: &mut watch::Receiver<bool>,
+    accounts: &mut watch::Receiver<Vec<crate::calling::PluginAccount>>,
+    requests: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
 ) -> std::io::Result<()> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
@@ -1772,7 +1847,8 @@ async fn run_call_alerts_once(
         .stdout
         .take()
         .ok_or_else(|| std::io::Error::other("plugin stdout unavailable"))?;
-    let _ = stdin.write_all(CALL_ALERTS_HELLO.as_bytes()).await;
+    let hello = hello_line(&accounts.borrow_and_update());
+    let _ = stdin.write_all(hello.as_bytes()).await;
     let _ = stdin.flush().await;
 
     let mut lines = tokio::io::BufReader::new(stdout).lines();
@@ -1780,12 +1856,22 @@ async fn run_call_alerts_once(
         tokio::select! {
             _ = stop.changed() => {
                 if *stop.borrow() {
-                    let _ = stdin.write_all(CALL_ALERTS_SHUTDOWN.as_bytes()).await;
+                    let shutdown = host_line(serde_json::json!({ "type": "shutdown" }));
+                    let _ = stdin.write_all(shutdown.as_bytes()).await;
                     let _ = stdin.flush().await;
                     let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
                     let _ = child.start_kill();
                     return Ok(());
                 }
+            }
+            Ok(()) = accounts.changed() => {
+                let line = accounts_line(&accounts.borrow_and_update());
+                let _ = stdin.write_all(line.as_bytes()).await;
+                let _ = stdin.flush().await;
+            }
+            Some(line) = requests.recv() => {
+                let _ = stdin.write_all(line.as_bytes()).await;
+                let _ = stdin.flush().await;
             }
             line = lines.next_line() => match line {
                 Ok(Some(line)) => decode_call_alert(line.trim(), out),
@@ -1822,44 +1908,51 @@ fn decode_call_alert(line: &str, out: &Outbox) {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
         return;
     };
+    let text = |key: &str| value[key].as_str().map(str::to_owned);
     match value["type"].as_str() {
         Some("incoming_call") => {
-            let Some(id) = value["id"].as_str() else {
+            let Some(id) = text("id") else {
                 return;
             };
             out.send(Event::IncomingCall(crate::calling::RingAlert {
-                id: id.to_owned(),
-                caller: value["caller"]
-                    .as_str()
-                    .unwrap_or("Unknown caller")
-                    .to_owned(),
-                caller_mri: value["caller_mri"].as_str().unwrap_or_default().to_owned(),
+                id,
+                caller: text("caller").unwrap_or_else(|| "Unknown caller".to_owned()),
+                caller_mri: text("caller_mri").unwrap_or_default(),
                 video: value["video"].as_bool().unwrap_or(false),
                 group: value["group"].as_bool().unwrap_or(false),
-                thread_id: value["thread_id"].as_str().map(str::to_owned),
+                thread_id: text("thread_id"),
+                account: text("account"),
+                username: text("username"),
             }));
         }
         Some("sign_in_required") => {
             if let (Some(uri), Some(code)) = (
-                value["verification_uri"]
-                    .as_str()
-                    .filter(|uri| is_microsoft_sign_in_page(uri)),
-                value["user_code"].as_str(),
+                text("verification_uri").filter(|uri| is_microsoft_sign_in_page(uri)),
+                text("user_code"),
             ) {
                 out.send(Event::CallAlertsSignIn {
-                    verification_uri: uri.to_owned(),
-                    user_code: code.to_owned(),
+                    account: text("account"),
+                    username: text("username"),
+                    verification_uri: uri,
+                    user_code: code,
                 });
             }
         }
-        Some("signed_in") => out.send(Event::CallAlertsSignedIn),
+        Some("signed_in") => out.send(Event::CallAlertsSignedIn {
+            account: text("account"),
+        }),
+        Some("listening") => {
+            if let Some(account) = text("account") {
+                out.send(Event::CallAlertsListening { account });
+            }
+        }
         Some("ready") => out.send(Event::CallAlertsStatus {
             running: true,
             message: None,
         }),
         Some("error") => out.send(Event::CallAlertsStatus {
             running: true,
-            message: value["message"].as_str().map(str::to_owned),
+            message: text("message"),
         }),
         _ => {}
     }
@@ -2981,7 +3074,7 @@ mod tests {
         assert!(
             matches!(&got[0], Event::CallAlertsSignIn { user_code, .. } if user_code == "AB12")
         );
-        assert!(matches!(got[1], Event::CallAlertsSignedIn));
+        assert!(matches!(got[1], Event::CallAlertsSignedIn { .. }));
         assert!(matches!(&got[2], Event::IncomingCall(ring)
             if ring.caller_object_id() == Some("u-ada") && ring.video && ring.thread_id.is_none()));
     }

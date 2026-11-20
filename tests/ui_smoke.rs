@@ -3201,22 +3201,26 @@ fn a_ring_toast_offers_place_call_and_open_chat_in_both_themes_and_widths() {
                     video: true,
                     group: false,
                     thread_id: None,
+                    account: None,
+                    username: None,
                 }),
                 &ctx,
             );
             h.frames(2);
             let painted = painted_texts(&h);
-            for text in [
-                "Ada Lovelace",
-                "Incoming video call",
-                "Place call",
-                "Open chat",
-            ] {
+            for text in ["Ada Lovelace", "Place call", "Open chat"] {
                 assert!(
                     painted.iter().any(|t| t == text),
                     "{text:?} shows at {width} in {theme:?}"
                 );
             }
+            // The demo has several accounts, so the card names the one it rang on.
+            assert!(
+                painted
+                    .iter()
+                    .any(|t| t.starts_with("Incoming video call for ")),
+                "the account shows at {width} in {theme:?}"
+            );
             let open = ring_text_pos(&h, "Open chat").expect("Open chat is painted");
             h.click(open);
             h.frames(2);
@@ -3238,6 +3242,8 @@ fn the_call_alerts_sign_in_panel_shows_the_code_in_both_themes_and_widths() {
             let ctx = h.ctx.clone();
             h.app.handle(
                 chaat::backend::Event::CallAlertsSignIn {
+                    account: None,
+                    username: None,
                     verification_uri: "https://microsoft.com/devicelogin".into(),
                     user_code: "AB12CD34".into(),
                 },
@@ -3256,8 +3262,8 @@ fn the_call_alerts_sign_in_panel_shows_the_code_in_both_themes_and_widths() {
                     "{text:?} shows at {width} in {theme:?}"
                 );
             }
-            assert!(h.app.call_alerts_sign_in.is_some());
-            h.act(Action::HideCallAlertsSignIn);
+            assert!(!h.app.call_alerts_sign_in.is_empty());
+            h.act(Action::HideCallAlertsSignIn(None));
             assert!(!painted_texts(&h).iter().any(|t| t == "AB12CD34"));
         }
     }
@@ -3291,5 +3297,46 @@ fn the_calls_settings_page_offers_the_call_alerts_plugin() {
             "Remove shows at {width}"
         );
         assert!(painted.iter().any(|t| t == "The plugin isn't running."));
+    }
+}
+
+#[test]
+fn call_alerts_settings_list_each_account_and_whether_it_listens() {
+    for width in [480.0, 1280.0] {
+        let mut h = Harness::new();
+        h.size.x = width;
+        // Tall enough that the whole Calls page fits without scrolling.
+        h.size.y = 1800.0;
+        let mut calls = h.app.settings.calls.clone();
+        calls.call_alerts_plugin = Some("C:/plugins/call-alerts.exe".into());
+        calls.call_alerts = true;
+        h.act(Action::SetCallSettings(calls));
+        let ctx = h.ctx.clone();
+        h.app.handle(
+            chaat::backend::Event::CallAlertsStatus {
+                running: true,
+                message: None,
+            },
+            &ctx,
+        );
+        h.app.handle(
+            chaat::backend::Event::CallAlertsListening {
+                account: "u-alex2.fabrikam".into(),
+            },
+            &ctx,
+        );
+        h.act(Action::ShowSettingsPage(SettingsPage::Calls));
+        let painted = painted_texts(&h);
+        for text in [
+            "alex@fabrikam.com",
+            "Listening for calls",
+            "Not signed in",
+            "Sign in",
+        ] {
+            assert!(
+                painted.iter().any(|t| t == text),
+                "{text:?} shows at {width}"
+            );
+        }
     }
 }

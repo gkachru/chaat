@@ -607,12 +607,16 @@ pub struct App {
     /// Ringing calls the call-alerts plugin reported, newest last.
     pub rings: Vec<Ring>,
     /// A sign-in the call-alerts plugin is waiting for, shown as a panel.
-    pub call_alerts_sign_in: Option<crate::model::PluginSignIn>,
+    pub call_alerts_sign_in: Vec<crate::model::PluginSignIn>,
     /// Whether the call-alerts plugin last said it is running.
     pub call_alerts_running: bool,
-    /// Whether the plugin already asked to sign in (and raised the window)
-    /// since it last started or signed in.
-    call_alerts_asked: bool,
+    /// Accounts whose sign-in the plugin already asked for (and raised the
+    /// window), since it last started or that account signed in.
+    call_alerts_asked: Vec<Option<String>>,
+    /// Accounts (`oid.tid`) the plugin said it listens for.
+    pub call_alerts_listening: Vec<String>,
+    /// The accounts the plugin was last told about.
+    call_alerts_sent: Vec<crate::calling::PluginAccount>,
     next_toast: u64,
     pub actions: Vec<Action>,
 
@@ -749,9 +753,11 @@ impl App {
             jump_to: None,
             toasts: Vec::new(),
             rings: Vec::new(),
-            call_alerts_sign_in: None,
+            call_alerts_sign_in: Vec::new(),
             call_alerts_running: false,
-            call_alerts_asked: false,
+            call_alerts_asked: Vec::new(),
+            call_alerts_listening: Vec::new(),
+            call_alerts_sent: Vec::new(),
             next_toast: 0,
             actions: Vec::new(),
             palette,
@@ -809,17 +815,67 @@ impl App {
     /// Starts or stops the external call-alerts plugin to match the settings.
     /// The plugin is process-wide (one external process), so it runs on the
     /// service backend, not a per-account one.
-    pub(crate) fn sync_call_alerts(&self) {
+    pub(crate) fn sync_call_alerts(&mut self) {
         if self.demo {
             return;
         }
+        let accounts = self.call_alerts_accounts();
         let command = match &self.settings.calls.call_alerts_plugin {
-            Some(path) if self.settings.calls.call_alerts && !path.as_os_str().is_empty() => {
-                Command::StartCallAlerts(path.clone())
-            }
+            Some(path) if self.call_alerts_enabled() => Command::StartCallAlerts {
+                path: path.clone(),
+                accounts: accounts.clone(),
+            },
             _ => Command::StopCallAlerts,
         };
+        self.call_alerts_sent = accounts;
         self.service.send(command);
+    }
+
+    /// Whether the call-alerts plugin should run.
+    pub fn call_alerts_enabled(&self) -> bool {
+        self.settings.calls.call_alerts
+            && self
+                .settings
+                .calls
+                .call_alerts_plugin
+                .as_ref()
+                .is_some_and(|path| !path.as_os_str().is_empty())
+    }
+
+    /// Chaat's signed-in accounts, as the call-alerts plugin is told about
+    /// them: ids and sign-in names only.
+    pub fn call_alerts_accounts(&self) -> Vec<crate::calling::PluginAccount> {
+        self.accounts
+            .iter()
+            .filter_map(|account| {
+                Some(crate::calling::PluginAccount {
+                    id: account.id.clone()?,
+                    username: account.username(),
+                })
+            })
+            .collect()
+    }
+
+    /// Tells a running plugin about changes to Chaat's accounts.
+    fn sync_call_alerts_accounts(&mut self) {
+        if self.demo || !self.call_alerts_enabled() {
+            return;
+        }
+        let accounts = self.call_alerts_accounts();
+        if accounts != self.call_alerts_sent {
+            self.call_alerts_sent = accounts.clone();
+            self.service.send(Command::CallAlertsAccounts(accounts));
+        }
+    }
+
+    /// The sign-in name Chaat knows for an account id.
+    fn call_alerts_username(&self, account: Option<&str>) -> Option<String> {
+        let account = account?;
+        self.accounts
+            .iter()
+            .find(|a| a.id.as_deref() == Some(account))
+            .map(|a| a.username())
+            .filter(|name| !name.is_empty())
     }
 
     fn start_account(&mut self, index: usize) {
@@ -975,6 +1031,7 @@ impl App {
             self.settings.account = active;
             self.mark_settings_dirty();
         }
+        self.sync_call_alerts_accounts();
     }
 
     // -- Frame -----------------------------------------------------------------
@@ -1481,31 +1538,59 @@ impl App {
             }
             Event::IncomingCall(alert) => self.on_incoming_call(alert),
             Event::CallAlertsSignIn {
+                account,
+                username,
                 verification_uri,
                 user_code,
             } => {
-                self.call_alerts_sign_in = Some(crate::model::PluginSignIn {
-                    verification_uri,
-                    user_code,
-                });
-                // Bring Chaat forward for the first code only; later codes (an
-                // expired or declined one) update the panel quietly.
-                if !self.call_alerts_asked {
-                    self.call_alerts_asked = true;
+                self.call_alerts_listening
+                    .retain(|id| Some(id) != account.as_ref());
+                // Bring Chaat forward for an account's first code only; later
+                // codes (an expired or declined one) update the panel quietly.
+                if !self.call_alerts_asked.contains(&account) {
+                    self.call_alerts_asked.push(account.clone());
                     self.wants_show = true;
                 }
+                let sign_in = crate::model::PluginSignIn {
+                    username: username
+                        .filter(|name| !name.is_empty())
+                        .or_else(|| self.call_alerts_username(account.as_deref())),
+                    account,
+                    verification_uri,
+                    user_code,
+                };
+                match self
+                    .call_alerts_sign_in
+                    .iter_mut()
+                    .find(|s| s.account == sign_in.account)
+                {
+                    Some(shown) => *shown = sign_in,
+                    None => self.call_alerts_sign_in.push(sign_in),
+                }
             }
-            Event::CallAlertsSignedIn => {
-                self.call_alerts_sign_in = None;
-                self.call_alerts_asked = false;
-                self.toast(ToastKind::Info, "Call alerts are on.");
+            Event::CallAlertsSignedIn { account } => {
+                self.call_alerts_sign_in.retain(|s| s.account != account);
+                self.call_alerts_asked.retain(|asked| *asked != account);
+                let text = match self.call_alerts_username(account.as_deref()) {
+                    Some(name) if self.accounts.len() > 1 => {
+                        format!("Call alerts are on for {name}.")
+                    }
+                    _ => "Call alerts are on.".to_owned(),
+                };
+                self.toast(ToastKind::Info, text);
+            }
+            Event::CallAlertsListening { account } => {
+                if !self.call_alerts_listening.contains(&account) {
+                    self.call_alerts_listening.push(account);
+                }
             }
             Event::CallAlertsStatus { running, message } => {
                 self.call_alerts_running = running;
-                // A stopped plugin no longer waits for its sign-in.
+                // A stopped plugin no longer waits for sign-ins or listens.
                 if !running {
-                    self.call_alerts_sign_in = None;
-                    self.call_alerts_asked = false;
+                    self.call_alerts_sign_in.clear();
+                    self.call_alerts_asked.clear();
+                    self.call_alerts_listening.clear();
                 }
                 if let Some(message) = message {
                     self.toast(ToastKind::Error, message);
@@ -1607,6 +1692,7 @@ impl App {
             self.settings.account = self.id.clone();
             self.mark_settings_dirty();
         }
+        self.sync_call_alerts_accounts();
     }
 
     fn on_chats(&mut self, mut chats: Vec<Chat>, cached: bool) {
@@ -2541,10 +2627,17 @@ impl App {
             }
             Action::DismissToast(id) => self.toasts.retain(|t| t.id != id),
             Action::DismissRing(id) => self.rings.retain(|r| r.id != id),
-            Action::HideCallAlertsSignIn => self.call_alerts_sign_in = None,
+            Action::HideCallAlertsSignIn(account) => {
+                self.call_alerts_sign_in.retain(|s| s.account != account);
+            }
+            Action::CallAlertsSignIn(account) => {
+                if !self.demo {
+                    self.service.send(Command::CallAlertsSignIn(account));
+                }
+            }
             Action::ChooseCallAlertsPlugin => self.choose_call_alerts_plugin(),
             Action::RingPlaceCall(id) => self.ring_place_call(&id, ctx),
-            Action::RingOpenChat(id) => self.ring_open_chat(&id),
+            Action::RingOpenChat(id) => self.ring_open_chat(&id, ctx),
             Action::Quit => {
                 self.quit_requested = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -2938,6 +3031,12 @@ impl App {
         if self.demo {
             return;
         }
+        // Signing out of Chaat also ends call alerts for that account.
+        if let Some(id) = self.id.clone()
+            && self.call_alerts_enabled()
+        {
+            self.service.send(Command::CallAlertsForget(id));
+        }
         self.sign_out_browser();
         self.backend.send(Command::SignOut);
         let index = self.active;
@@ -3305,6 +3404,8 @@ mod tests {
             video: false,
             group: false,
             thread_id: None,
+            account: None,
+            username: None,
         }
     }
 
@@ -3365,13 +3466,15 @@ mod tests {
         let (mut app, _dir) = demo_app();
         let ctx = egui::Context::default();
         let ask = || Event::CallAlertsSignIn {
+            account: None,
+            username: None,
             verification_uri: "https://microsoft.com/devicelogin".into(),
             user_code: "AB12".into(),
         };
         app.handle(ask(), &ctx);
-        assert_eq!(app.call_alerts_sign_in.as_ref().unwrap().user_code, "AB12");
-        app.handle(Event::CallAlertsSignedIn, &ctx);
-        assert!(app.call_alerts_sign_in.is_none());
+        assert_eq!(app.call_alerts_sign_in[0].user_code, "AB12");
+        app.handle(Event::CallAlertsSignedIn { account: None }, &ctx);
+        assert!(app.call_alerts_sign_in.is_empty());
         app.handle(ask(), &ctx);
         app.handle(
             Event::CallAlertsStatus {
@@ -3380,10 +3483,10 @@ mod tests {
             },
             &ctx,
         );
-        assert!(app.call_alerts_sign_in.is_none());
+        assert!(app.call_alerts_sign_in.is_empty());
         app.handle(ask(), &ctx);
-        app.apply(Action::HideCallAlertsSignIn, &ctx);
-        assert!(app.call_alerts_sign_in.is_none());
+        app.apply(Action::HideCallAlertsSignIn(None), &ctx);
+        assert!(app.call_alerts_sign_in.is_empty());
     }
 
     #[test]
@@ -3398,7 +3501,7 @@ mod tests {
         app.apply(Action::SetCallSettings(calls.clone()), &ctx);
         assert!(matches!(
             service_commands.try_recv(),
-            Ok(Command::StartCallAlerts(path)) if path == std::path::Path::new("plugin.exe")
+            Ok(Command::StartCallAlerts { path, .. }) if path == std::path::Path::new("plugin.exe")
         ));
         // Unrelated call settings leave the plugin alone.
         calls.dock = !calls.dock;
@@ -3431,6 +3534,8 @@ mod tests {
         let (mut app, _dir) = demo_app();
         let ctx = egui::Context::default();
         let ask = |code: &str| Event::CallAlertsSignIn {
+            account: None,
+            username: None,
             verification_uri: "https://microsoft.com/devicelogin".into(),
             user_code: code.into(),
         };
@@ -3438,17 +3543,141 @@ mod tests {
         app.handle(ask("FIRST"), &ctx);
         assert!(app.wants_show);
         app.wants_show = false;
-        app.apply(Action::HideCallAlertsSignIn, &ctx);
+        app.apply(Action::HideCallAlertsSignIn(None), &ctx);
         app.handle(ask("SECOND"), &ctx);
         assert!(!app.wants_show, "a later code doesn't pull Chaat forward");
-        assert_eq!(
-            app.call_alerts_sign_in.as_ref().unwrap().user_code,
-            "SECOND"
-        );
+        assert_eq!(app.call_alerts_sign_in[0].user_code, "SECOND");
         // After signing in, a future expiry may raise it again.
-        app.handle(Event::CallAlertsSignedIn, &ctx);
+        app.handle(Event::CallAlertsSignedIn { account: None }, &ctx);
         app.handle(ask("THIRD"), &ctx);
         assert!(app.wants_show);
+    }
+
+    const FABRIKAM: &str = "u-alex2.fabrikam";
+    const FABRIKAM_MAE: &str = "19:fabrikam-mae@unq.gbl.spaces";
+
+    fn fabrikam_index(app: &App) -> usize {
+        app.accounts
+            .iter()
+            .position(|a| a.id.as_deref() == Some(FABRIKAM))
+            .expect("the demo has a Fabrikam account")
+    }
+
+    #[test]
+    fn a_ring_on_another_account_resolves_there_and_switches_to_it() {
+        let (mut app, _dir) = demo_app();
+        let ctx = egui::Context::default();
+        let fabrikam = fabrikam_index(&app);
+        assert_ne!(app.active, fabrikam);
+        let mut alert = ring("f-call", "8:orgid:u-mae");
+        alert.account = Some(FABRIKAM.into());
+        app.on_incoming_call(alert);
+        let shown = &app.rings[0];
+        assert_eq!(shown.account.as_deref(), Some(FABRIKAM));
+        assert_eq!(shown.account_name.as_deref(), Some("alex@fabrikam.com"));
+        assert_eq!(shown.chat, Some(ConversationId::Chat(FABRIKAM_MAE.into())));
+        assert_eq!(shown.email(), Some("mae@fabrikam.com"));
+        app.apply(Action::RingOpenChat("f-call".into()), &ctx);
+        assert_eq!(app.active, fabrikam);
+        assert_eq!(app.open, Some(ConversationId::Chat(FABRIKAM_MAE.into())));
+    }
+
+    #[test]
+    fn a_ring_on_an_account_chaat_lacks_shows_unresolved() {
+        let (mut app, _dir) = demo_app();
+        let active = app.active;
+        let mut alert = ring("x-call", "8:orgid:u-ada");
+        alert.account = Some("other.tenant".into());
+        alert.username = Some("someone@elsewhere.com".into());
+        app.on_incoming_call(alert);
+        let shown = &app.rings[0];
+        assert_eq!(shown.account, None);
+        assert_eq!(shown.account_name.as_deref(), Some("someone@elsewhere.com"));
+        assert!(shown.member.is_none() && !shown.can_open_chat());
+        let ctx = egui::Context::default();
+        app.apply(Action::RingPlaceCall("x-call".into()), &ctx);
+        assert_eq!(app.active, active, "no account to switch to");
+    }
+
+    #[test]
+    fn the_plugin_hears_about_chaats_accounts_and_sign_outs() {
+        let (mut app, _) = app();
+        let (service, mut service_commands) = Backend::recording();
+        app.service = service;
+        app.id = Some("u-me.t1".into());
+        app.settings.calls.call_alerts_plugin = Some(PathBuf::from("plugin.exe"));
+        app.settings.calls.call_alerts = true;
+        app.sync_call_alerts();
+        let me = crate::calling::PluginAccount {
+            id: "u-me.t1".into(),
+            username: "me@contoso.com".into(),
+        };
+        assert!(matches!(
+            service_commands.try_recv(),
+            Ok(Command::StartCallAlerts { accounts, .. }) if accounts == vec![me.clone()]
+        ));
+        // Nothing changed: nothing to tell.
+        app.remember_accounts();
+        assert!(service_commands.try_recv().is_err());
+        app.auth = AuthStatus::SignedIn {
+            account: "u-me.t1".into(),
+            name: "Me".into(),
+            username: "me@fabrikam.com".into(),
+        };
+        app.remember_accounts();
+        assert!(matches!(
+            service_commands.try_recv(),
+            Ok(Command::CallAlertsAccounts(accounts))
+                if accounts[0].username == "me@fabrikam.com"
+        ));
+        let ctx = egui::Context::default();
+        app.apply(Action::SignOut, &ctx);
+        let sent: Vec<Command> = std::iter::from_fn(|| service_commands.try_recv().ok()).collect();
+        assert!(
+            sent.iter()
+                .any(|c| matches!(c, Command::CallAlertsForget(id) if id == "u-me.t1"))
+        );
+        assert!(
+            sent.iter()
+                .any(|c| matches!(c, Command::CallAlertsAccounts(accounts) if accounts.is_empty()))
+        );
+    }
+
+    #[test]
+    fn each_account_gets_its_own_sign_in_card() {
+        let (mut app, _dir) = demo_app();
+        let ctx = egui::Context::default();
+        let ask = |account: &str, code: &str| Event::CallAlertsSignIn {
+            account: Some(account.into()),
+            username: None,
+            verification_uri: "https://microsoft.com/devicelogin".into(),
+            user_code: code.into(),
+        };
+        app.handle(ask("u-me.demo", "ONE"), &ctx);
+        app.handle(ask(FABRIKAM, "TWO"), &ctx);
+        app.handle(ask(FABRIKAM, "THREE"), &ctx);
+        assert_eq!(app.call_alerts_sign_in.len(), 2);
+        let fabrikam = app
+            .call_alerts_sign_in
+            .iter()
+            .find(|s| s.account.as_deref() == Some(FABRIKAM))
+            .unwrap();
+        assert_eq!(fabrikam.user_code, "THREE");
+        assert_eq!(fabrikam.username.as_deref(), Some("alex@fabrikam.com"));
+        app.handle(
+            Event::CallAlertsSignedIn {
+                account: Some(FABRIKAM.into()),
+            },
+            &ctx,
+        );
+        assert_eq!(app.call_alerts_sign_in.len(), 1);
+        app.handle(
+            Event::CallAlertsListening {
+                account: FABRIKAM.into(),
+            },
+            &ctx,
+        );
+        assert_eq!(app.call_alerts_listening, vec![FABRIKAM.to_owned()]);
     }
     #[test]
     fn dismissing_a_ring_removes_only_that_one() {

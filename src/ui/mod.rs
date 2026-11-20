@@ -432,7 +432,7 @@ fn toasts(app: &mut App, ctx: &egui::Context) {
 /// call" and "Open chat". A ring stays until used, dismissed, or about as long
 /// as Teams rings (the plugin cannot tell when the call stops).
 fn rings(app: &mut App, ctx: &egui::Context) {
-    if app.rings.is_empty() && app.call_alerts_sign_in.is_none() {
+    if app.rings.is_empty() && app.call_alerts_sign_in.is_empty() {
         return;
     }
     let palette = app.palette;
@@ -468,7 +468,7 @@ fn rings(app: &mut App, ctx: &egui::Context) {
         .order(egui::Order::Foreground)
         .interactable(true)
         .show(ctx, |ui| {
-            if let Some(sign_in) = app.call_alerts_sign_in.clone() {
+            for sign_in in app.call_alerts_sign_in.clone() {
                 card(ui, &mut |ui| {
                     sign_in_card(ui, &palette, &sign_in, &mut app.actions)
                 });
@@ -506,7 +506,11 @@ fn sign_in_card(
                 14.0,
                 palette.dim,
             );
-            widgets::on_click(&close, actions, Action::HideCallAlertsSignIn);
+            widgets::on_click(
+                &close,
+                actions,
+                Action::HideCallAlertsSignIn(sign_in.account.clone()),
+            );
         });
     });
     ui.add_space(4.0);
@@ -571,10 +575,17 @@ fn ring_card(
                 (false, true) => "Incoming video call",
                 (false, false) => "Incoming call",
             };
-            ui.label(
-                egui::RichText::new(what)
-                    .size(12.0)
-                    .color(palette.secondary),
+            let what = match &ring.account_name {
+                Some(name) => format!("{what} for {name}"),
+                None => what.to_owned(),
+            };
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(what)
+                        .size(12.0)
+                        .color(palette.secondary),
+                )
+                .truncate(),
             );
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {

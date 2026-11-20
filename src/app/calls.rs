@@ -586,10 +586,37 @@ impl App {
 /// Ring alerts from the call-alerts plugin (docs/calling.md).
 impl App {
     /// A call is ringing, as the call-alerts plugin reported. Shows the ring
-    /// toast, with the caller resolved against the chats Chaat has, and brings
-    /// Chaat forward so the person sees it.
+    /// toast, with the caller resolved against the chats of the account it
+    /// rang on, and brings Chaat forward so the person sees it.
     pub(super) fn on_incoming_call(&mut self, alert: crate::calling::RingAlert) {
-        let (chat, member) = self.resolve_caller(&alert);
+        // An older plugin doesn't say which account: take the one on screen.
+        let index = match &alert.account {
+            None => Some(self.active),
+            Some(id) => self
+                .accounts
+                .iter()
+                .position(|a| a.id.as_deref() == Some(id.as_str())),
+        };
+        let (chat, member) = index
+            .and_then(|i| self.accounts.get(i))
+            .map(|account| resolve_caller(account, &alert))
+            .unwrap_or_default();
+        // Name the account when it isn't obvious: several accounts, or one
+        // Chaat doesn't have.
+        let account_name = match index.and_then(|i| self.accounts.get(i)) {
+            Some(account) if self.accounts.len() > 1 => Some(account.username())
+                .filter(|name| !name.is_empty())
+                .or_else(|| Some(account.label())),
+            Some(_) => None,
+            None => alert
+                .username
+                .clone()
+                .filter(|name| !name.is_empty())
+                .or_else(|| alert.account.clone()),
+        };
+        let account = index
+            .and_then(|i| self.accounts.get(i))
+            .and_then(|a| a.id.clone());
         self.rings.retain(|ring| ring.id != alert.id);
         self.rings.push(Ring {
             id: alert.id,
@@ -598,6 +625,8 @@ impl App {
             group: alert.group,
             chat,
             member,
+            account,
+            account_name,
             arrived: std::time::Instant::now(),
         });
         // Several at once is rare; keep the newest few.
@@ -607,42 +636,25 @@ impl App {
         self.wants_show = true;
     }
 
-    /// The chat and the person behind a ring, from what Chaat already has: the
-    /// call's thread when the push carried one, and the chat member whose user
-    /// id (the Entra object id) matches the caller's MRI.
-    fn resolve_caller(
-        &self,
-        alert: &crate::calling::RingAlert,
-    ) -> (Option<ConversationId>, Option<Member>) {
-        let me = self.me();
-        let member = alert.caller_object_id().and_then(|object_id| {
-            let matches = |m: &&Member| m.user_id.eq_ignore_ascii_case(object_id);
-            // Prefer a member record with an address, for the call back.
-            let mut known = self.chats.iter().flat_map(|c| &c.members).filter(matches);
-            let first = known.clone().next().cloned();
-            known.find(|m| m.email.is_some()).cloned().or(first)
-        });
-        let thread = alert
-            .thread_id
-            .as_deref()
-            .filter(|id| self.chat(id).is_some())
-            .map(|id| ConversationId::Chat(id.to_owned()));
-        let one_on_one = member.as_ref().and_then(|member| {
-            self.chats
+    /// Takes a ring off the screen and shows the account it rang on, so its
+    /// call back or chat happens there.
+    fn take_ring_and_switch(&mut self, id: &str, ctx: &egui::Context) -> Option<Ring> {
+        let ring = self.take_ring(id)?;
+        if let Some(index) = ring.account.as_deref().and_then(|account| {
+            self.accounts
                 .iter()
-                .find(|c| {
-                    c.kind == ChatKind::OneOnOne
-                        && c.peer(me).is_some_and(|p| p.user_id == member.user_id)
-                })
-                .map(|c| ConversationId::Chat(c.id.clone()))
-        });
-        (thread.or(one_on_one), member)
+                .position(|a| a.id.as_deref() == Some(account))
+        }) && index != self.active
+        {
+            self.apply(Action::SwitchAccount(index), ctx);
+        }
+        Some(ring)
     }
 
     /// "Place call": call the caller back in Teams. Without their address,
     /// opens Teams on the web so the person can call from there.
     pub(super) fn ring_place_call(&mut self, id: &str, ctx: &egui::Context) {
-        let Some(ring) = self.take_ring(id) else {
+        let Some(ring) = self.take_ring_and_switch(id, ctx) else {
             return;
         };
         match ring.email() {
@@ -674,8 +686,8 @@ impl App {
 
     /// "Open chat": the chat with the caller, in Chaat. Starts the one-on-one
     /// chat if Chaat knows the caller but has no chat with them yet.
-    pub(super) fn ring_open_chat(&mut self, id: &str) {
-        let Some(ring) = self.take_ring(id) else {
+    pub(super) fn ring_open_chat(&mut self, id: &str, ctx: &egui::Context) {
+        let Some(ring) = self.take_ring_and_switch(id, ctx) else {
             return;
         };
         if let Some(chat) = ring.chat {
@@ -689,6 +701,43 @@ impl App {
         let index = self.rings.iter().position(|ring| ring.id == id)?;
         Some(self.rings.remove(index))
     }
+}
+
+/// The chat and the person behind a ring, from what one account already has:
+/// the call's thread when the push carried one, and the chat member whose user
+/// id (the Entra object id) matches the caller's MRI.
+fn resolve_caller(
+    account: &super::Account,
+    alert: &crate::calling::RingAlert,
+) -> (Option<ConversationId>, Option<Member>) {
+    let me = account.me();
+    let member = alert.caller_object_id().and_then(|object_id| {
+        let matches = |m: &&Member| m.user_id.eq_ignore_ascii_case(object_id);
+        // Prefer a member record with an address, for the call back.
+        let mut known = account
+            .chats
+            .iter()
+            .flat_map(|c| &c.members)
+            .filter(matches);
+        let first = known.clone().next().cloned();
+        known.find(|m| m.email.is_some()).cloned().or(first)
+    });
+    let thread = alert
+        .thread_id
+        .as_deref()
+        .filter(|id| account.chat(id).is_some())
+        .map(|id| ConversationId::Chat(id.to_owned()));
+    let one_on_one = member.as_ref().and_then(|member| {
+        account
+            .chats
+            .iter()
+            .find(|c| {
+                c.kind == ChatKind::OneOnOne
+                    && c.peer(me).is_some_and(|p| p.user_id == member.user_id)
+            })
+            .map(|c| ConversationId::Chat(c.id.clone()))
+    });
+    (thread.or(one_on_one), member)
 }
 
 #[cfg(test)]

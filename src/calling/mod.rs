@@ -33,6 +33,21 @@ pub struct RingAlert {
     pub group: bool,
     /// The chat thread, when the push carried one (usually only group calls).
     pub thread_id: Option<String>,
+    /// The plugin account the call rang on, `oid.tid` like Chaat's account ids.
+    /// `None` from a plugin that predates accounts.
+    pub account: Option<String>,
+    /// That account's sign-in name, as the plugin reported it.
+    pub username: Option<String>,
+}
+
+/// One of Chaat's accounts, as the call-alerts plugin is told about it so it
+/// can listen for that account's calls. Never carries a token.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct PluginAccount {
+    /// `oid.tid`.
+    pub id: String,
+    /// The sign-in name, possibly empty while Chaat doesn't know it yet.
+    pub username: String,
 }
 
 impl RingAlert {

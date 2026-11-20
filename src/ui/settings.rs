@@ -806,6 +806,54 @@ fn call_alerts(
                 .font(theme::regular(13.0))
                 .color(color),
         );
+        if app.call_alerts_running {
+            call_alerts_accounts(app, ui, actions);
+        }
+    }
+}
+
+/// Each of Chaat's accounts, and whether the plugin listens for its calls.
+fn call_alerts_accounts(app: &App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+    let palette = app.palette;
+    for account in app.call_alerts_accounts() {
+        let listening = app.call_alerts_listening.contains(&account.id);
+        let waiting = app
+            .call_alerts_sign_in
+            .iter()
+            .any(|s| s.account.as_deref() == Some(account.id.as_str()));
+        ui.horizontal(|ui| {
+            let name = if account.username.is_empty() {
+                account.id.clone()
+            } else {
+                account.username.clone()
+            };
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(name)
+                        .font(theme::regular(13.0))
+                        .color(palette.text),
+                )
+                .truncate(),
+            );
+            let (state, color) = if listening {
+                ("Listening for calls", palette.secondary)
+            } else if waiting {
+                ("Waiting for sign-in", palette.warning)
+            } else {
+                ("Not signed in", palette.warning)
+            };
+            ui.label(
+                egui::RichText::new(state)
+                    .font(theme::regular(13.0))
+                    .color(color),
+            );
+            if !listening {
+                let label = if waiting { "New code" } else { "Sign in" };
+                if widgets::secondary_button(ui, &palette, label).clicked() {
+                    actions.push(Action::CallAlertsSignIn(account.id.clone()));
+                }
+            }
+        });
     }
 }
 
