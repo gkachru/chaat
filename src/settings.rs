@@ -77,6 +77,13 @@ pub struct CallSettings {
     /// Every web link (messages, calendar, "Open in Teams") opens in the
     /// call browser and profile instead of the default browser.
     pub links_in_browser: bool,
+    /// An external plugin that delivers incoming-call alerts (Chaat itself uses
+    /// only official Graph APIs, which cannot ring; see docs/calling.md). When
+    /// set and `call_alerts` is on, Chaat launches this executable and shows a
+    /// ring toast for each call it reports. Empty means no plugin.
+    pub call_alerts_plugin: Option<std::path::PathBuf>,
+    /// Whether the call-alerts plugin is active. Off unless a path is set.
+    pub call_alerts: bool,
 }
 
 impl Default for CallSettings {
@@ -89,6 +96,8 @@ impl Default for CallSettings {
             profiles: std::collections::BTreeMap::new(),
             sign_out_browser: false,
             links_in_browser: false,
+            call_alerts_plugin: None,
+            call_alerts: false,
         }
     }
 }
