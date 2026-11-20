@@ -985,9 +985,30 @@ pub enum Action {
         plugin: String,
         section: Option<String>,
     },
-    /// Opens a plugin's setup view.
-    OpenPluginSetup(String),
-    ClosePluginSetup,
+    /// Opens a plugin's page in Settings › Plugins (also from Push updates
+    /// and Calls).
+    OpenPlugin(String),
+    /// Back to the plugins list.
+    BackToPlugins,
+    /// Enters the reorder mode of the plugins list.
+    StartReorder,
+    EndReorder,
+    /// Moves a plugin to a place in the list (its final index). List order
+    /// decides which plugin provides push and call alerts.
+    MovePlugin {
+        id: String,
+        to: usize,
+    },
+    /// Finishes the add flow: approves the listed needs, refuses the other
+    /// pending ones and clears `setup_pending`.
+    FinishPluginSetup {
+        id: String,
+        allow: Vec<String>,
+    },
+    /// Cancels the add flow: removes the entry as Remove does.
+    CancelPluginSetup(String),
+    /// Starts a plugin again after it failed in the add flow.
+    RetryPluginStart(String),
     /// Stores (or, with `None`, removes) a plugin's secret option value in
     /// the credential store.
     SetPluginSecret {

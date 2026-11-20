@@ -1,318 +1,19 @@
-//! Settings › Plugins: the plugins Chaat launches. The words about what a
-//! plugin is are Chaat's; the plugin's own name and description show apart.
+//! The options block of a plugin: option rows, secret buffers and the
+//! editing helpers. Everything here is the plugin's own text, drawn as
+//! such; the words around it are Chaat's (see `mod.rs`).
 
-use super::settings::{group, note};
-use super::widgets::{self, PointerControls as _};
 use crate::app::{App, PluginState};
 use crate::model::Action;
 use crate::plugin::options;
 use crate::plugin::protocol::{OptionKind, OptionSpec, StatusState};
-use crate::plugin::registry;
 use crate::settings::PluginEntry;
 use crate::theme;
+use crate::ui::widgets::{self, PointerControls as _};
 use std::time::{Duration, Instant};
 
-pub fn page(app: &App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
-    let palette = app.palette;
-    drop_stale_secret_buffers(app, ui);
-    if let Some(entry) = app
-        .plugin_setup
-        .as_deref()
-        .and_then(|id| app.settings.plugins.iter().find(|e| e.id == id))
-    {
-        setup_view(app, ui, entry, actions);
-        return;
-    }
-    // Chaat's own words, whatever a plugin says about itself.
-    note(
-        ui,
-        &palette,
-        "Plugins are separate programs you install, not part of Chaat. Chaat starts the ones you turn on and shows what they report. It never sends a plugin your messages or sign-in tokens. Check what a plugin does before you use it.",
-    );
-    group(ui, &palette, "Plugins");
-    if app.settings.plugins.is_empty() {
-        note(ui, &palette, "No plugins added.");
-    }
-    let owner = app.call_alerts_owner();
-    for entry in &app.settings.plugins {
-        let state = app.plugins.get(&entry.id);
-        ui.add_space(6.0);
-        heading(app, ui, entry);
-        if let Some(description) = state.and_then(|s| s.info.description.as_ref()) {
-            ui.add(
-                egui::Label::new(
-                    egui::RichText::new(description)
-                        .font(theme::regular(13.0))
-                        .color(palette.secondary),
-                )
-                .wrap(),
-            );
-        }
-        if let Some(url) = state.and_then(|s| s.info.docs_url.as_ref()) {
-            // The host shows next to the link, so the person sees where it
-            // leads before clicking.
-            ui.horizontal(|ui| {
-                if ui.link("About this plugin").clicked() {
-                    actions.push(Action::OpenUrl(url.clone()));
-                }
-                if let Some(host) = link_host(url) {
-                    ui.label(
-                        egui::RichText::new(host)
-                            .font(theme::regular(12.0))
-                            .color(palette.dim),
-                    );
-                }
-            });
-        }
-        ui.add(
-            egui::Label::new(
-                egui::RichText::new(entry.path.display().to_string())
-                    .font(theme::regular(12.0))
-                    .color(palette.dim),
-            )
-            .truncate(),
-        );
-        status(app, ui, entry, state);
-        if !app.plugin_missing_required(&entry.id).is_empty() {
-            ui.horizontal_wrapped(|ui| {
-                needs_setup_badge(ui, &palette);
-                if widgets::secondary_button(ui, &palette, "Set up").clicked() {
-                    actions.push(Action::OpenPluginSetup(entry.id.clone()));
-                }
-            });
-        }
-        if let Some(hash) = state.and_then(|s| s.file_changed.as_deref()) {
-            file_changed_notice(app, ui, entry, hash, actions);
-        }
-        if let Some(state) = state
-            && !state.pending_needs.is_empty()
-        {
-            pending_notice(app, ui, entry, &state.pending_needs, actions);
-        }
-        receives_line(app, ui, entry);
-        let offers_alerts = state.is_some_and(|s| s.offers.contains(&registry::CALL_ALERTS));
-        if offers_alerts && entry.enabled && owner.as_deref().is_some_and(|o| o != entry.id) {
-            note(
-                ui,
-                &palette,
-                "Another plugin provides call alerts, so this one's rings are ignored.",
-            );
-        }
-        ui.horizontal(|ui| {
-            let mut enabled = entry.enabled;
-            if ui.checkbox_hand(&mut enabled, "Turn on").changed() {
-                actions.push(Action::SetPluginEnabled(entry.id.clone(), enabled));
-            }
-            if widgets::secondary_button(ui, &palette, "Remove").clicked() {
-                actions.push(Action::RemovePlugin(entry.id.clone()));
-            }
-        });
-        if let Some(state) = state {
-            let cx = OptionsCx::new(app, entry, state);
-            let all: Vec<&OptionSpec> = state.options.iter().collect();
-            options_block(&cx, ui, &all, actions);
-            if state.running && app.plugin_receives(&entry.id).contains(&"accounts") {
-                account_rows(app, ui, entry, state, actions);
-            }
-        }
-    }
-    ui.add_space(10.0);
-    if widgets::secondary_button(ui, &palette, "Add plugin\u{2026}").clicked() {
-        actions.push(Action::AddPlugin);
-    }
-}
+pub(super) type SecretBuffers = std::collections::HashMap<(String, String), String>;
 
-/// Chaat's words for what one kind of data is.
-fn need_words(need: &str) -> &'static str {
-    match need {
-        "accounts" => "your accounts' IDs and sign-in names",
-        "presence" => "your presence (availability and activity)",
-        "options" => "its own settings below",
-        "push" => "your update notifications: which chats changed and when, no message text",
-        _ => "something Chaat does not know",
-    }
-}
-
-/// "a", "a and b", "a, b and c".
-fn join_plainly(items: &[&str]) -> String {
-    match items {
-        [] => String::new(),
-        [one] => (*one).to_owned(),
-        [init @ .., last] => format!("{} and {last}", init.join(", ")),
-    }
-}
-
-/// What the plugin gets from Chaat now, in Chaat's words.
-fn receives_line(app: &App, ui: &mut egui::Ui, entry: &PluginEntry) {
-    let palette = app.palette;
-    let words: Vec<&str> = app
-        .plugin_receives(&entry.id)
-        .into_iter()
-        .map(need_words)
-        .collect();
-    let text = if words.is_empty() {
-        "nothing".to_owned()
-    } else {
-        join_plainly(&words)
-    };
-    ui.add(
-        egui::Label::new(
-            egui::RichText::new(format!("Receives: {text}"))
-                .font(theme::regular(13.0))
-                .color(palette.secondary),
-        )
-        .wrap(),
-    );
-}
-
-/// A boxed notice that stands apart from the plugin's own text.
-fn notice(ui: &mut egui::Ui, palette: &theme::Palette, add_contents: impl FnOnce(&mut egui::Ui)) {
-    ui.add_space(4.0);
-    egui::Frame::new()
-        .fill(palette.surface)
-        .stroke(egui::Stroke::new(1.0, palette.warning))
-        .corner_radius(6)
-        .inner_margin(egui::Margin::same(10))
-        .show(ui, add_contents);
-    ui.add_space(4.0);
-}
-
-/// The needs the plugin declared that the person has not answered yet.
-fn pending_notice(
-    app: &App,
-    ui: &mut egui::Ui,
-    entry: &PluginEntry,
-    pending: &[&'static str],
-    actions: &mut Vec<Action>,
-) {
-    let palette = app.palette;
-    notice(ui, &palette, |ui| {
-        ui.add(
-            egui::Label::new(
-                egui::RichText::new(format!(
-                    "Plugin \u{201C}{}\u{201D} asks for:",
-                    app.plugin_name(&entry.id)
-                ))
-                .font(theme::medium(13.0))
-                .color(palette.text),
-            )
-            .wrap(),
-        );
-        for need in pending {
-            ui.add(
-                egui::Label::new(
-                    egui::RichText::new(need_words(need))
-                        .font(theme::regular(13.0))
-                        .color(palette.secondary),
-                )
-                .wrap(),
-            );
-        }
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            if widgets::primary_button(ui, &palette, "Allow").clicked() {
-                actions.push(Action::ApprovePluginNeeds(entry.id.clone()));
-            }
-            if widgets::secondary_button(ui, &palette, "Don't allow").clicked() {
-                actions.push(Action::DenyPluginNeeds(entry.id.clone()));
-            }
-        });
-    });
-}
-
-/// The plugin's file no longer matches the one the person added.
-fn file_changed_notice(
-    app: &App,
-    ui: &mut egui::Ui,
-    entry: &PluginEntry,
-    hash: &str,
-    actions: &mut Vec<Action>,
-) {
-    let palette = app.palette;
-    notice(ui, &palette, |ui| {
-        ui.add(
-            egui::Label::new(
-                egui::RichText::new(
-                    "The plugin file changed since you added it. Run the new file only if you trust it.",
-                )
-                .font(theme::regular(13.0))
-                .color(palette.text),
-            )
-            .wrap(),
-        );
-        let short: String = hash.chars().take(12).collect();
-        ui.label(
-            egui::RichText::new(format!("New file fingerprint: {short}"))
-                .font(theme::regular(12.0))
-                .color(palette.dim),
-        );
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            if widgets::secondary_button(ui, &palette, "Run the new file").clicked() {
-                actions.push(Action::TrustPluginFile(entry.id.clone()));
-            }
-            if widgets::secondary_button(ui, &palette, "Keep it off").clicked() {
-                actions.push(Action::KeepPluginOff(entry.id.clone()));
-            }
-        });
-    });
-}
-
-/// The host of an `https://` link: no scheme, user info, port or path.
-fn link_host(url: &str) -> Option<String> {
-    let rest = url.strip_prefix("https://")?;
-    let authority = rest.split(['/', '?', '#']).next()?;
-    let authority = authority.rsplit('@').next()?;
-    let host = if authority.starts_with('[') {
-        authority.split_inclusive(']').next()?
-    } else {
-        authority.split(':').next()?
-    };
-    (!host.is_empty()).then(|| host.to_owned())
-}
-
-/// The plugin's own name, quoted so it reads as the plugin's, not Chaat's.
-fn heading(app: &App, ui: &mut egui::Ui, entry: &PluginEntry) {
-    let palette = app.palette;
-    ui.add(
-        egui::Label::new(
-            egui::RichText::new(format!(
-                "Plugin: \u{201C}{}\u{201D}",
-                app.plugin_name(&entry.id)
-            ))
-            .font(theme::medium(13.0))
-            .color(palette.text),
-        )
-        .truncate(),
-    );
-}
-
-fn status(app: &App, ui: &mut egui::Ui, entry: &PluginEntry, state: Option<&PluginState>) {
-    let palette = app.palette;
-    let (status, color) = if !entry.enabled {
-        ("Off", palette.dim)
-    } else if state.is_some_and(|s| s.running) {
-        ("Running", palette.secondary)
-    } else if let Some(message) = state.and_then(|s| s.message.as_deref()) {
-        (message, palette.warning)
-    } else {
-        ("Not running", palette.warning)
-    };
-    ui.add(
-        egui::Label::new(
-            egui::RichText::new(status)
-                .font(theme::regular(13.0))
-                .color(color),
-        )
-        .wrap(),
-    );
-}
-
-/// Typed but unsaved secrets, by plugin and option, in one egui memory slot so
-/// they can all be dropped at once.
-type SecretBuffers = std::collections::HashMap<(String, String), String>;
-
-fn secret_buffers_id() -> egui::Id {
+pub(super) fn secret_buffers_id() -> egui::Id {
     egui::Id::new("plugin-secret-buffers")
 }
 
@@ -334,20 +35,20 @@ pub fn forget_secret_buffers(ctx: &egui::Context) {
 
 /// The ids of the secret fields drawn so far, so their edit state can be
 /// dropped even when the buffer is empty.
-type SecretFields = Vec<egui::Id>;
+pub(super) type SecretFields = Vec<egui::Id>;
 
-fn secret_fields_id() -> egui::Id {
+pub(super) fn secret_fields_id() -> egui::Id {
     egui::Id::new("plugin-secret-fields")
 }
 
-fn forget_secret_edit_state(ctx: &egui::Context, field: egui::Id) {
+pub(super) fn forget_secret_edit_state(ctx: &egui::Context, field: egui::Id) {
     ctx.data_mut(|d| d.remove::<egui::text_edit::TextEditState>(field));
 }
 
 /// An unsaved secret does not survive leaving the page: if the page was not
 /// drawn in the previous frame, the buffers go. Buffers of plugins or options
 /// that no longer exist go too.
-fn drop_stale_secret_buffers(app: &App, ui: &egui::Ui) {
+pub(super) fn drop_stale_secret_buffers(app: &App, ui: &egui::Ui) {
     let frame = ui.ctx().cumulative_frame_nr();
     let seen = egui::Id::new("plugin-page-last-frame");
     let last = ui.data(|d| d.get_temp::<u64>(seen));
@@ -372,7 +73,7 @@ fn drop_stale_secret_buffers(app: &App, ui: &egui::Ui) {
     });
 }
 
-fn secret_buffer(ui: &egui::Ui, plugin: &str, option: &str) -> String {
+pub(super) fn secret_buffer(ui: &egui::Ui, plugin: &str, option: &str) -> String {
     ui.data(|d| d.get_temp::<SecretBuffers>(secret_buffers_id()))
         .and_then(|buffers| {
             buffers
@@ -382,7 +83,7 @@ fn secret_buffer(ui: &egui::Ui, plugin: &str, option: &str) -> String {
         .unwrap_or_default()
 }
 
-fn set_secret_buffer(ui: &egui::Ui, plugin: &str, option: &str, value: String) {
+pub(super) fn set_secret_buffer(ui: &egui::Ui, plugin: &str, option: &str, value: String) {
     ui.data_mut(|d| {
         let mut buffers = d
             .get_temp::<SecretBuffers>(secret_buffers_id())
@@ -398,11 +99,11 @@ fn set_secret_buffer(ui: &egui::Ui, plugin: &str, option: &str, value: String) {
 }
 
 /// A typing buffer lives in egui memory, per plugin and option.
-fn buffer_id(plugin: &str, option: &str, what: &str) -> egui::Id {
+pub(super) fn buffer_id(plugin: &str, option: &str, what: &str) -> egui::Id {
     egui::Id::new(("plugin-option", what, plugin, option))
 }
 
-fn labelled(ui: &mut egui::Ui, palette: &theme::Palette, label: &str) {
+pub(super) fn labelled(ui: &mut egui::Ui, palette: &theme::Palette, label: &str) {
     ui.label(
         egui::RichText::new(label)
             .font(theme::regular(13.0))
@@ -411,7 +112,7 @@ fn labelled(ui: &mut egui::Ui, palette: &theme::Palette, label: &str) {
 }
 
 /// Chaat's own small marker next to the label of a required option.
-fn required_marker(ui: &mut egui::Ui, palette: &theme::Palette, option: &OptionSpec) {
+pub(super) fn required_marker(ui: &mut egui::Ui, palette: &theme::Palette, option: &OptionSpec) {
     if option.required {
         ui.label(
             egui::RichText::new("Required")
@@ -421,7 +122,7 @@ fn required_marker(ui: &mut egui::Ui, palette: &theme::Palette, option: &OptionS
     }
 }
 
-fn label_line(ui: &mut egui::Ui, palette: &theme::Palette, option: &OptionSpec) {
+pub(super) fn label_line(ui: &mut egui::Ui, palette: &theme::Palette, option: &OptionSpec) {
     ui.horizontal(|ui| {
         labelled(ui, palette, &option.label);
         required_marker(ui, palette, option);
@@ -429,38 +130,21 @@ fn label_line(ui: &mut egui::Ui, palette: &theme::Palette, option: &OptionSpec) 
 }
 
 /// Chaat's own badge on a plugin that still needs required settings.
-fn needs_setup_badge(ui: &mut egui::Ui, palette: &theme::Palette) {
-    egui::Frame::new()
-        .stroke(egui::Stroke::new(1.0, palette.warning))
-        .corner_radius(10)
-        .inner_margin(egui::Margin::symmetric(8, 2))
-        .show(ui, |ui| {
-            ui.label(
-                egui::RichText::new("Needs setup")
-                    .font(theme::medium(12.0))
-                    .color(palette.warning),
-            );
-        });
-}
-
-/// How long a button shows "Working…" without an answer. The same limit as
-/// `PluginState::action_working`, which decides; this only schedules the
-/// repaint that ends the wait.
-const WORKING_LIMIT: Duration = Duration::from_secs(30);
+pub(super) const WORKING_LIMIT: Duration = Duration::from_secs(30);
 
 /// What the option rows of one plugin need: Chaat's state, the plugin's entry
 /// and state, and each option's current value (defaults filled in), which
 /// `visible_when` reads.
-struct OptionsCx<'a> {
-    app: &'a App,
-    entry: &'a PluginEntry,
-    state: &'a PluginState,
-    values: serde_json::Map<String, serde_json::Value>,
-    now: Instant,
+pub(super) struct OptionsCx<'a> {
+    pub(super) app: &'a App,
+    pub(super) entry: &'a PluginEntry,
+    pub(super) state: &'a PluginState,
+    pub(super) values: serde_json::Map<String, serde_json::Value>,
+    pub(super) now: Instant,
 }
 
 impl<'a> OptionsCx<'a> {
-    fn new(app: &'a App, entry: &'a PluginEntry, state: &'a PluginState) -> Self {
+    pub(super) fn new(app: &'a App, entry: &'a PluginEntry, state: &'a PluginState) -> Self {
         let stored: serde_json::Map<String, serde_json::Value> = entry
             .options
             .iter()
@@ -475,12 +159,12 @@ impl<'a> OptionsCx<'a> {
         }
     }
 
-    fn visible(&self, spec: &OptionSpec) -> bool {
+    pub(super) fn visible(&self, spec: &OptionSpec) -> bool {
         options::is_visible(spec, &self.values)
     }
 
     /// The inline error of the last refused value for an option.
-    fn error(&self, option: &str) -> Option<&String> {
+    pub(super) fn error(&self, option: &str) -> Option<&String> {
         self.app
             .plugin_option_errors
             .get(&(self.entry.id.clone(), option.to_owned()))
@@ -490,7 +174,7 @@ impl<'a> OptionsCx<'a> {
 /// The options under their section headings, in the order the sections first
 /// appear. Each section has "Reset to defaults" and folds its advanced
 /// options into a collapsed "Advanced" area.
-fn options_block(
+pub(super) fn options_block(
     cx: &OptionsCx,
     ui: &mut egui::Ui,
     specs: &[&OptionSpec],
@@ -574,53 +258,7 @@ fn options_block(
 }
 
 /// The setup view of a plugin: its required options first, then the rest.
-fn setup_view(app: &App, ui: &mut egui::Ui, entry: &PluginEntry, actions: &mut Vec<Action>) {
-    let palette = app.palette;
-    group(ui, &palette, "Set up");
-    heading(app, ui, entry);
-    note(
-        ui,
-        &palette,
-        "Fill in what this plugin needs. Required settings come first. You can change all of them later in Settings \u{203A} Plugins.",
-    );
-    if let Some(state) = app.plugins.get(&entry.id) {
-        let cx = OptionsCx::new(app, entry, state);
-        let required: Vec<&OptionSpec> = state
-            .options
-            .iter()
-            .filter(|spec| spec.required && cx.visible(spec))
-            .collect();
-        let rest: Vec<&OptionSpec> = state.options.iter().filter(|spec| !spec.required).collect();
-        if !required.is_empty() {
-            group(ui, &palette, "Required");
-            for spec in required {
-                option_row(&cx, ui, spec, actions);
-            }
-        }
-        if rest.iter().any(|spec| cx.visible(spec)) {
-            group(ui, &palette, "More settings");
-            options_block(&cx, ui, &rest, actions);
-        }
-    } else {
-        note(
-            ui,
-            &palette,
-            "This plugin has not described its settings yet.",
-        );
-    }
-    ui.add_space(10.0);
-    if widgets::primary_button(ui, &palette, "Done").clicked() {
-        actions.push(Action::ClosePluginSetup);
-    }
-}
-
-/// Edits one piece of text with a buffer in egui memory. It commits on Enter
-/// or when the field loses focus (Ctrl+Enter for `multiline`, where Enter
-/// adds a line) and returns the text then, if it changed; Escape drops the
-/// edit. The buffer is cleared on commit. A committed value the app refused
-/// (`failed`) stays in the field until the person edits again, so the error
-/// under it still refers to what they typed.
-fn edit_text(
+pub(super) fn edit_text(
     ui: &mut egui::Ui,
     id: egui::Id,
     saved: &str,
@@ -679,7 +317,7 @@ fn edit_text(
 
 /// A number the way the plugin takes it: whole numbers without a fraction.
 /// Text that is no number goes on as text, so the check names the problem.
-fn number_value(text: &str) -> serde_json::Value {
+pub(super) fn number_value(text: &str) -> serde_json::Value {
     match text.trim().parse::<f64>() {
         Ok(number) if number.is_finite() => {
             if number.fract() == 0.0 && number.abs() < 1e15 {
@@ -693,7 +331,7 @@ fn number_value(text: &str) -> serde_json::Value {
     }
 }
 
-fn parse_hex(text: &str) -> Option<egui::Color32> {
+pub(super) fn parse_hex(text: &str) -> Option<egui::Color32> {
     let digits = text.trim().strip_prefix('#')?;
     if digits.len() != 6 || !digits.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
@@ -702,13 +340,13 @@ fn parse_hex(text: &str) -> Option<egui::Color32> {
     Some(egui::Color32::from_rgb(byte(0)?, byte(2)?, byte(4)?))
 }
 
-fn to_hex(color: egui::Color32) -> String {
+pub(super) fn to_hex(color: egui::Color32) -> String {
     format!("#{:02x}{:02x}{:02x}", color.r(), color.g(), color.b())
 }
 
 /// A color option: a swatch that opens egui's picker (the choice is saved
 /// when the picker closes) and a field for the hex value.
-fn color_control(
+pub(super) fn color_control(
     cx: &OptionsCx,
     ui: &mut egui::Ui,
     option: &OptionSpec,
@@ -782,7 +420,7 @@ fn color_control(
 }
 
 /// The time left until a button that shows "Working…" gives up waiting.
-fn working_ends_in(cx: &OptionsCx, option: &str) -> Duration {
+pub(super) fn working_ends_in(cx: &OptionsCx, option: &str) -> Duration {
     let clicked = cx.state.action_started.get(option).copied();
     let status = cx
         .state
@@ -796,7 +434,7 @@ fn working_ends_in(cx: &OptionsCx, option: &str) -> Duration {
 
 /// Under an option: its help, the error for a refused value, and the
 /// plugin's last status for it, quoted as the plugin's words.
-fn option_footer(cx: &OptionsCx, ui: &mut egui::Ui, option: &OptionSpec) {
+pub(super) fn option_footer(cx: &OptionsCx, ui: &mut egui::Ui, option: &OptionSpec) {
     let palette = cx.app.palette;
     let line = |ui: &mut egui::Ui, text: String, color: egui::Color32| {
         ui.add(
@@ -841,7 +479,7 @@ fn option_footer(cx: &OptionsCx, ui: &mut egui::Ui, option: &OptionSpec) {
 
 /// The quoted working message, with an ellipsis added only when the message
 /// does not already end in one.
-fn working_text(quoted: &str, message: &str) -> String {
+pub(super) fn working_text(quoted: &str, message: &str) -> String {
     if message.ends_with('\u{2026}') || message.ends_with("...") {
         quoted.to_owned()
     } else {
@@ -849,7 +487,12 @@ fn working_text(quoted: &str, message: &str) -> String {
     }
 }
 
-fn option_row(cx: &OptionsCx, ui: &mut egui::Ui, option: &OptionSpec, actions: &mut Vec<Action>) {
+pub(super) fn option_row(
+    cx: &OptionsCx,
+    ui: &mut egui::Ui,
+    option: &OptionSpec,
+    actions: &mut Vec<Action>,
+) {
     let palette = cx.app.palette;
     let entry = cx.entry;
     let current = entry
@@ -1060,58 +703,6 @@ fn option_row(cx: &OptionsCx, ui: &mut egui::Ui, option: &OptionSpec, actions: &
     }
 }
 
-/// One row per Chaat account: whether the plugin listens for it or waits for
-/// a sign-in, with a button to ask for a fresh code.
-fn account_rows(
-    app: &App,
-    ui: &mut egui::Ui,
-    entry: &PluginEntry,
-    state: &PluginState,
-    actions: &mut Vec<Action>,
-) {
-    let palette = app.palette;
-    for account in app.plugin_accounts() {
-        let waiting = state
-            .sign_in
-            .iter()
-            .any(|s| s.account.as_deref() == Some(account.id.as_str()));
-        let listening = state.listening.contains(&account.id);
-        let name = if account.username.is_empty() {
-            account.id.clone()
-        } else {
-            account.username.clone()
-        };
-        ui.horizontal(|ui| {
-            ui.add(
-                egui::Label::new(
-                    egui::RichText::new(name)
-                        .font(theme::regular(13.0))
-                        .color(palette.text),
-                )
-                .truncate(),
-            );
-            let (text, color) = if listening {
-                ("Listening for calls", palette.success)
-            } else if waiting {
-                ("Waiting for sign-in", palette.warning)
-            } else {
-                ("Connecting\u{2026}", palette.dim)
-            };
-            ui.label(
-                egui::RichText::new(text)
-                    .font(theme::regular(12.0))
-                    .color(color),
-            );
-            if waiting && widgets::secondary_button(ui, &palette, "New code").clicked() {
-                actions.push(Action::PluginSignIn {
-                    plugin: entry.id.clone(),
-                    account: account.id.clone(),
-                });
-            }
-        });
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1129,15 +720,6 @@ mod tests {
         assert_eq!(
             working_text("\u{201C}Scan...\u{201D}", "Scan..."),
             "\u{201C}Scan...\u{201D}"
-        );
-    }
-
-    #[test]
-    fn link_host_is_empty_for_a_missing_host() {
-        assert_eq!(link_host("https://:443/x"), None);
-        assert_eq!(
-            link_host("https://example.com:443/x").as_deref(),
-            Some("example.com")
         );
     }
 }

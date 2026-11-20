@@ -2,7 +2,7 @@
 //! window: layout must not panic, actions must apply, and each view must
 //! draw something.
 
-use chaat::app::{App, Overlay};
+use chaat::app::{App, Overlay, PluginsView};
 use chaat::backend::{AuthStatus, Waker};
 use chaat::model::{Action, ConversationId, Section, SettingsPage};
 use chaat::model::{Availability, MentionRef};
@@ -3321,17 +3321,32 @@ fn the_calls_settings_page_points_to_plugins() {
         h.size.x = width;
         h.act(Action::ShowSettingsPage(SettingsPage::Calls));
         let painted = painted_texts(&h);
-        for text in ["CALL ALERTS", "Open Plugins"] {
+        for text in ["CALL ALERTS", "Open"] {
             assert!(
                 painted.iter().any(|t| t == text),
                 "{text:?} shows at {width}"
             );
         }
         assert!(painted.iter().any(|t| t.contains("not part of Chaat")));
-        let button = ring_text_pos(&h, "Open Plugins").expect("the button is painted");
+        // The plugin that provides call alerts has its own page.
+        let button = ring_text_pos(&h, "Open").expect("the button is painted");
         h.click(button);
         h.frames(2);
         assert_eq!(h.app.settings_page, Some(SettingsPage::Plugins));
+        assert_eq!(
+            h.app.plugins_view,
+            PluginsView::Plugin("demo-alerts".into())
+        );
+        // With no such plugin, the button opens the list.
+        let mut h = Harness::new();
+        h.size.x = width;
+        h.app.plugins.get_mut("demo-alerts").unwrap().running = false;
+        h.act(Action::ShowSettingsPage(SettingsPage::Calls));
+        let button = ring_text_pos(&h, "Open Plugins").expect("the list button");
+        h.click(button);
+        h.frames(2);
+        assert_eq!(h.app.settings_page, Some(SettingsPage::Plugins));
+        assert_eq!(h.app.plugins_view, PluginsView::List);
     }
 }
 
@@ -3373,9 +3388,146 @@ fn plugins_page_click(h: &mut Harness, wanted: &str) -> Vec<Action> {
 fn plugins_page_harness() -> Harness {
     let mut h = Harness::new();
     h.size = egui::vec2(900.0, 3000.0);
+    h.app.plugins_view = PluginsView::Plugin("demo-light".into());
     plugins_page_frame(&mut h, vec![]);
     plugins_page_frame(&mut h, vec![]);
     h
+}
+
+/// The page of one plugin, drawn directly (no Settings frame).
+fn plugins_page_harness_for(id: &str) -> Harness {
+    let mut h = Harness::new();
+    h.size = egui::vec2(900.0, 3000.0);
+    h.app.plugins_view = PluginsView::Plugin(id.into());
+    plugins_page_frame(&mut h, vec![]);
+    plugins_page_frame(&mut h, vec![]);
+    h
+}
+
+/// The plugins page at its default view: the list.
+fn plugins_list_harness(width: f32, theme: ThemeChoice) -> Harness {
+    let mut h = Harness::new();
+    h.size = egui::vec2(width, 3000.0);
+    h.app.settings.theme = theme;
+    h.act(Action::ShowSettingsPage(SettingsPage::Plugins));
+    h.frames(3);
+    h
+}
+
+#[test]
+fn plugins_list_shows_rows_and_needs_you_first() {
+    for width in [380.0, 1280.0] {
+        for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+            let h = plugins_list_harness(width, theme.clone());
+            let painted = painted_texts(&h);
+            for text in [
+                "NEEDS YOU",
+                "Status light",
+                "Asks for your presence",
+                "Ring alerts",
+            ] {
+                assert!(
+                    painted.iter().any(|t| t == text),
+                    "{text:?} shows at {width} in {theme:?}: {painted:?}"
+                );
+            }
+            assert!(
+                texts_in_order(&h, &["NEEDS YOU", "Status light", "Ring alerts"]),
+                "the plugin that needs the person comes first at {width} in {theme:?}"
+            );
+            // Chaat's words and the names only: no plugin description, path
+            // or option on the list.
+            for text in [
+                "Tells Chaat who is calling you in Teams.",
+                "Flash on calls",
+                "Access token",
+            ] {
+                assert!(
+                    !painted.iter().any(|t| t == text),
+                    "{text:?} stays off the list"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn plugins_list_empty_state() {
+    for width in [380.0, 1280.0] {
+        let mut h = Harness::new();
+        h.size = egui::vec2(width, 3000.0);
+        h.app.settings.plugins.clear();
+        h.act(Action::ShowSettingsPage(SettingsPage::Plugins));
+        h.frames(3);
+        let painted = painted_texts(&h);
+        assert!(painted.iter().any(|t| t == "No plugins yet"), "{painted:?}");
+        assert!(painted.iter().any(|t| t.contains("such as call alerts")));
+        let add = if width < 520.0 {
+            "Add\u{2026}"
+        } else {
+            "Add plugin\u{2026}"
+        };
+        assert!(painted.iter().any(|t| t == add), "{add:?} in header");
+        assert!(
+            painted.iter().any(|t| t == "Add plugin\u{2026}"),
+            "the empty state's own button"
+        );
+    }
+}
+
+#[test]
+fn add_plugin_button_stays_in_the_header() {
+    let mut h = plugins_list_harness(1280.0, ThemeChoice::Dark);
+    let with_plugins = ring_text_pos(&h, "Add plugin\u{2026}").expect("button");
+    h.app.settings.plugins.clear();
+    h.frames(3);
+    let without = ring_text_pos(&h, "Add plugin\u{2026}").expect("button");
+    assert_eq!(with_plugins, without, "it does not move with the list");
+    let mut h = Harness::new();
+    h.size = egui::vec2(380.0, 3000.0);
+    plugins_page_frame(&mut h, vec![]);
+    plugins_page_frame(&mut h, vec![]);
+    let actions = plugins_page_click(&mut h, "Add\u{2026}");
+    assert!(actions.contains(&Action::AddPlugin), "{actions:?}");
+}
+
+#[test]
+fn list_row_click_opens_the_plugin() {
+    let mut h = Harness::new();
+    h.size = egui::vec2(900.0, 3000.0);
+    plugins_page_frame(&mut h, vec![]);
+    plugins_page_frame(&mut h, vec![]);
+    let actions = plugins_page_click(&mut h, "Asks for your presence");
+    assert!(
+        actions.contains(&Action::OpenPlugin("demo-light".into())),
+        "{actions:?}"
+    );
+    let actions = plugins_page_click(&mut h, "Ring alerts");
+    assert!(actions.contains(&Action::OpenPlugin("demo-alerts".into())));
+    assert!(
+        !actions
+            .iter()
+            .any(|a| matches!(a, Action::SetPluginEnabled(..))),
+        "{actions:?}"
+    );
+}
+
+#[test]
+fn list_switch_does_not_open() {
+    let mut h = Harness::new();
+    h.size = egui::vec2(900.0, 3000.0);
+    plugins_page_frame(&mut h, vec![]);
+    plugins_page_frame(&mut h, vec![]);
+    // The first row is the one that needs the person.
+    let actions = plugins_page_click(&mut h, "Turn on");
+    assert!(
+        actions.contains(&Action::SetPluginEnabled("demo-light".into(), false)),
+        "{actions:?}"
+    );
+    assert!(
+        !actions.iter().any(|a| matches!(a, Action::OpenPlugin(_))),
+        "{actions:?}"
+    );
 }
 
 #[test]
@@ -3388,14 +3540,16 @@ fn plugins_page_draws_in_both_themes_narrow_and_wide() {
             h.act(Action::ShowSettingsPage(SettingsPage::Plugins));
             assert!(h.frames(2) > 20, "draws at {width} in {theme:?}");
             let painted = painted_texts(&h);
-            for text in [
-                "Plugin: \u{201C}Ring alerts\u{201D}",
-                "Plugin: \u{201C}Status light\u{201D}",
-                "Add plugin\u{2026}",
-                "Flash on calls",
-                "Access token",
-                "Saved",
-            ] {
+            for text in ["Ring alerts", "Status light", "Desk lamp"] {
+                assert!(
+                    painted.iter().any(|t| t == text),
+                    "{text:?} listed at {width} in {theme:?}"
+                );
+            }
+            h.app.plugins_view = PluginsView::Plugin("demo-light".into());
+            h.frames(2);
+            let painted = painted_texts(&h);
+            for text in ["Status light", "Flash on calls", "Access token", "Saved"] {
                 assert!(
                     painted.iter().any(|t| t == text),
                     "{text:?} shows at {width} in {theme:?}"
@@ -3407,18 +3561,15 @@ fn plugins_page_draws_in_both_themes_narrow_and_wide() {
 
 #[test]
 fn plugin_text_is_quoted_under_chaats_line() {
-    let mut h = plugins_page_harness();
-    let y = |h: &Harness, wanted: &str| ring_text_pos(h, wanted).map(|p| p.y);
+    // On the list, Chaat's line comes before any plugin's name.
+    let h = plugins_list_harness(900.0, ThemeChoice::Dark);
+    let intro = "Separate programs you add. Chaat sends each one only what you allow.";
+    assert!(texts_in_order(&h, &[intro, "Ring alerts"]));
+    let mut h = plugins_page_harness_for("demo-alerts");
     let painted = painted_texts(&h);
-    let intro = painted
-        .iter()
-        .find(|t| t.contains("not part of Chaat"))
-        .expect("the line from Chaat shows")
-        .clone();
-    let name = "Plugin: \u{201C}Ring alerts\u{201D}";
     assert!(
-        y(&h, &intro).unwrap() < y(&h, name).expect("the quoted name shows"),
-        "the line from Chaat comes first"
+        painted.iter().any(|t| t == "Ring alerts"),
+        "the name shows"
     );
     assert!(
         painted
@@ -3442,6 +3593,7 @@ fn each_account_row_says_whether_the_plugin_listens_waits_or_connects() {
             h.size = egui::vec2(width, 3000.0);
             h.app.settings.theme = theme.clone();
             h.act(Action::ShowSettingsPage(SettingsPage::Plugins));
+            h.app.plugins_view = PluginsView::Plugin("demo-alerts".into());
             h.frames(2);
             let painted = painted_texts(&h);
             for text in [
@@ -3473,7 +3625,7 @@ fn each_account_row_says_whether_the_plugin_listens_waits_or_connects() {
             assert!(!painted.iter().any(|t| t == "New code"));
         }
     }
-    let mut h = plugins_page_harness();
+    let mut h = plugins_page_harness_for("demo-alerts");
     let second = h.app.plugin_accounts()[1].id.clone();
     let actions = plugins_page_click(&mut h, "New code");
     assert!(actions.contains(&Action::PluginSignIn {
@@ -3490,10 +3642,11 @@ fn the_plugins_own_name_and_description_show_apart_from_chaats_words() {
             h.size = egui::vec2(width, 3000.0);
             h.app.settings.theme = theme.clone();
             h.act(Action::ShowSettingsPage(SettingsPage::Plugins));
+            h.app.plugins_view = PluginsView::Plugin("demo-alerts".into());
             h.frames(2);
             let painted = painted_texts(&h);
             for text in [
-                "Plugin: \u{201C}Ring alerts\u{201D}",
+                "Ring alerts",
                 "Tells Chaat who is calling you in Teams.",
                 "About this plugin",
             ] {
@@ -3512,10 +3665,16 @@ fn the_plugins_own_name_and_description_show_apart_from_chaats_words() {
 
 /// The Plugins page in settings, drawn in one theme at one width.
 fn plugins_settings_harness(width: f32, theme: ThemeChoice) -> Harness {
+    plugins_settings_harness_for("demo-light", width, theme)
+}
+
+/// The same, with the page of plugin `id` open.
+fn plugins_settings_harness_for(id: &str, width: f32, theme: ThemeChoice) -> Harness {
     let mut h = Harness::new();
     h.size = egui::vec2(width, 3000.0);
     h.app.settings.theme = theme;
     h.act(Action::ShowSettingsPage(SettingsPage::Plugins));
+    h.app.plugins_view = PluginsView::Plugin(id.into());
     h.frames(2);
     h
 }
@@ -3561,23 +3720,10 @@ fn a_pending_need_shows_allow_and_dont_allow() {
 }
 
 #[test]
-fn the_receives_line_names_what_a_plugin_gets() {
+fn the_gets_from_chaat_list_names_all_that_a_plugin_gets() {
     for width in [480.0, 1280.0] {
         for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
             let mut h = plugins_settings_harness(width, theme.clone());
-            let painted = painted_texts(&h);
-            for text in [
-                // Allowed, so sent.
-                "Receives: your accounts' IDs and sign-in names",
-                // Presence is only asked for, not allowed; options are its own.
-                "Receives: its own settings below",
-                "Receives: nothing",
-            ] {
-                assert!(
-                    painted.iter().any(|t| t == text),
-                    "{text:?} shows at {width} in {theme:?}"
-                );
-            }
             // Allowing presence and accounts adds both, in plain words.
             let entry = h
                 .app
@@ -3590,8 +3736,14 @@ fn the_receives_line_names_what_a_plugin_gets() {
             entry.approved_needs = vec!["presence".into(), "accounts".into()];
             h.frames(2);
             assert!(
-                painted_texts(&h).iter().any(|t| t
-                    == "Receives: your accounts' IDs and sign-in names, your presence (availability and activity) and its own settings below"),
+                texts_in_order(
+                    &h,
+                    &[
+                        "\u{2022} your accounts' IDs and sign-in names",
+                        "\u{2022} your presence (availability and activity)",
+                        "\u{2022} its own settings below",
+                    ]
+                ),
                 "all three show at {width} in {theme:?}"
             );
         }
@@ -3602,7 +3754,7 @@ fn the_receives_line_names_what_a_plugin_gets() {
 fn a_changed_file_offers_run_or_keep_off() {
     for width in [480.0, 1280.0] {
         for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
-            let mut h = plugins_settings_harness(width, theme.clone());
+            let mut h = plugins_settings_harness_for("demo-changed", width, theme.clone());
             let painted = painted_texts(&h);
             for text in [
                 "The plugin file changed since you added it. Run the new file only if you trust it.",
@@ -3627,11 +3779,11 @@ fn a_changed_file_offers_run_or_keep_off() {
             );
         }
     }
-    let mut h = plugins_page_harness();
+    let mut h = plugins_page_harness_for("demo-changed");
     let actions = plugins_page_click(&mut h, "Run the new file");
     assert!(actions.contains(&Action::TrustPluginFile("demo-changed".into())));
     assert!(!actions.contains(&Action::KeepPluginOff("demo-changed".into())));
-    let mut h = plugins_page_harness();
+    let mut h = plugins_page_harness_for("demo-changed");
     let actions = plugins_page_click(&mut h, "Keep it off");
     assert!(actions.contains(&Action::KeepPluginOff("demo-changed".into())));
     assert!(!actions.contains(&Action::TrustPluginFile("demo-changed".into())));
@@ -3641,7 +3793,7 @@ fn a_changed_file_offers_run_or_keep_off() {
 fn the_docs_link_shows_its_host() {
     for width in [480.0, 1280.0] {
         for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
-            let mut h = plugins_settings_harness(width, theme.clone());
+            let mut h = plugins_settings_harness_for("demo-alerts", width, theme.clone());
             let y = |h: &Harness, wanted: &str| ring_text_pos(h, wanted).map(|p| p.y);
             assert!(painted_texts(&h).iter().any(|t| t == "example.com"));
             assert_eq!(
@@ -3817,7 +3969,7 @@ fn saving_clearing_or_forgetting_leaves_no_text_edit_state() {
 
 #[test]
 fn account_rows_need_approved_accounts() {
-    let mut h = plugins_settings_harness(900.0, ThemeChoice::Dark);
+    let mut h = plugins_settings_harness_for("demo-alerts", 900.0, ThemeChoice::Dark);
     assert!(painted_texts(&h).iter().any(|t| t == "Listening for calls"));
     let entry = h
         .app
@@ -4556,32 +4708,40 @@ fn light_needing_setup(h: &mut Harness) {
 }
 
 #[test]
-fn a_plugin_with_unset_required_options_shows_needs_setup_and_a_set_up_button() {
+fn a_plugin_with_unset_required_options_shows_needs_setup_on_its_page_and_its_row() {
     for width in [480.0, 1280.0] {
         for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
             let mut h = plugins_settings_harness(width, theme.clone());
+            let marked = "Fill in the settings marked Required.";
             let painted = painted_texts(&h);
             assert!(
-                !painted.iter().any(|t| t == "Needs setup" || t == "Set up"),
+                !painted.iter().any(|t| t == marked),
                 "nothing is missing yet"
             );
             light_needing_setup(&mut h);
             h.frames(2);
             let painted = painted_texts(&h);
-            for text in ["Needs setup", "Set up"] {
-                assert!(
-                    painted.iter().any(|t| t == text),
-                    "{text:?} at {width} in {theme:?}"
-                );
-            }
+            assert!(
+                painted.iter().any(|t| t == marked),
+                "the page says so at {width} in {theme:?}"
+            );
         }
     }
-    let mut h = plugins_page_harness();
+    let mut h = Harness::new();
+    h.size = egui::vec2(900.0, 3000.0);
     light_needing_setup(&mut h);
+    // The pending question comes first; once answered, the row says it.
+    h.app
+        .plugins
+        .get_mut("demo-light")
+        .unwrap()
+        .pending_needs
+        .clear();
     plugins_page_frame(&mut h, vec![]);
-    let actions = plugins_page_click(&mut h, "Set up");
+    plugins_page_frame(&mut h, vec![]);
+    let actions = plugins_page_click(&mut h, "Needs setup");
     assert!(
-        actions.contains(&Action::OpenPluginSetup("demo-light".into())),
+        actions.contains(&Action::OpenPlugin("demo-light".into())),
         "{actions:?}"
     );
 }
@@ -4592,7 +4752,11 @@ fn the_setup_view_lists_required_options_first_and_ends_with_done() {
         for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
             let mut h = plugins_settings_harness(width, theme.clone());
             light_needing_setup(&mut h);
-            h.app.plugin_setup = Some("demo-light".into());
+            // Running and past its `ready`, so the page is the setup stage.
+            let state = h.app.plugins.entry("demo-light".into()).or_default();
+            state.running = true;
+            state.ready_seen = true;
+            h.app.plugins_view = PluginsView::Adding("demo-light".into());
             h.frames(3);
             let painted = painted_texts(&h);
             assert!(
@@ -4617,12 +4781,6 @@ fn the_setup_view_lists_required_options_first_and_ends_with_done() {
             );
         }
     }
-    let mut h = plugins_page_harness();
-    light_needing_setup(&mut h);
-    h.app.plugin_setup = Some("demo-light".into());
-    plugins_page_frame(&mut h, vec![]);
-    let actions = plugins_page_click(&mut h, "Done");
-    assert!(actions.contains(&Action::ClosePluginSetup), "{actions:?}");
 }
 
 #[test]
@@ -4631,7 +4789,7 @@ fn settings_opens_the_plugins_page_once_when_a_setup_starts() {
     h.act(Action::ShowSettingsPage(SettingsPage::General));
     h.frames(2);
     assert_eq!(h.app.settings_page, Some(SettingsPage::General));
-    h.app.plugin_setup = Some("demo-light".into());
+    h.app.plugins_view = PluginsView::Adding("demo-light".into());
     h.frames(2);
     assert_eq!(h.app.settings_page, Some(SettingsPage::Plugins));
     // The person may leave the page while the setup stays open.
@@ -4778,16 +4936,16 @@ fn push_plugin_states_draw() {
 }
 
 #[test]
-fn push_settings_open_plugins_button_pushes_the_action() {
+fn push_updates_links_to_the_plugin() {
     let mut h = push_plugin_harness(900.0, ThemeChoice::Dark, false);
-    let pos = text_pos_nth(&h, "Open Plugins", 0).expect("button shows");
+    let pos = text_pos_nth(&h, "Open", 0).expect("button shows");
     h.click(pos);
     // The view only queued the action; the page changes when it is applied.
     assert!(
         h.app
             .actions
-            .contains(&Action::ShowSettingsPage(SettingsPage::Plugins))
-            || h.app.settings_page == Some(SettingsPage::Plugins)
+            .contains(&Action::OpenPlugin("demo-alerts".into()))
+            || h.app.plugins_view == PluginsView::Plugin("demo-alerts".into())
     );
 }
 
@@ -4841,4 +4999,875 @@ fn push_settings_wrap_long_plugin_words_at_380() {
         }
     }
     assert_eq!(seen, 2);
+}
+
+/// Both themes at 380 and 1280 wide, the page of `id` drawn directly.
+fn plugin_page_cases(id: &str, check: impl Fn(&mut Harness, &str)) {
+    for width in [380.0, 1280.0] {
+        for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+            let mut h = Harness::new();
+            h.size = egui::vec2(width, 3000.0);
+            h.app.settings.theme = theme.clone();
+            h.app.plugins_view = PluginsView::Plugin(id.into());
+            plugins_page_frame(&mut h, vec![]);
+            plugins_page_frame(&mut h, vec![]);
+            check(&mut h, &format!("{width} in {theme:?}"));
+        }
+    }
+}
+
+#[test]
+fn plugin_page_sections_in_order() {
+    plugin_page_cases("demo-light", |h, at| {
+        assert!(
+            texts_in_order(
+                h,
+                &[
+                    "Status light",
+                    "Shows your Teams presence on a bulb.",
+                    "NEEDS YOU",
+                    "STATUS",
+                    "GETS FROM CHAAT",
+                    "SETTINGS \u{00B7} FROM THE PLUGIN",
+                    "FILE",
+                ]
+            ),
+            "demo-light sections at {at}: {:?}",
+            painted_texts(h)
+        );
+    });
+    plugin_page_cases("demo-alerts", |h, at| {
+        assert!(
+            texts_in_order(
+                h,
+                &[
+                    "Ring alerts",
+                    "STATUS",
+                    "GETS FROM CHAAT",
+                    "ACCOUNTS",
+                    "FILE"
+                ]
+            ),
+            "demo-alerts sections at {at}: {:?}",
+            painted_texts(h)
+        );
+        // Nothing to ask: no callout, no settings card.
+        let painted = painted_texts(h);
+        assert!(!painted.iter().any(|t| t == "NEEDS YOU"));
+        assert!(!painted.iter().any(|t| t.starts_with("SETTINGS")));
+    });
+}
+
+#[test]
+fn needs_you_callout_stacks_file_then_needs_then_setup() {
+    plugin_page_cases("demo-light", |h, at| {
+        h.app.plugins.get_mut("demo-light").unwrap().file_changed = Some("abcdef0123456789".into());
+        let entry = h
+            .app
+            .settings
+            .plugins
+            .iter_mut()
+            .find(|e| e.id == "demo-light")
+            .unwrap();
+        entry.options.clear();
+        entry.secrets.clear();
+        assert!(!h.app.plugin_missing_required("demo-light").is_empty());
+        plugins_page_frame(h, vec![]);
+        plugins_page_frame(h, vec![]);
+        assert!(
+            texts_in_order(
+                h,
+                &[
+                    "NEEDS YOU",
+                    "The plugin file changed since you added it. Run the new file only if you trust it.",
+                    "Plugin \u{201C}Status light\u{201D} asks for:",
+                    "Fill in the settings marked Required.",
+                    "STATUS",
+                ]
+            ),
+            "callout order at {at}: {:?}",
+            painted_texts(h)
+        );
+        assert_eq!(
+            painted_texts(h)
+                .iter()
+                .filter(|t| *t == "NEEDS YOU")
+                .count(),
+            1,
+            "one callout at {at}"
+        );
+    });
+}
+
+#[test]
+fn gets_from_chaat_bullets_use_chaat_words() {
+    plugin_page_cases("demo-alerts", |h, at| {
+        let painted = painted_texts(h);
+        assert!(
+            painted
+                .iter()
+                .any(|t| t == "\u{2022} your accounts' IDs and sign-in names"),
+            "{at}: {painted:?}"
+        );
+    });
+    plugin_page_cases("demo-light", |h, at| {
+        let painted = painted_texts(h);
+        assert!(
+            painted
+                .iter()
+                .any(|t| t == "\u{2022} its own settings below"),
+            "{at}: {painted:?}"
+        );
+        // Presence is asked, not yet allowed.
+        assert!(
+            !painted
+                .iter()
+                .any(|t| t.starts_with('\u{2022}') && t.contains("your presence"))
+        );
+    });
+    plugin_page_cases("demo-changed", |h, at| {
+        assert!(
+            painted_texts(h).iter().any(|t| t == "\u{2022} Nothing"),
+            "{at}"
+        );
+    });
+}
+
+#[test]
+fn remove_asks_in_place() {
+    let mut h = plugins_page_harness_for("demo-alerts");
+    // The file section is folded.
+    assert!(ring_text_pos(&h, "Remove plugin\u{2026}").is_none());
+    plugins_page_click(&mut h, "FILE");
+    // The fold opens with a short animation.
+    for _ in 0..30 {
+        plugins_page_frame(&mut h, vec![]);
+    }
+    assert!(ring_text_pos(&h, "Remove plugin\u{2026}").is_some());
+    assert!(
+        painted_texts(&h)
+            .iter()
+            .any(|t| t == "Checked against the file you added." || t == "Not checked yet.")
+    );
+    let actions = plugins_page_click(&mut h, "Remove plugin\u{2026}");
+    assert!(!actions.iter().any(|a| matches!(a, Action::RemovePlugin(_))));
+    let ask = "Remove \u{201C}Ring alerts\u{201D}? Chaat stops it, deletes its saved secrets and tells it to forget your sign-ins. Chaat stops showing incoming calls from this plugin.";
+    assert!(painted_texts(&h).iter().any(|t| t == ask), "asked in place");
+    // Cancel puts the question away without removing.
+    let actions = plugins_page_click(&mut h, "Cancel");
+    assert!(!actions.iter().any(|a| matches!(a, Action::RemovePlugin(_))));
+    assert!(!painted_texts(&h).iter().any(|t| t == ask));
+    // Asking again and confirming sends today's action.
+    plugins_page_click(&mut h, "Remove plugin\u{2026}");
+    let actions = plugins_page_click(&mut h, "Remove");
+    assert!(
+        actions.contains(&Action::RemovePlugin("demo-alerts".into())),
+        "{actions:?}"
+    );
+}
+
+#[test]
+fn back_link_returns_to_the_list() {
+    let mut h = plugins_page_harness_for("demo-alerts");
+    let actions = plugins_page_click(&mut h, "\u{2039} Plugins");
+    assert!(actions.contains(&Action::BackToPlugins), "{actions:?}");
+}
+
+#[test]
+fn plugin_page_wraps_long_words_at_380() {
+    let mut h = Harness::new();
+    h.size = egui::vec2(380.0, 3000.0);
+    h.app.plugins_view = PluginsView::Plugin("demo-alerts".into());
+    let state = h.app.plugins.get_mut("demo-alerts").unwrap();
+    state.info.name = Some("N".repeat(30) + " " + &"name ".repeat(30));
+    state.info.description = Some("D".repeat(30) + " " + &"words ".repeat(40));
+    plugins_page_frame(&mut h, vec![]);
+    plugins_page_frame(&mut h, vec![]);
+    let mut seen = 0;
+    for shape in painted_shapes(&h) {
+        if let egui::epaint::Shape::Text(text) = shape {
+            let t = &text.galley.job.text;
+            if t.starts_with("NNN") || t.starts_with("DDD") {
+                seen += 1;
+                assert!(text.galley.rows.len() > 1, "wraps: {t}");
+                assert!(
+                    text.pos.x + text.galley.rect.right() <= 380.5,
+                    "inside: {t}"
+                );
+            }
+        }
+    }
+    assert_eq!(seen, 2);
+}
+
+fn escape_event() -> egui::Event {
+    egui::Event::Key {
+        key: egui::Key::Escape,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    }
+}
+
+fn plugin_ids(h: &Harness) -> Vec<String> {
+    h.app
+        .settings
+        .plugins
+        .iter()
+        .map(|e| e.id.clone())
+        .collect()
+}
+
+/// The full app on the Plugins page in reorder mode.
+fn reorder_cases(check: impl Fn(&mut Harness, &str)) {
+    for width in [380.0, 1280.0] {
+        for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+            let mut h = Harness::new();
+            h.size = egui::vec2(width, 3000.0);
+            h.app.settings.theme = theme.clone();
+            // The demo's ring toast would sit over the header at narrow widths.
+            h.app.rings.clear();
+            h.app
+                .plugins
+                .get_mut("demo-alerts")
+                .unwrap()
+                .sign_in
+                .clear();
+            h.act(Action::ShowSettingsPage(SettingsPage::Plugins));
+            h.act(Action::StartReorder);
+            h.frames(3);
+            check(&mut h, &format!("{width} in {theme:?}"));
+        }
+    }
+}
+
+#[test]
+fn reorder_mode_shows_true_order_without_needs_you() {
+    reorder_cases(|h, at| {
+        // Normal order is demo-alerts, demo-light, demo-changed; the plain
+        // list would put the ones that need the person first.
+        assert!(
+            texts_in_order(h, &["Ring alerts", "Status light", "Desk lamp"]),
+            "true order at {at}: {:?}",
+            painted_texts(h)
+        );
+        let painted = painted_texts(h);
+        assert!(!painted.iter().any(|t| t == "NEEDS YOU"), "{at}");
+        assert!(painted.iter().any(|t| t == "Provides call alerts"), "{at}");
+        assert!(painted.iter().any(|t| t == "Done"), "{at}");
+        assert!(!painted.iter().any(|t| t == "Reorder"), "{at}");
+        assert!(
+            !painted.iter().any(|t| t == "Turn on"),
+            "no switches at {at}"
+        );
+    });
+}
+
+#[test]
+fn move_buttons_hidden_at_the_ends() {
+    reorder_cases(|h, at| {
+        let count = |text: &str| painted_texts(h).iter().filter(|t| *t == text).count();
+        assert_eq!(count("\u{2191}"), 2, "first row has no Move up at {at}");
+        assert_eq!(count("\u{2193}"), 2, "last row has no Move down at {at}");
+        // The first row's only button is Move down.
+        let up = text_pos_nth(h, "\u{2191}", 0).unwrap();
+        let alerts = ring_text_pos(h, "Ring alerts").unwrap();
+        assert!(
+            up.y > alerts.y + 10.0,
+            "the first Move up is on row two at {at}"
+        );
+        // Moving the second row up puts it first.
+        h.click(up);
+        h.frames(2);
+        assert_eq!(plugin_ids(h)[..2], ["demo-light", "demo-alerts"], "{at}");
+    });
+}
+
+#[test]
+fn drag_by_handle_moves() {
+    reorder_cases(|h, at| {
+        let name = {
+            let mut found = None;
+            for shape in painted_shapes(h) {
+                if let egui::epaint::Shape::Text(text) = shape
+                    && text.galley.job.text == "Ring alerts"
+                {
+                    found = Some(text.pos + vec2_y(text.galley.rect.center().y));
+                }
+            }
+            found.expect("name painted")
+        };
+        // The handle sits one gap to the left of the name.
+        let handle = egui::pos2(name.x - 16.0, name.y);
+        let last = ring_text_pos(h, "Desk lamp").unwrap();
+        h.frame_with(vec![egui::Event::PointerMoved(handle)]);
+        h.frame_with(vec![egui::Event::PointerButton {
+            pos: handle,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        }]);
+        for step in 1..=4 {
+            let y = handle.y + (last.y + 4.0 - handle.y) * step as f32 / 4.0;
+            h.frame_with(vec![egui::Event::PointerMoved(egui::pos2(handle.x, y))]);
+        }
+        let to = egui::pos2(handle.x, last.y + 4.0);
+        h.frame_with(vec![egui::Event::PointerButton {
+            pos: to,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        }]);
+        h.frames(2);
+        assert_eq!(
+            plugin_ids(h),
+            ["demo-light", "demo-changed", "demo-alerts"],
+            "dragged to the end at {at}"
+        );
+    });
+}
+
+fn vec2_y(y: f32) -> egui::Vec2 {
+    egui::vec2(0.0, y)
+}
+
+#[test]
+fn reorder_ends_on_done_and_escape() {
+    reorder_cases(|h, at| {
+        let done = ring_text_pos(h, "Done").unwrap();
+        h.click(done);
+        h.frames(2);
+        assert!(!h.app.reordering, "Done ends it at {at}");
+        assert_eq!(h.app.settings_page, Some(SettingsPage::Plugins));
+        h.act(Action::StartReorder);
+        h.frames(2);
+        assert!(h.app.reordering);
+        h.frame_with(vec![escape_event()]);
+        h.frames(2);
+        assert!(!h.app.reordering, "Esc ends it at {at}");
+        assert_eq!(
+            h.app.settings_page,
+            Some(SettingsPage::Plugins),
+            "settings stay open at {at}"
+        );
+    });
+}
+
+#[test]
+fn escape_on_plugin_page_goes_back_not_closing_settings() {
+    let mut h = Harness::new();
+    h.act(Action::ShowSettingsPage(SettingsPage::Plugins));
+    h.act(Action::OpenPlugin("demo-alerts".into()));
+    h.frames(3);
+    h.frame_with(vec![escape_event()]);
+    h.frames(2);
+    assert_eq!(h.app.plugins_view, PluginsView::List);
+    assert_eq!(h.app.settings_page, Some(SettingsPage::Plugins));
+    h.frame_with(vec![escape_event()]);
+    h.frames(2);
+    assert_eq!(h.app.settings_page, None, "Esc on the list closes settings");
+}
+
+#[test]
+fn turn_off_asks_for_a_provider_only() {
+    let ask = "Turn off \u{201C}Ring alerts\u{201D}? Chaat stops showing incoming calls from this plugin.";
+    for width in [380.0, 1280.0] {
+        for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+            for page in [false, true] {
+                let mut h = Harness::new();
+                h.size = egui::vec2(width, 3000.0);
+                h.app.settings.theme = theme.clone();
+                h.app.settings.plugins.retain(|e| e.id == "demo-alerts");
+                h.app.plugins_view = if page {
+                    PluginsView::Plugin("demo-alerts".into())
+                } else {
+                    PluginsView::List
+                };
+                plugins_page_frame(&mut h, vec![]);
+                plugins_page_frame(&mut h, vec![]);
+                let at = format!("{width} in {theme:?}, page {page}");
+                let actions = plugins_page_click(&mut h, "Turn on");
+                assert!(
+                    !actions
+                        .iter()
+                        .any(|a| matches!(a, Action::SetPluginEnabled(..))),
+                );
+                assert!(painted_texts(&h).iter().any(|t| t == ask), "{at}");
+                assert!(
+                    painted_texts(&h).iter().any(|t| t == ask),
+                    "{at}: {:?} {:?}",
+                    painted_texts(&h),
+                    actions
+                );
+                // Cancel keeps it on.
+                let actions = plugins_page_click(&mut h, "Cancel");
+                assert!(
+                    !actions
+                        .iter()
+                        .any(|a| matches!(a, Action::SetPluginEnabled(..))),
+                    "{at}"
+                );
+                assert!(!painted_texts(&h).iter().any(|t| t == ask), "{at}");
+                plugins_page_click(&mut h, "Turn on");
+                let actions = plugins_page_click(&mut h, "Turn off");
+                assert!(
+                    actions.contains(&Action::SetPluginEnabled("demo-alerts".into(), false)),
+                    "{at}: {actions:?}"
+                );
+            }
+        }
+    }
+    // A plugin that provides nothing turns off at once, on the list and page.
+    for page in [false, true] {
+        let mut h = Harness::new();
+        h.size = egui::vec2(900.0, 3000.0);
+        h.app.settings.plugins.retain(|e| e.id == "demo-light");
+        h.app.plugins_view = if page {
+            PluginsView::Plugin("demo-light".into())
+        } else {
+            PluginsView::List
+        };
+        plugins_page_frame(&mut h, vec![]);
+        plugins_page_frame(&mut h, vec![]);
+        let actions = plugins_page_click(&mut h, "Turn on");
+        assert!(
+            actions.contains(&Action::SetPluginEnabled("demo-light".into(), false)),
+            "{actions:?}"
+        );
+    }
+}
+
+#[test]
+fn removing_a_provider_says_what_stops() {
+    let mut h = plugins_page_harness_for("demo-alerts");
+    plugins_page_click(&mut h, "FILE");
+    for _ in 0..30 {
+        plugins_page_frame(&mut h, vec![]);
+    }
+    plugins_page_click(&mut h, "Remove plugin\u{2026}");
+    assert!(
+        painted_texts(&h).iter().any(|t| t
+            .starts_with("Remove \u{201C}Ring alerts\u{201D}?")
+            && t.ends_with("Chaat stops showing incoming calls from this plugin.")),
+        "{:?}",
+        painted_texts(&h)
+    );
+}
+
+/// The demo light as a plugin in its add flow.
+fn adding_light(h: &mut Harness, running: bool) {
+    demo_light(h).setup_pending = true;
+    let state = h.app.plugins.entry("demo-light".into()).or_default();
+    state.running = running;
+    state.ready_seen = running;
+    state.pending_needs = vec!["accounts", "presence"];
+    h.app.plugins_view = PluginsView::Adding("demo-light".into());
+}
+
+#[test]
+fn add_flow_starting_setup_failed_states() {
+    for width in [380.0, 1280.0] {
+        for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+            let mut h = plugins_settings_harness(width, theme.clone());
+            adding_light(&mut h, false);
+            h.app.plugins.get_mut("demo-light").unwrap().message = None;
+            h.frames(3);
+            let painted = painted_texts(&h);
+            assert!(
+                painted.iter().any(|t| t == "Starting the plugin\u{2026}"),
+                "starting at {width} in {theme:?}: {painted:?}"
+            );
+            assert!(!painted.iter().any(|t| t == "Done"));
+            assert!(h.repaint_after < std::time::Duration::from_secs(60));
+
+            adding_light(&mut h, true);
+            h.frames(3);
+            let painted = painted_texts(&h);
+            assert!(
+                painted
+                    .iter()
+                    .any(|t| t == "IT ASKS FOR" || t == "It asks for"),
+                "setup at {width} in {theme:?}: {painted:?}"
+            );
+            assert!(painted.iter().any(|t| t == "Done"));
+
+            adding_light(&mut h, false);
+            h.app.plugins.get_mut("demo-light").unwrap().message = Some("exit 1".into());
+            h.frames(3);
+            let painted = painted_texts(&h);
+            for text in ["Stopped: exit 1", "Try again", "Remove"] {
+                assert!(
+                    painted.iter().any(|t| t == text),
+                    "{text:?} at {width} in {theme:?}: {painted:?}"
+                );
+            }
+        }
+    }
+    let mut h = plugins_page_harness();
+    adding_light(&mut h, false);
+    h.app.plugins.get_mut("demo-light").unwrap().message = Some("exit 1".into());
+    plugins_page_frame(&mut h, vec![]);
+    let actions = plugins_page_click(&mut h, "Try again");
+    assert!(actions.contains(&Action::RetryPluginStart("demo-light".into())));
+}
+
+#[test]
+fn a_reopened_add_flow_past_its_limit_fails_without_a_short_repaint() {
+    let limit = chaat::app::ADD_START_LIMIT;
+    // Freshly started: one repaint at the limit, not a short one.
+    let mut h = plugins_settings_harness(900.0, ThemeChoice::Dark);
+    adding_light(&mut h, false);
+    h.app.plugins.get_mut("demo-light").unwrap().message = None;
+    h.app
+        .pretend_plugin_started("demo-light", std::time::Duration::from_secs(1));
+    h.frames(30);
+    assert!(
+        painted_texts(&h)
+            .iter()
+            .any(|t| t == "Starting the plugin\u{2026}")
+    );
+    assert!(
+        h.repaint_after > std::time::Duration::from_secs(5),
+        "{:?}",
+        h.repaint_after
+    );
+    assert!(h.repaint_after <= limit + std::time::Duration::from_millis(100));
+    // Left earlier and reopened past the limit: Failed, and nothing short.
+    let mut h = plugins_settings_harness(900.0, ThemeChoice::Dark);
+    adding_light(&mut h, false);
+    h.app.plugins.get_mut("demo-light").unwrap().message = None;
+    h.app
+        .pretend_plugin_started("demo-light", limit + std::time::Duration::from_secs(5));
+    h.frames(30);
+    let painted = painted_texts(&h);
+    assert!(
+        painted.iter().any(|t| t == "Try again"),
+        "failed: {painted:?}"
+    );
+    assert!(!painted.iter().any(|t| t == "Starting the plugin\u{2026}"));
+    assert!(
+        h.repaint_after > std::time::Duration::from_secs(5),
+        "{:?}",
+        h.repaint_after
+    );
+}
+
+#[test]
+fn a_running_plugin_without_ready_is_still_starting() {
+    let mut h = plugins_page_harness();
+    adding_light(&mut h, true);
+    h.app.plugins.get_mut("demo-light").unwrap().ready_seen = false;
+    plugins_page_frame(&mut h, vec![]);
+    let painted = painted_texts(&h);
+    assert!(painted.iter().any(|t| t == "Starting the plugin\u{2026}"));
+    assert!(!painted.iter().any(|t| t == "Done"), "{painted:?}");
+}
+
+#[test]
+fn escape_on_the_add_flow_does_nothing() {
+    let mut h = Harness::new();
+    h.size = egui::vec2(900.0, 3000.0);
+    adding_light(&mut h, true);
+    h.app.settings_page = Some(SettingsPage::Plugins);
+    h.frames(3);
+    h.frame_with(vec![escape_event()]);
+    h.frames(2);
+    assert_eq!(h.app.settings_page, Some(SettingsPage::Plugins));
+    assert_eq!(h.app.plugins_view, PluginsView::Adding("demo-light".into()));
+    assert!(h.app.settings.plugins.iter().any(|e| e.id == "demo-light"));
+}
+
+#[test]
+fn remove_confirm_and_turn_off_question_do_not_outlive_settings() {
+    let ask = "Turn off \u{201C}Ring alerts\u{201D}? Chaat stops showing incoming calls from this plugin.";
+    let mut h = Harness::new();
+    h.size = egui::vec2(900.0, 3000.0);
+    h.app.settings.plugins.retain(|e| e.id == "demo-alerts");
+    h.act(Action::ShowSettingsPage(SettingsPage::Plugins));
+    h.act(Action::OpenPlugin("demo-alerts".into()));
+    plugins_page_frame(&mut h, vec![]);
+    plugins_page_frame(&mut h, vec![]);
+    plugins_page_click(&mut h, "Turn on");
+    assert!(painted_texts(&h).iter().any(|t| t == ask));
+    // Settings closes, then opens on the same plugin again.
+    h.act(Action::CloseSettings);
+    h.frames(3);
+    h.act(Action::ShowSettingsPage(SettingsPage::Plugins));
+    h.act(Action::OpenPlugin("demo-alerts".into()));
+    h.frames(3);
+    assert!(
+        !painted_texts(&h).iter().any(|t| t == ask),
+        "question is gone"
+    );
+}
+
+#[test]
+fn done_disabled_until_required_options_set() {
+    let mut h = plugins_page_harness();
+    light_needing_setup(&mut h);
+    adding_light(&mut h, true);
+    plugins_page_frame(&mut h, vec![]);
+    let actions = plugins_page_click(&mut h, "Done");
+    assert!(
+        !actions
+            .iter()
+            .any(|a| matches!(a, Action::FinishPluginSetup { .. })),
+        "{actions:?}"
+    );
+    let mut h = plugins_page_harness();
+    adding_light(&mut h, true);
+    plugins_page_frame(&mut h, vec![]);
+    let actions = plugins_page_click(&mut h, "Done");
+    assert!(
+        actions.contains(&Action::FinishPluginSetup {
+            id: "demo-light".into(),
+            allow: Vec::new()
+        }),
+        "{actions:?}"
+    );
+}
+
+#[test]
+fn need_boxes_start_unticked() {
+    let mut h = plugins_page_harness();
+    adding_light(&mut h, true);
+    plugins_page_frame(&mut h, vec![]);
+    assert!(
+        painted_texts(&h)
+            .iter()
+            .any(|t| t == "(nothing is sent until you tick it)")
+    );
+    let actions = plugins_page_click(&mut h, "Done");
+    assert!(
+        actions.contains(&Action::FinishPluginSetup {
+            id: "demo-light".into(),
+            allow: Vec::new()
+        }),
+        "nothing ticked sends nothing: {actions:?}"
+    );
+    adding_light(&mut h, true);
+    plugins_page_frame(&mut h, vec![]);
+    plugins_page_click(&mut h, "your presence (availability and activity)");
+    let actions = plugins_page_click(&mut h, "Done");
+    assert!(
+        actions.contains(&Action::FinishPluginSetup {
+            id: "demo-light".into(),
+            allow: vec!["presence".into()]
+        }),
+        "only the ticked one: {actions:?}"
+    );
+}
+
+#[test]
+fn cancel_removes_the_new_plugin() {
+    let mut h = Harness::new();
+    h.size = egui::vec2(900.0, 3000.0);
+    adding_light(&mut h, true);
+    h.frames(3);
+    let before = h.app.settings.plugins.len();
+    h.act(Action::CancelPluginSetup("demo-light".into()));
+    assert_eq!(h.app.settings.plugins.len(), before - 1);
+    assert_eq!(h.app.plugins_view, PluginsView::List);
+}
+
+#[test]
+fn finish_setup_row_reopens_setup() {
+    let mut h = Harness::new();
+    h.size = egui::vec2(900.0, 3000.0);
+    demo_light(&mut h).setup_pending = true;
+    h.app.plugins.entry("demo-light".into()).or_default();
+    plugins_page_frame(&mut h, vec![]);
+    plugins_page_frame(&mut h, vec![]);
+    let actions = plugins_page_click(&mut h, "Finish setup");
+    assert!(
+        actions.contains(&Action::OpenPlugin("demo-light".into())),
+        "{actions:?}"
+    );
+    h.act(Action::OpenPlugin("demo-light".into()));
+    assert_eq!(h.app.plugins_view, PluginsView::Adding("demo-light".into()));
+}
+
+/// The widest right edge among everything the page painted.
+fn painted_right_edge(h: &Harness) -> f32 {
+    painted_shapes(h)
+        .into_iter()
+        .map(|shape| shape.visual_bounding_rect().right())
+        .fold(0.0, f32::max)
+}
+
+#[test]
+fn plugins_list_stays_inside_the_panel_at_380_with_long_names() {
+    for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+        let mut h = Harness::new();
+        h.size = egui::vec2(380.0, 3000.0);
+        h.app.settings.theme = theme.clone();
+        let long = "L".repeat(60) + " plugin with a very long name that keeps going";
+        for id in ["demo-light", "demo-alerts"] {
+            h.app.plugins.get_mut(id).unwrap().info.name = Some(long.clone());
+        }
+        plugins_page_frame(&mut h, vec![]);
+        plugins_page_frame(&mut h, vec![]);
+        let painted = painted_texts(&h);
+        assert!(painted.iter().any(|t| t == "Add\u{2026}"), "{painted:?}");
+        assert!(painted.iter().any(|t| t == "Reorder"), "{painted:?}");
+        let right = painted_right_edge(&h);
+        assert!(right <= 380.5, "list reaches {right} in {theme:?}");
+        // The long name is cut with an ellipsis, not wrapped over the switch.
+        for shape in painted_shapes(&h) {
+            if let egui::epaint::Shape::Text(text) = shape
+                && text.galley.job.text.starts_with("LLL")
+            {
+                assert_eq!(text.galley.rows.len(), 1, "one line in {theme:?}");
+            }
+        }
+        // The two header buttons do not overlap.
+        let rect_of = |wanted: &str| {
+            painted_shapes(&h).into_iter().find_map(|s| match s {
+                egui::epaint::Shape::Text(t) if t.galley.job.text == wanted => {
+                    Some(egui::Rect::from_min_size(t.pos, t.galley.size()))
+                }
+                _ => None,
+            })
+        };
+        let add = rect_of("Add\u{2026}").unwrap();
+        let reorder = rect_of("Reorder").unwrap();
+        assert!(!add.intersects(reorder), "{add:?} {reorder:?}");
+    }
+}
+
+#[test]
+fn plugin_page_stays_inside_the_panel_at_380() {
+    for id in ["demo-light", "demo-alerts", "demo-changed"] {
+        let mut h = Harness::new();
+        h.size = egui::vec2(380.0, 3000.0);
+        h.app.plugins_view = PluginsView::Plugin(id.into());
+        h.app.plugins.get_mut(id).unwrap().info.name =
+            Some("N".repeat(40) + " " + &"name ".repeat(20));
+        plugins_page_frame(&mut h, vec![]);
+        plugins_page_frame(&mut h, vec![]);
+        let right = painted_right_edge(&h);
+        assert!(right <= 380.5, "{id} page reaches {right}");
+    }
+}
+
+#[test]
+fn account_status_goes_under_the_name_when_narrow() {
+    let mut h = Harness::new();
+    h.size = egui::vec2(380.0, 3000.0);
+    h.app.plugins_view = PluginsView::Plugin("demo-alerts".into());
+    plugins_page_frame(&mut h, vec![]);
+    plugins_page_frame(&mut h, vec![]);
+    let pos = |wanted: &str| {
+        painted_shapes(&h).into_iter().find_map(|s| match s {
+            egui::epaint::Shape::Text(t) if t.galley.job.text == wanted => Some(t.pos),
+            _ => None,
+        })
+    };
+    let name = h.app.plugin_accounts()[0].username.clone();
+    let name = pos(&name).expect("account name");
+    let status = pos("Listening for calls")
+        .or_else(|| pos("Waiting for sign-in"))
+        .or_else(|| pos("Connecting\u{2026}"))
+        .expect("account status");
+    assert!(
+        status.y > name.y,
+        "status under the name: {status:?} {name:?}"
+    );
+}
+
+#[test]
+fn plugin_status_names_starting_and_stopped() {
+    let mut h = plugins_page_harness_for("demo-alerts");
+    let state = h.app.plugins.get_mut("demo-alerts").unwrap();
+    state.running = false;
+    state.message = None;
+    plugins_page_frame(&mut h, vec![]);
+    assert!(painted_texts(&h).iter().any(|t| t == "Starting\u{2026}"));
+    h.app.plugins.get_mut("demo-alerts").unwrap().message = Some("exit 1".into());
+    plugins_page_frame(&mut h, vec![]);
+    assert!(painted_texts(&h).iter().any(|t| t == "Stopped: exit 1"));
+}
+
+#[test]
+fn setup_page_has_chaats_title_and_the_plugins_caption() {
+    let mut h = plugins_settings_harness(900.0, ThemeChoice::Dark);
+    adding_light(&mut h, true);
+    h.frames(3);
+    assert!(
+        texts_in_order(
+            &h,
+            &[
+                "Set up a new plugin",
+                "Plugin: \u{201C}Status light\u{201D}",
+                "SETTINGS \u{00B7} FROM THE PLUGIN",
+                "Done"
+            ]
+        ),
+        "{:?}",
+        painted_texts(&h)
+    );
+}
+
+/// Presses `key` for one frame on the bare Plugins page.
+fn plugins_page_key(h: &mut Harness, key: egui::Key) -> Vec<Action> {
+    let event = |pressed| egui::Event::Key {
+        key,
+        physical_key: Some(key),
+        pressed,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    };
+    let mut actions = plugins_page_frame(h, vec![event(true)]);
+    actions.extend(plugins_page_frame(h, vec![event(false)]));
+    actions
+}
+
+#[test]
+fn list_rows_open_with_tab_and_enter_and_the_switch_toggles_with_space() {
+    let mut h = Harness::new();
+    h.size = egui::vec2(900.0, 3000.0);
+    plugins_page_frame(&mut h, vec![]);
+    plugins_page_frame(&mut h, vec![]);
+    let mut opened = false;
+    let mut toggled = false;
+    for _ in 0..12 {
+        plugins_page_key(&mut h, egui::Key::Tab);
+        let actions = plugins_page_key(&mut h, egui::Key::Enter);
+        opened |= actions.contains(&Action::OpenPlugin("demo-light".into()));
+        let actions = plugins_page_key(&mut h, egui::Key::Space);
+        toggled |= actions
+            .iter()
+            .any(|a| matches!(a, Action::SetPluginEnabled(id, _) if id == "demo-light"))
+            && !actions.iter().any(|a| matches!(a, Action::OpenPlugin(_)));
+    }
+    assert!(opened, "a row opens its plugin from the keyboard");
+    assert!(toggled, "Space on the switch toggles without opening");
+}
+
+#[test]
+fn new_plugin_files_keep_to_the_type_scale_and_never_repaint_at_once() {
+    let scale = ["11", "12", "13", "14", "15", "18", "20", "24", "30"];
+    for (name, source) in [
+        ("mod", include_str!("../src/ui/plugins/mod.rs")),
+        ("options", include_str!("../src/ui/plugins/options.rs")),
+        ("list", include_str!("../src/ui/plugins/list.rs")),
+        ("page", include_str!("../src/ui/plugins/page.rs")),
+        ("setup", include_str!("../src/ui/plugins/setup.rs")),
+    ] {
+        assert!(
+            !source.contains("request_repaint()"),
+            "{name} repaints at once"
+        );
+        for font in ["regular(", "medium(", "semibold(", "bold("] {
+            for (at, _) in source.match_indices(&format!("theme::{font}")) {
+                let rest = &source[at + "theme::".len() + font.len()..];
+                let size = rest.split(".0)").next().unwrap_or("");
+                assert!(
+                    scale.contains(&size),
+                    "{name}: font size {size:?} is off the scale"
+                );
+            }
+        }
+    }
 }

@@ -267,10 +267,14 @@ fn open_plugins_for_setup(app: &mut App, ctx: &egui::Context) {
         .data(|d| d.get_temp::<(u64, Option<String>)>(key))
         .filter(|(last, _)| frame <= last.saturating_add(1))
         .and_then(|(_, setup)| setup);
-    if app.plugin_setup.is_some() && app.plugin_setup != seen {
+    let adding = match &app.plugins_view {
+        crate::app::PluginsView::Adding(id) => Some(id.clone()),
+        _ => None,
+    };
+    if adding.is_some() && adding != seen {
         app.settings_page = Some(SettingsPage::Plugins);
     }
-    ctx.data_mut(|d| d.insert_temp(key, (frame, app.plugin_setup.clone())));
+    ctx.data_mut(|d| d.insert_temp(key, (frame, adding)));
 }
 
 /// A group's heading inside a page: like [`widgets::section_label`], one
@@ -783,9 +787,36 @@ fn call_alerts(app: &App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         &palette,
         "Microsoft Graph can't tell Chaat that a call is ringing. A plugin can: a separate program you install, not part of Chaat. Add and manage plugins in Settings \u{203A} Plugins.",
     );
-    if widgets::secondary_button(ui, &palette, "Open Plugins").clicked() {
-        actions.push(Action::ShowSettingsPage(SettingsPage::Plugins));
+    // With a plugin providing alerts, open its page; else the plugins list.
+    match app.call_alerts_owner() {
+        Some(id) => {
+            if widgets::secondary_button(ui, &palette, "Open").clicked() {
+                actions.push(Action::OpenPlugin(id));
+            }
+        }
+        None => {
+            if widgets::secondary_button(ui, &palette, "Open Plugins").clicked() {
+                actions.push(Action::ShowSettingsPage(SettingsPage::Plugins));
+            }
+        }
     }
+}
+
+/// The plugin Settings › Push updates describes: the one that owns push,
+/// else the first enabled one that offers it.
+fn push_plugin_id(app: &App) -> Option<String> {
+    app.push_owner().or_else(|| {
+        app.settings
+            .plugins
+            .iter()
+            .filter(|entry| entry.enabled)
+            .find(|entry| {
+                app.plugins
+                    .get(&entry.id)
+                    .is_some_and(|state| state.offers.contains(&crate::plugin::registry::PUSH))
+            })
+            .map(|entry| entry.id.clone())
+    })
 }
 
 fn push(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
@@ -885,6 +916,14 @@ fn push_plugin(
         )
         .wrap(),
     );
+    let open = push_plugin_id(app);
+    let open_button = |ui: &mut egui::Ui, actions: &mut Vec<Action>| {
+        if let Some(id) = &open
+            && widgets::secondary_button(ui, &palette, "Open").clicked()
+        {
+            actions.push(Action::OpenPlugin(id.clone()));
+        }
+    };
     if view.relay_set {
         note(
             ui,
@@ -894,6 +933,7 @@ fn push_plugin(
                 view.name
             ),
         );
+        open_button(ui, actions);
         return;
     }
     let (text, color) = match &view.state {
@@ -929,11 +969,7 @@ fn push_plugin(
             .wrap(),
         );
     }
-    if view.state == PushPluginState::NeedsApproval
-        && widgets::secondary_button(ui, &palette, "Open Plugins").clicked()
-    {
-        actions.push(Action::ShowSettingsPage(SettingsPage::Plugins));
-    }
+    open_button(ui, actions);
 }
 
 fn shortcuts(app: &App, ui: &mut egui::Ui) {

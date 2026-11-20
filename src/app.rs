@@ -34,7 +34,7 @@ mod plugins;
 mod push;
 pub use calls::Docked;
 pub use history::HistoryLayout;
-pub use plugins::PluginState;
+pub use plugins::{ADD_START_LIMIT, PluginState, PluginSummary, PluginsView, SummaryLevel};
 pub use push::{PushPluginState, PushPluginView};
 
 /// Messages and view state of one conversation.
@@ -635,10 +635,12 @@ pub struct App {
     /// (plugin id, option id); shown under the field until a valid value is
     /// entered.
     pub plugin_option_errors: std::collections::BTreeMap<(String, String), String>,
-    /// The plugin whose setup view is open (required options first).
-    pub plugin_setup: Option<String>,
-    /// Plugins the person just added that have not sent their first `ready`.
-    plugin_added: std::collections::BTreeSet<String>,
+    /// Which view of Settings › Plugins shows. Interface state, never saved.
+    pub plugins_view: PluginsView,
+    /// Whether the plugins list is in reorder mode.
+    pub reordering: bool,
+    /// When each plugin was last asked to start, for the add flow's wait.
+    plugin_started_at: std::collections::BTreeMap<String, std::time::Instant>,
     next_toast: u64,
     pub actions: Vec<Action>,
 
@@ -783,8 +785,9 @@ impl App {
             plugin_generation: 0,
             plugin_toasts: Default::default(),
             plugin_option_errors: Default::default(),
-            plugin_setup: None,
-            plugin_added: Default::default(),
+            plugins_view: PluginsView::default(),
+            reordering: false,
+            plugin_started_at: Default::default(),
             next_toast: 0,
             actions: Vec::new(),
             palette,
@@ -1828,6 +1831,11 @@ impl App {
     }
 
     pub fn apply(&mut self, action: Action, ctx: &egui::Context) {
+        self.apply_one(action, ctx);
+        self.plugins_view_follows_settings();
+    }
+
+    fn apply_one(&mut self, action: Action, ctx: &egui::Context) {
         match action {
             Action::CheckUpdate => self.check_update(self.settings.automatic_updates),
             Action::SetAutomaticUpdates(enabled) => {
@@ -2565,8 +2573,14 @@ impl App {
             | Action::SetPluginOption { .. }
             | Action::RunPluginAction { .. }
             | Action::ResetPluginSection { .. }
-            | Action::OpenPluginSetup(_)
-            | Action::ClosePluginSetup
+            | Action::OpenPlugin(_)
+            | Action::BackToPlugins
+            | Action::StartReorder
+            | Action::EndReorder
+            | Action::MovePlugin { .. }
+            | Action::FinishPluginSetup { .. }
+            | Action::CancelPluginSetup(_)
+            | Action::RetryPluginStart(_)
             | Action::SetPluginSecret { .. }
             | Action::PluginSignIn { .. }
             | Action::HidePluginSignIn { .. }) => self.apply_plugin_action(action),

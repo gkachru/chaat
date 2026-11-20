@@ -2,8 +2,8 @@
 
 use egui::{Key, Modifiers};
 
-use crate::app::{App, Overlay};
-use crate::model::{Action, Section};
+use crate::app::{App, Overlay, PluginsView};
+use crate::model::{Action, Section, SettingsPage};
 
 /// Shortcuts and what they do, in groups, for the settings page.
 pub const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
@@ -45,6 +45,26 @@ pub fn platform(keys: &str) -> String {
         keys.to_owned()
     } else {
         keys.replace('⌘', "Ctrl ")
+    }
+}
+
+/// What Esc does in settings. On the Plugins page it steps out of
+/// reordering, then out of a plugin's page, before it closes settings. On the
+/// add flow it does nothing.
+fn settings_escape(app: &App) -> Option<Action> {
+    if app.settings_page != Some(SettingsPage::Plugins) {
+        return Some(Action::CloseSettings);
+    }
+    if app.reordering {
+        Some(Action::EndReorder)
+    } else if matches!(app.plugins_view, PluginsView::Plugin(_)) {
+        Some(Action::BackToPlugins)
+    } else if matches!(app.plugins_view, PluginsView::Adding(_)) {
+        // Leaving an add flow means Cancel, which asks for no confirm yet
+        // stops the plugin: only its buttons do that, never a stray Esc.
+        None
+    } else {
+        Some(Action::CloseSettings)
     }
 }
 
@@ -115,7 +135,7 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             && !typing
             && input.consume_key(Modifiers::NONE, Key::Escape)
         {
-            actions.push(Action::CloseSettings);
+            actions.extend(settings_escape(app));
         }
     });
     // egui's own zoom keys would fight the setting.

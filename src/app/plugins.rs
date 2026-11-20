@@ -8,8 +8,9 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use super::App;
+use super::PushPluginState;
 use crate::backend::Command;
-use crate::model::{Action, PluginSignIn, ToastKind};
+use crate::model::{Action, PluginSignIn, SettingsPage, ToastKind};
 use crate::plugin::event::PluginEvent;
 use crate::plugin::options;
 use crate::plugin::presence;
@@ -33,6 +34,49 @@ pub const ACTION_WORKING_LIMIT: Duration = Duration::from_secs(30);
 /// (plain text) and when it arrived.
 pub type OptionStatusEntry = (StatusState, Option<String>, Instant);
 
+/// How long a new plugin may take to send `ready` in the add flow before
+/// Chaat calls it failed.
+pub const ADD_START_LIMIT: Duration = Duration::from_secs(15);
+
+/// Which view of Settings › Plugins shows. Interface state only, never saved.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum PluginsView {
+    /// The list of plugins.
+    #[default]
+    List,
+    /// One plugin's page (plugin id).
+    Plugin(String),
+    /// The add flow of a new plugin (plugin id).
+    Adding(String),
+}
+
+/// How a plugin's row dot looks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SummaryLevel {
+    /// Needs the person (warning).
+    Attention,
+    /// Stopped with an error (danger).
+    Error,
+    /// Working (success).
+    Ok,
+    /// Off, starting or not used (dim).
+    Off,
+}
+
+/// One line about a plugin, in Chaat's words, for the plugins list.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PluginSummary {
+    pub level: SummaryLevel,
+    pub text: String,
+}
+
+impl PluginSummary {
+    /// Whether the row goes in the "Needs you" group.
+    pub fn needs_you(&self) -> bool {
+        matches!(self.level, SummaryLevel::Attention | SummaryLevel::Error)
+    }
+}
+
 /// What Chaat knows about one plugin of the plugin list while it runs.
 #[derive(Debug, Default)]
 pub struct PluginState {
@@ -48,7 +92,7 @@ pub struct PluginState {
     pub options: Vec<OptionSpec>,
     /// Whether the current run sent its `ready`; no option values go to a run
     /// before it described its options.
-    pub(super) ready_seen: bool,
+    pub ready_seen: bool,
     /// The last status of each option or action its current `ready` describes,
     /// by id. Cleared when the plugin (re)starts.
     pub statuses: BTreeMap<String, OptionStatusEntry>,
@@ -255,11 +299,21 @@ impl App {
         if self.demo {
             return;
         }
+        // A plugin whose add flow is not finished runs only while its setup
+        // page is open.
+        let adding = match &self.plugins_view {
+            PluginsView::Adding(id) => Some(id.clone()),
+            _ => None,
+        };
         let wanted: Vec<(String, PathBuf)> = self
             .settings
             .plugins
             .iter()
-            .filter(|entry| entry.enabled && !entry.path.as_os_str().is_empty())
+            .filter(|entry| {
+                entry.enabled
+                    && !entry.path.as_os_str().is_empty()
+                    && (!entry.setup_pending || adding.as_deref() == Some(entry.id.as_str()))
+            })
             .map(|entry| (entry.id.clone(), entry.path.clone()))
             .collect();
         let stale: Vec<String> = self
@@ -270,6 +324,7 @@ impl App {
             .collect();
         for id in stale {
             self.plugins_started.remove(&id);
+            self.plugin_started_at.remove(&id);
             self.retire_plugin_generation(&id);
             self.service.send(Command::StopPlugin { id: id.clone() });
             if let Some(state) = self.plugins.get_mut(&id) {
@@ -288,6 +343,7 @@ impl App {
             let accounts = Self::plugin_needs_accounts(entry).then(|| self.plugin_accounts());
             let expected_sha256 = entry.sha256.clone();
             self.plugins_started.insert(id.clone(), path.clone());
+            self.plugin_started_at.insert(id.clone(), Instant::now());
             self.push_plugin_stopped(&id);
             let state = self.plugins.entry(id.clone()).or_default();
             state.stopped();
@@ -880,11 +936,6 @@ impl App {
             self.send_plugin_accounts(id, accounts);
         }
         self.send_plugin_options(id);
-        // A plugin the person just added opens its setup the first time it
-        // describes required options that are still empty.
-        if self.plugin_added.remove(id) && !self.plugin_missing_required(id).is_empty() {
-            self.plugin_setup = Some(id.to_owned());
-        }
         // Only what the plugin says it cleared leaves the queue.
         self.plugin_forget_done(id, forgotten);
         self.sync_plugin_presence();
@@ -904,19 +955,22 @@ impl App {
         options::missing_required(&state.options, &stored_map(entry), &entry.secrets)
     }
 
-    /// Adds a plugin to the list, turned on, and starts it.
+    /// Adds a plugin to the list, turned on, and starts it. It stays
+    /// `setup_pending` until the person finishes its add flow.
     pub(super) fn add_plugin(&mut self, path: PathBuf) {
         let taken: Vec<String> = self.settings.plugins.iter().map(|e| e.id.clone()).collect();
         let id = plugin_id_for(&path, &taken);
-        self.plugin_added.insert(id.clone());
         self.settings.plugins.push(PluginEntry {
-            id,
+            id: id.clone(),
             path,
             enabled: true,
             instance: PluginEntry::new_instance(),
+            setup_pending: true,
             ..PluginEntry::default()
         });
         self.mark_settings_dirty();
+        self.reordering = false;
+        self.plugins_view = PluginsView::Adding(id);
         self.sync_plugins();
     }
 
@@ -967,11 +1021,12 @@ impl App {
             });
         }
         self.plugin_toasts.remove(id);
-        self.plugin_added.remove(id);
+        self.plugin_started_at.remove(id);
         self.plugin_option_errors
             .retain(|(plugin, _), _| plugin != id);
-        if self.plugin_setup.as_deref() == Some(id) {
-            self.plugin_setup = None;
+        if matches!(&self.plugins_view, PluginsView::Plugin(v) | PluginsView::Adding(v) if v == id)
+        {
+            self.plugins_view = PluginsView::List;
         }
         if self.plugins_started.remove(id).is_some() {
             self.retire_plugin_generation(id);
@@ -982,6 +1037,30 @@ impl App {
         self.push_plugin_stopped(id);
         self.sync_push_route(false);
         self.mark_settings_dirty();
+    }
+
+    /// Starts a plugin of an unfinished add flow again. The old run is
+    /// stopped and its generation retired first, so a late `ready` from it
+    /// does not count for the new run, and the wait starts over. Plugins that
+    /// are not in an add flow are left alone.
+    fn retry_plugin_start(&mut self, id: &str) {
+        if !self
+            .settings
+            .plugins
+            .iter()
+            .any(|e| e.id == id && e.setup_pending)
+        {
+            return;
+        }
+        if self.plugins_started.remove(id).is_some() {
+            self.retire_plugin_generation(id);
+            self.send_service(Command::StopPlugin { id: id.to_owned() });
+        }
+        self.plugin_started_at.remove(id);
+        if let Some(state) = self.plugins.get_mut(id) {
+            state.message = None;
+        }
+        self.sync_plugins();
     }
 
     /// Runs the plugin actions.
@@ -1007,12 +1086,32 @@ impl App {
             Action::ResetPluginSection { plugin, section } => {
                 self.reset_plugin_section(&plugin, section.as_deref());
             }
-            Action::OpenPluginSetup(id) => {
-                if self.settings.plugins.iter().any(|e| e.id == id) {
-                    self.plugin_setup = Some(id);
+            Action::OpenPlugin(id) => self.open_plugin(id),
+            Action::BackToPlugins => {
+                self.plugins_view = PluginsView::List;
+                self.sync_plugins();
+            }
+            Action::StartReorder => {
+                if self.settings.plugins.len() >= 2 {
+                    self.reordering = true;
+                    self.plugins_view = PluginsView::List;
+                    self.sync_plugins();
                 }
             }
-            Action::ClosePluginSetup => self.plugin_setup = None,
+            Action::EndReorder => self.reordering = false,
+            Action::MovePlugin { id, to } => self.move_plugin(&id, to),
+            Action::FinishPluginSetup { id, allow } => self.finish_plugin_setup(&id, &allow),
+            Action::CancelPluginSetup(id) => {
+                if self
+                    .settings
+                    .plugins
+                    .iter()
+                    .any(|e| e.id == id && e.setup_pending)
+                {
+                    self.remove_plugin(&id);
+                }
+            }
+            Action::RetryPluginStart(id) => self.retry_plugin_start(&id),
             Action::SetPluginSecret {
                 plugin,
                 option,
@@ -1184,6 +1283,12 @@ impl App {
     /// Allows or refuses what the plugin's current `ready` asked for and the
     /// person has not decided yet. Allowed accounts and presence go out now.
     fn decide_plugin_needs(&mut self, id: &str, allow: bool) {
+        self.decide_plugin_needs_with(id, &|_| allow);
+    }
+
+    /// Allows the pending needs `allowed` accepts and refuses the other
+    /// pending ones. Allowed accounts and presence go out now.
+    fn decide_plugin_needs_with(&mut self, id: &str, allowed: &dyn Fn(&str) -> bool) {
         let pending = match self.plugins.get_mut(id) {
             Some(state) if !state.pending_needs.is_empty() => {
                 std::mem::take(&mut state.pending_needs)
@@ -1193,7 +1298,10 @@ impl App {
         let Some(entry) = self.settings.plugins.iter_mut().find(|e| e.id == id) else {
             return;
         };
+        let mut any_allowed = false;
         for need in pending {
+            let allow = allowed(need);
+            any_allowed |= allow;
             let (add, other) = if allow {
                 (&mut entry.approved_needs, &mut entry.denied_needs)
             } else {
@@ -1206,7 +1314,7 @@ impl App {
         }
         self.mark_settings_dirty();
         self.sync_push_route(false);
-        if !allow {
+        if !any_allowed {
             return;
         }
         let Some(entry) = self.settings.plugins.iter().find(|e| e.id == id) else {
@@ -1297,6 +1405,335 @@ impl App {
         }
         self.mark_settings_dirty();
         self.send_plugin_options(plugin);
+    }
+}
+
+/// Chaat's short words for a pending need, in the row summary.
+fn need_short_words(need: &str) -> &'static str {
+    match need {
+        "accounts" => "your accounts",
+        "presence" => "your presence",
+        registry::PUSH => "your update notifications",
+        _ => "something new",
+    }
+}
+
+fn plural(count: usize, one: &str, many: &str) -> String {
+    format!("{count} {}", if count == 1 { one } else { many })
+}
+
+impl App {
+    /// The capabilities this plugin provides now, push first: it is the first
+    /// enabled, running plugin that offers them. Push does not come from a
+    /// plugin while a manual relay address is set.
+    pub fn plugin_provides(&self, id: &str) -> Vec<&'static str> {
+        let mut provides = Vec::new();
+        if self.settings.relay_url.is_none() && self.push_owner().as_deref() == Some(id) {
+            provides.push(registry::PUSH);
+        }
+        if self.call_alerts_owner().as_deref() == Some(id) {
+            provides.push(registry::CALL_ALERTS);
+        }
+        provides
+    }
+
+    /// The first other plugin, in list order, that is enabled, running and
+    /// offers `capability`: the one that would take over.
+    fn plugin_next_provider(&self, id: &str, capability: &str) -> Option<String> {
+        self.settings
+            .plugins
+            .iter()
+            .filter(|entry| entry.enabled && entry.id != id)
+            .find(|entry| {
+                self.plugins
+                    .get(&entry.id)
+                    .is_some_and(|state| state.running && state.offers.contains(&capability))
+            })
+            .map(|entry| entry.id.clone())
+    }
+
+    /// The question to ask before turning this plugin off, in Chaat's words;
+    /// `None` when it provides nothing.
+    pub fn turn_off_question(&self, id: &str) -> Option<String> {
+        let consequences = self.turn_off_consequences(id)?;
+        Some(format!(
+            "Turn off {}? {consequences}",
+            self.quoted_plugin_name(id)
+        ))
+    }
+
+    /// A plugin's name in quotation marks, so its words stay apart from
+    /// Chaat's sentence. Quotation marks inside the name become apostrophes,
+    /// so it cannot close the quote early.
+    pub fn quoted_plugin_name(&self, id: &str) -> String {
+        let name = self.plugin_name(id).replace(['\u{201C}', '\u{201D}'], "'");
+        format!("\u{201C}{name}\u{201D}")
+    }
+
+    /// What stops or who takes over when this plugin is turned off, in
+    /// Chaat's words; `None` when it provides nothing.
+    pub fn turn_off_consequences(&self, id: &str) -> Option<String> {
+        let provides = self.plugin_provides(id);
+        let mut sentences = Vec::new();
+        for capability in provides {
+            let other = self.plugin_next_provider(id, capability);
+            sentences.push(match (capability, other) {
+                (registry::PUSH, Some(other)) => {
+                    format!(
+                        "{} provides push updates instead.",
+                        self.quoted_plugin_name(&other)
+                    )
+                }
+                (registry::PUSH, None) => {
+                    "Push updates stop until you turn it back on or set a relay address.".to_owned()
+                }
+                (_, Some(other)) => {
+                    format!(
+                        "{} provides call alerts instead.",
+                        self.quoted_plugin_name(&other)
+                    )
+                }
+                (_, None) => "Chaat stops showing incoming calls from this plugin.".to_owned(),
+            });
+        }
+        if sentences.is_empty() {
+            return None;
+        }
+        Some(sentences.join(" "))
+    }
+
+    /// Records that the plugin was started `ago` before now, as the add flow
+    /// waits on it (tests).
+    pub fn pretend_plugin_started(&mut self, id: &str, ago: Duration) {
+        let Some(path) = self
+            .settings
+            .plugins
+            .iter()
+            .find(|e| e.id == id)
+            .map(|e| e.path.clone())
+        else {
+            return;
+        };
+        self.plugins_started.insert(id.to_owned(), path);
+        if let Some(at) = Instant::now().checked_sub(ago) {
+            self.plugin_started_at.insert(id.to_owned(), at);
+        }
+    }
+
+    /// How long the add flow's start of this plugin may still wait for its
+    /// `ready`; `None` when no start is being waited on (not started, or
+    /// `ready` came). Zero once the limit has passed.
+    pub fn plugin_start_remaining(&self, id: &str) -> Option<Duration> {
+        let at = self.plugin_started_at.get(id)?;
+        if self.plugins.get(id).is_some_and(|state| state.ready_seen) {
+            return None;
+        }
+        Some(ADD_START_LIMIT.saturating_sub(at.elapsed()))
+    }
+
+    /// Whether the plugin's current run has sent `ready` (so its needs and
+    /// options are known).
+    pub fn plugin_ready(&self, id: &str) -> bool {
+        self.plugins
+            .get(id)
+            .is_some_and(|state| state.running && state.ready_seen)
+    }
+
+    /// Whether a plugin started for its add flow has waited too long for its
+    /// `ready`.
+    pub fn plugin_start_timed_out(&self, id: &str) -> bool {
+        self.plugin_started_at
+            .get(id)
+            .is_some_and(|at| at.elapsed() >= ADD_START_LIMIT)
+            && !self.plugins.get(id).is_some_and(|state| state.ready_seen)
+    }
+
+    /// One line about a plugin for the plugins list. The first matching rule
+    /// of the spec's table wins.
+    pub fn plugin_summary(&self, id: &str) -> PluginSummary {
+        let make = |level, text: &str| PluginSummary {
+            level,
+            text: text.to_owned(),
+        };
+        let Some(entry) = self.settings.plugins.iter().find(|e| e.id == id) else {
+            return make(SummaryLevel::Off, "Not in the list");
+        };
+        let state = self.plugins.get(id);
+        if entry.setup_pending {
+            let stopped = state.is_some_and(|s| !s.ready_seen && s.message.is_some());
+            return if self.plugins_started.contains_key(id)
+                && (stopped || self.plugin_start_timed_out(id))
+            {
+                make(SummaryLevel::Error, "It stopped before saying what it does")
+            } else {
+                make(SummaryLevel::Attention, "Finish setup")
+            };
+        }
+        if state.is_some_and(|s| s.file_changed.is_some()) {
+            return make(SummaryLevel::Attention, "The file changed. Review it");
+        }
+        if let Some(need) = state.and_then(|s| s.pending_needs.first()) {
+            return PluginSummary {
+                level: SummaryLevel::Attention,
+                text: format!("Asks for {}", need_short_words(need)),
+            };
+        }
+        if !self.plugin_missing_required(id).is_empty() {
+            return make(SummaryLevel::Attention, "Needs setup");
+        }
+        let running = state.is_some_and(|s| s.running);
+        if entry.enabled
+            && !running
+            && let Some(message) = state.and_then(|s| s.message.as_deref())
+        {
+            return PluginSummary {
+                level: SummaryLevel::Error,
+                text: format!("Stopped: {message}"),
+            };
+        }
+        if !entry.enabled {
+            return make(SummaryLevel::Off, "Off");
+        }
+        if !running {
+            return make(SummaryLevel::Off, "Starting\u{2026}");
+        }
+        let state = state.expect("a running plugin has state");
+        if self.call_alerts_owner().as_deref() == Some(id) {
+            if !state.listening.is_empty() {
+                return PluginSummary {
+                    level: SummaryLevel::Ok,
+                    text: format!(
+                        "Listening on {}",
+                        plural(state.listening.len(), "account", "accounts")
+                    ),
+                };
+            }
+            if !state.sign_in.is_empty() {
+                return PluginSummary {
+                    level: SummaryLevel::Ok,
+                    text: format!("Waiting for sign-in on {}", state.sign_in.len()),
+                };
+            }
+        }
+        // With a manual relay address push does not come from a plugin.
+        let push_by_plugin = self.settings.relay_url.is_none();
+        if push_by_plugin
+            && self.push_owner().as_deref() == Some(id)
+            && let Some(view) = self.push_plugin_view()
+        {
+            match view.state {
+                PushPluginState::Up { host } => {
+                    return PluginSummary {
+                        level: SummaryLevel::Ok,
+                        text: format!("Tunnel at {host}"),
+                    };
+                }
+                PushPluginState::Waiting => {
+                    return make(SummaryLevel::Ok, "Waiting for its tunnel");
+                }
+                PushPluginState::Down { .. } => return make(SummaryLevel::Ok, "Tunnel down"),
+                PushPluginState::NeedsApproval => {}
+            }
+        }
+        let loses_calls = state.offers.contains(&registry::CALL_ALERTS)
+            && self.call_alerts_owner().as_deref() != Some(id);
+        let loses_push = push_by_plugin
+            && state.offers.contains(&registry::PUSH)
+            && self.push_owner().as_deref() != Some(id);
+        if loses_calls || loses_push {
+            let what = if loses_calls { "calls" } else { "push" };
+            return PluginSummary {
+                level: SummaryLevel::Off,
+                text: format!("Not used: another plugin provides {what}"),
+            };
+        }
+        make(SummaryLevel::Ok, "Running")
+    }
+
+    /// Opens a plugin's page, or its add flow while its setup is pending.
+    fn open_plugin(&mut self, id: String) {
+        let Some(entry) = self.settings.plugins.iter().find(|e| e.id == id) else {
+            return;
+        };
+        self.plugins_view = if entry.setup_pending {
+            PluginsView::Adding(id)
+        } else {
+            PluginsView::Plugin(id)
+        };
+        self.reordering = false;
+        self.settings_page = Some(SettingsPage::Plugins);
+        self.last_settings_page = SettingsPage::Plugins;
+        self.overlay = None;
+        self.sync_plugins();
+    }
+
+    /// Keeps the plugins view to Settings › Plugins: leaving it, or the
+    /// plugin going away, returns to the list and ends the reorder mode. An
+    /// unfinished add flow stops its plugin.
+    pub(super) fn plugins_view_follows_settings(&mut self) {
+        let gone = match &self.plugins_view {
+            PluginsView::List => false,
+            PluginsView::Plugin(id) | PluginsView::Adding(id) => {
+                !self.settings.plugins.iter().any(|e| &e.id == id)
+            }
+        };
+        if self.settings_page != Some(SettingsPage::Plugins) || gone {
+            self.reordering = false;
+            if self.plugins_view != PluginsView::List {
+                self.plugins_view = PluginsView::List;
+                self.sync_plugins();
+            }
+        }
+    }
+
+    /// Moves a plugin to index `to` (clamped), saves, and moves the push
+    /// route and call alerts to whichever plugin now comes first, as a stop
+    /// would.
+    fn move_plugin(&mut self, id: &str, to: usize) {
+        let list = &mut self.settings.plugins;
+        let Some(from) = list.iter().position(|e| e.id == id) else {
+            return;
+        };
+        let to = to.min(list.len() - 1);
+        if from == to {
+            return;
+        }
+        let entry = list.remove(from);
+        list.insert(to, entry);
+        self.mark_settings_dirty();
+        // Sign-in notices belong to the plugin that provides call alerts.
+        let owner = self.call_alerts_owner();
+        for (plugin, state) in &mut self.plugins {
+            if state.offers.contains(&registry::CALL_ALERTS)
+                && owner.as_deref() != Some(plugin.as_str())
+            {
+                state.sign_in.clear();
+                state.asked.clear();
+            }
+        }
+        self.sync_push_route(false);
+    }
+
+    /// Ends the add flow: the ticked needs are allowed, the other pending ones
+    /// refused, and the plugin is a finished one. Nothing is sent for a need
+    /// that was not ticked. Ignored while required options are empty.
+    fn finish_plugin_setup(&mut self, id: &str, allow: &[String]) {
+        if !self
+            .settings
+            .plugins
+            .iter()
+            .any(|e| e.id == id && e.setup_pending)
+            || !self.plugin_missing_required(id).is_empty()
+        {
+            return;
+        }
+        self.decide_plugin_needs_with(id, &|need| allow.iter().any(|a| a == need));
+        if let Some(entry) = self.settings.plugins.iter_mut().find(|e| e.id == id) {
+            entry.setup_pending = false;
+        }
+        self.mark_settings_dirty();
+        self.plugins_view = PluginsView::Plugin(id.to_owned());
+        self.sync_plugins();
     }
 }
 
@@ -1881,49 +2318,622 @@ mod tests {
     }
 
     #[test]
-    fn a_new_plugin_with_missing_required_options_opens_setup() {
-        let (mut app, _commands) = option_app();
+    fn a_new_plugin_opens_its_add_flow_and_stays_pending() {
+        let (mut app, mut commands) = option_app();
         let required = |id: &str, kind| OptionSpec {
             required: true,
             ..spec(id, kind)
         };
-        // A plugin that was already in the list does not open it.
         app.sync_plugins();
         ready_with(&mut app, vec![required("key", OptionKind::Secret)]);
-        assert_eq!(app.plugin_setup, None);
+        assert_eq!(
+            app.plugins_view,
+            PluginsView::List,
+            "an old plugin: no flow"
+        );
         assert_eq!(app.plugin_missing_required("p"), ["key"]);
         app.settings.plugins[0].secrets = vec!["key".into()];
         assert!(app.plugin_missing_required("p").is_empty());
         app.settings.plugins[0].secrets.clear();
-        // One added by the person does, on its first ready only.
+        drain(&mut commands);
         app.add_plugin(PathBuf::from("added-plugin.exe"));
         let id = app.settings.plugins.last().unwrap().id.clone();
-        let described = |app: &mut App| {
-            app.on_plugin_ready(
-                &id,
+        assert!(app.settings.plugins.last().unwrap().setup_pending);
+        assert_eq!(app.plugins_view, PluginsView::Adding(id.clone()));
+        assert!(
+            drain(&mut commands)
+                .iter()
+                .any(|c| matches!(c, Command::StartPlugin { id: started, .. } if *started == id)),
+            "it starts so that it can send ready"
+        );
+        app.remove_plugin(&id);
+        assert_eq!(app.plugins_view, PluginsView::List);
+    }
+
+    #[test]
+    fn setup_pending_is_not_started_at_launch() {
+        let (mut app, mut commands) = option_app();
+        app.settings.plugins.push(PluginEntry {
+            id: "new".into(),
+            path: PathBuf::from("new.exe"),
+            enabled: true,
+            setup_pending: true,
+            ..PluginEntry::default()
+        });
+        app.sync_plugins();
+        let started: Vec<String> = drain(&mut commands)
+            .into_iter()
+            .filter_map(|c| match c {
+                Command::StartPlugin { id, .. } => Some(id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(started, ["p"], "only the finished plugin runs");
+        assert_eq!(
+            app.plugin_summary("new"),
+            PluginSummary {
+                level: SummaryLevel::Attention,
+                text: "Finish setup".into()
+            }
+        );
+        // Opening its setup page starts it; leaving Settings stops it again.
+        app.apply_plugin_action(Action::OpenPlugin("new".into()));
+        assert_eq!(app.plugins_view, PluginsView::Adding("new".into()));
+        assert_eq!(app.settings_page, Some(SettingsPage::Plugins));
+        assert!(
+            drain(&mut commands)
+                .iter()
+                .any(|c| matches!(c, Command::StartPlugin { id, .. } if id == "new"))
+        );
+        app.settings_page = None;
+        app.plugins_view_follows_settings();
+        assert_eq!(app.plugins_view, PluginsView::List);
+        assert!(
+            drain(&mut commands)
+                .iter()
+                .any(|c| matches!(c, Command::StopPlugin { id } if id == "new"))
+        );
+        assert!(app.settings.plugins[1].setup_pending, "still pending");
+    }
+
+    #[test]
+    fn old_settings_load_setup_pending_false() {
+        let entry: PluginEntry =
+            serde_json::from_str(r#"{"id":"p","path":"p.exe","enabled":true}"#).unwrap();
+        assert!(!entry.setup_pending);
+    }
+
+    fn pending_app() -> App {
+        let (mut app, _commands) = option_app();
+        app.settings.plugins[0].setup_pending = true;
+        app.settings.plugins[0].needs = vec!["accounts".into(), "presence".into()];
+        app.sync_plugins_for_test();
+        app
+    }
+
+    impl App {
+        /// Starts "p" as the add flow does, then answers with a `ready` that
+        /// asks for accounts and presence.
+        fn sync_plugins_for_test(&mut self) {
+            self.plugins_view = PluginsView::Adding("p".into());
+            self.sync_plugins();
+            self.on_plugin_ready(
+                "p",
                 PluginInfo::default(),
                 Vec::new(),
+                vec!["accounts", "presence"],
                 Vec::new(),
-                vec![
-                    required("name", OptionKind::Text),
-                    spec("extra", OptionKind::Text),
-                ],
                 Vec::new(),
             );
-        };
-        described(&mut app);
-        assert_eq!(app.plugin_setup.as_deref(), Some(id.as_str()));
-        assert_eq!(app.plugin_missing_required(&id), ["name"]);
-        app.apply_plugin_action(Action::ClosePluginSetup);
-        assert_eq!(app.plugin_setup, None);
-        described(&mut app);
-        assert_eq!(app.plugin_setup, None, "a later ready does not reopen it");
-        app.apply_plugin_action(Action::OpenPluginSetup(id.clone()));
-        assert_eq!(app.plugin_setup.as_deref(), Some(id.as_str()));
-        app.apply_plugin_action(Action::OpenPluginSetup("nope".into()));
-        assert_eq!(app.plugin_setup.as_deref(), Some(id.as_str()));
-        app.remove_plugin(&id);
-        assert_eq!(app.plugin_setup, None);
+        }
+    }
+
+    #[test]
+    fn finish_setup_approves_ticked_refuses_unticked() {
+        let mut app = pending_app();
+        assert_eq!(app.plugins["p"].pending_needs, ["accounts", "presence"]);
+        app.apply_plugin_action(Action::FinishPluginSetup {
+            id: "p".into(),
+            allow: vec!["presence".into()],
+        });
+        let entry = &app.settings.plugins[0];
+        assert!(!entry.setup_pending);
+        assert_eq!(entry.approved_needs, ["presence"]);
+        assert_eq!(entry.denied_needs, ["accounts"]);
+        assert!(app.plugins["p"].pending_needs.is_empty());
+        assert_eq!(app.plugins_view, PluginsView::Plugin("p".into()));
+        assert!(!App::plugin_need_effective(entry, "accounts"));
+        assert!(App::plugin_need_effective(entry, "presence"));
+    }
+
+    #[test]
+    fn finish_setup_with_nothing_ticked_sends_no_accounts() {
+        let mut app = pending_app();
+        let (service, mut commands) = Backend::recording();
+        app.service = service;
+        app.apply_plugin_action(Action::FinishPluginSetup {
+            id: "p".into(),
+            allow: Vec::new(),
+        });
+        assert_eq!(app.settings.plugins[0].denied_needs.len(), 2);
+        assert!(app.settings.plugins[0].approved_needs.is_empty());
+        assert!(!drain(&mut commands).iter().any(|c| matches!(
+            c,
+            Command::PluginSend {
+                message: HostMessage::Accounts { .. } | HostMessage::Presence { .. },
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn finish_setup_waits_for_required_options() {
+        let mut app = pending_app();
+        app.on_plugin_ready(
+            "p",
+            PluginInfo::default(),
+            Vec::new(),
+            Vec::new(),
+            vec![OptionSpec {
+                required: true,
+                ..spec("name", OptionKind::Text)
+            }],
+            Vec::new(),
+        );
+        app.apply_plugin_action(Action::FinishPluginSetup {
+            id: "p".into(),
+            allow: Vec::new(),
+        });
+        assert!(
+            app.settings.plugins[0].setup_pending,
+            "a required option is empty"
+        );
+        assert_eq!(app.plugins_view, PluginsView::Adding("p".into()));
+    }
+
+    #[test]
+    fn cancel_setup_removes() {
+        let mut app = pending_app();
+        app.apply_plugin_action(Action::CancelPluginSetup("p".into()));
+        assert!(app.settings.plugins.is_empty());
+        assert!(!app.plugins.contains_key("p"));
+        assert_eq!(app.plugins_view, PluginsView::List);
+        // A finished plugin is not removed by a stray cancel.
+        let (mut app, _commands) = option_app();
+        app.apply_plugin_action(Action::CancelPluginSetup("p".into()));
+        assert_eq!(app.settings.plugins.len(), 1);
+    }
+
+    #[test]
+    fn leaving_settings_resets_the_view_and_reordering() {
+        let (mut app, _commands) = option_app();
+        app.settings.plugins.push(PluginEntry {
+            id: "q".into(),
+            ..PluginEntry::default()
+        });
+        app.apply_plugin_action(Action::OpenPlugin("p".into()));
+        assert_eq!(app.plugins_view, PluginsView::Plugin("p".into()));
+        app.apply_plugin_action(Action::BackToPlugins);
+        app.apply_plugin_action(Action::StartReorder);
+        assert!(app.reordering);
+        app.apply_plugin_action(Action::EndReorder);
+        assert!(!app.reordering);
+        app.apply_plugin_action(Action::StartReorder);
+        app.settings_page = None;
+        app.plugins_view_follows_settings();
+        assert!(!app.reordering);
+        // Reordering needs two plugins.
+        app.settings.plugins.pop();
+        app.apply_plugin_action(Action::StartReorder);
+        assert!(!app.reordering);
+    }
+
+    /// Two plugins that offer push and call alerts, both running and
+    /// allowed, in an app with one account whose backend is returned.
+    fn two_providers() -> (
+        App,
+        tokio::sync::mpsc::UnboundedReceiver<Command>,
+        tokio::sync::mpsc::UnboundedReceiver<Command>,
+    ) {
+        let (mut app, mut service) = option_app();
+        app.settings.plugins.clear();
+        let (account_backend, mut account) = Backend::recording();
+        app.accounts.push(crate::app::Account::new(account_backend));
+        for id in ["a", "b"] {
+            app.settings.plugins.push(PluginEntry {
+                id: id.into(),
+                path: PathBuf::from(format!("{id}.exe")),
+                enabled: true,
+                needs: vec!["push".into()],
+                approved_needs: vec!["push".into()],
+                ..PluginEntry::default()
+            });
+            app.plugins.insert(
+                id.into(),
+                PluginState {
+                    running: true,
+                    offers: vec![registry::CALL_ALERTS, registry::PUSH],
+                    needs: vec!["push"],
+                    ready_seen: true,
+                    ..PluginState::default()
+                },
+            );
+            app.plugins_started
+                .insert(id.into(), PathBuf::from(format!("{id}.exe")));
+            let url = format!("https://{id}.trycloudflare.com");
+            app.on_plugin_event(
+                id.into(),
+                0,
+                PluginEvent::Push(crate::plugin::event::PushEvent::Ready { url }),
+            );
+        }
+        drain(&mut service);
+        drain(&mut account);
+        (app, service, account)
+    }
+
+    #[test]
+    fn move_plugin_switches_owners() {
+        let (mut app, mut service, mut account) = two_providers();
+        assert_eq!(app.push_owner().as_deref(), Some("a"));
+        assert_eq!(app.call_alerts_owner().as_deref(), Some("a"));
+        assert_eq!(
+            app.plugin_provides("a"),
+            [registry::PUSH, registry::CALL_ALERTS]
+        );
+        assert!(app.plugin_provides("b").is_empty());
+        app.plugins
+            .get_mut("a")
+            .unwrap()
+            .sign_in
+            .push(PluginSignIn {
+                plugin: "a".into(),
+                username: None,
+                account: None,
+                verification_uri: "https://x".into(),
+                user_code: "C".into(),
+            });
+        // Moving to the same place changes nothing.
+        app.apply_plugin_action(Action::MovePlugin {
+            id: "a".into(),
+            to: 0,
+        });
+        assert!(drain(&mut service).is_empty() && drain(&mut account).is_empty());
+        assert_eq!(app.plugins["a"].sign_in.len(), 1);
+        app.apply_plugin_action(Action::MovePlugin {
+            id: "b".into(),
+            to: 0,
+        });
+        let ids: Vec<&str> = app.settings.plugins.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, ["b", "a"]);
+        assert_eq!(app.push_owner().as_deref(), Some("b"));
+        assert_eq!(app.call_alerts_owner().as_deref(), Some("b"));
+        assert_eq!(
+            app.plugin_provides("b"),
+            [registry::PUSH, registry::CALL_ALERTS]
+        );
+        assert!(app.plugin_provides("a").is_empty());
+        assert!(
+            app.plugins["a"].sign_in.is_empty(),
+            "the old owner's cards go"
+        );
+        let sent = drain(&mut service);
+        assert!(sent.iter().any(|c| matches!(
+            c,
+            Command::PluginSend { id, message: HostMessage::PushChannels { channels } }
+                if id == "a" && channels.is_empty()
+        )));
+        assert!(sent.iter().any(|c| matches!(
+            c,
+            Command::PluginSend { id, message: HostMessage::PushChannels { channels } }
+                if id == "b" && channels.len() == app.accounts.len()
+        )));
+        assert!(drain(&mut account).iter().any(|c| matches!(
+            c,
+            Command::PushPlugin(Some(route)) if format!("{route:?}").contains("b.trycloudflare.com")
+        )));
+        // An index past the end moves it last.
+        app.apply_plugin_action(Action::MovePlugin {
+            id: "b".into(),
+            to: 99,
+        });
+        assert_eq!(app.settings.plugins[1].id, "b");
+        assert_eq!(app.push_owner().as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn plugin_provides_leaves_push_out_while_a_relay_is_set() {
+        let (mut app, ..) = two_providers();
+        app.settings.relay_url = Some("https://relay.example".into());
+        assert_eq!(app.plugin_provides("a"), [registry::CALL_ALERTS]);
+    }
+
+    #[test]
+    fn summary_ignores_push_while_a_relay_is_set() {
+        let (mut app, ..) = two_providers();
+        app.plugins.get_mut("a").unwrap().offers = vec![registry::PUSH];
+        app.plugins.get_mut("b").unwrap().offers = vec![registry::PUSH];
+        assert_eq!(
+            app.plugin_summary("a").text,
+            "Tunnel at a.trycloudflare.com"
+        );
+        assert_eq!(
+            app.plugin_summary("b").text,
+            "Not used: another plugin provides push"
+        );
+        app.settings.relay_url = Some("https://relay.example".into());
+        assert_eq!(app.plugin_summary("a").text, "Running");
+        assert_eq!(app.plugin_summary("b").text, "Running");
+    }
+
+    #[test]
+    fn move_plugin_ignores_unknown_ids_and_same_index() {
+        let (mut app, mut service, _account) = two_providers();
+        app.apply_plugin_action(Action::MovePlugin {
+            id: "nope".into(),
+            to: 0,
+        });
+        app.apply_plugin_action(Action::MovePlugin {
+            id: "b".into(),
+            to: 1,
+        });
+        app.apply_plugin_action(Action::MovePlugin {
+            id: "b".into(),
+            to: 99,
+        });
+        let ids: Vec<&str> = app.settings.plugins.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, ["a", "b"]);
+        assert!(drain(&mut service).is_empty());
+    }
+
+    #[test]
+    fn add_start_times_out_after_the_limit_without_ready() {
+        let (mut app, ..) = option_app();
+        assert!(!app.plugin_start_timed_out("p"), "never started");
+        app.plugin_started_at.insert("p".into(), Instant::now());
+        assert!(!app.plugin_start_timed_out("p"));
+        if let Some(past) = Instant::now().checked_sub(ADD_START_LIMIT + Duration::from_secs(1)) {
+            app.plugin_started_at.insert("p".into(), past);
+            app.plugins.entry("p".into()).or_default().ready_seen = false;
+            assert!(app.plugin_start_timed_out("p"));
+            app.plugins.get_mut("p").unwrap().ready_seen = true;
+            assert!(!app.plugin_start_timed_out("p"), "ready ends the wait");
+        }
+    }
+
+    #[test]
+    fn turn_off_question_texts() {
+        let (mut app, ..) = two_providers();
+        app.plugins.get_mut("a").unwrap().info.name = Some("Alpha".into());
+        app.plugins.get_mut("b").unwrap().info.name = Some("Beta".into());
+        // Provides nothing: no question.
+        assert_eq!(app.turn_off_question("b"), None);
+        assert_eq!(app.turn_off_question("nope"), None);
+        // Both, another takes over.
+        assert_eq!(
+            app.turn_off_question("a").as_deref(),
+            Some(
+                "Turn off “Alpha”? “Beta” provides push updates instead. “Beta” provides call alerts instead."
+            )
+        );
+        // Push only, nothing else offers it; call alerts none either.
+        app.plugins.get_mut("b").unwrap().offers.clear();
+        assert_eq!(
+            app.turn_off_question("a").as_deref(),
+            Some(
+                "Turn off “Alpha”? Push updates stop until you turn it back on or set a relay address. Chaat stops showing incoming calls from this plugin."
+            )
+        );
+        // Push only.
+        app.plugins.get_mut("a").unwrap().offers = vec![registry::PUSH];
+        assert_eq!(
+            app.turn_off_question("a").as_deref(),
+            Some(
+                "Turn off “Alpha”? Push updates stop until you turn it back on or set a relay address."
+            )
+        );
+        // Calls only.
+        app.plugins.get_mut("a").unwrap().offers = vec![registry::CALL_ALERTS];
+        assert_eq!(
+            app.turn_off_question("a").as_deref(),
+            Some("Turn off “Alpha”? Chaat stops showing incoming calls from this plugin.")
+        );
+        // Calls only, another takes over.
+        app.plugins.get_mut("b").unwrap().offers = vec![registry::CALL_ALERTS];
+        assert_eq!(
+            app.turn_off_question("a").as_deref(),
+            Some("Turn off “Alpha”? “Beta” provides call alerts instead.")
+        );
+        // A relay address set: push is left out, and with nothing else
+        // provided no question is asked.
+        app.plugins.get_mut("a").unwrap().offers = vec![registry::PUSH];
+        app.settings.relay_url = Some("https://relay.example".into());
+        assert_eq!(app.turn_off_question("a"), None);
+    }
+
+    #[test]
+    fn turn_off_question_quotes_names_a_plugin_chose() {
+        let (mut app, ..) = two_providers();
+        app.plugins.get_mut("a").unwrap().info.name = Some("Al\u{201C}pha\u{201D}".into());
+        app.plugins.get_mut("b").unwrap().info.name = Some("Be, ta".into());
+        assert_eq!(app.quoted_plugin_name("a"), "\u{201C}Al'pha'\u{201D}");
+        assert_eq!(
+            app.turn_off_question("a").as_deref(),
+            Some(
+                "Turn off \u{201C}Al'pha'\u{201D}? \u{201C}Be, ta\u{201D} provides push updates instead. \u{201C}Be, ta\u{201D} provides call alerts instead."
+            )
+        );
+        assert_eq!(
+            app.turn_off_consequences("a").as_deref(),
+            Some(
+                "\u{201C}Be, ta\u{201D} provides push updates instead. \u{201C}Be, ta\u{201D} provides call alerts instead."
+            )
+        );
+    }
+
+    #[test]
+    fn retry_stops_the_old_run_and_ignores_finished_plugins() {
+        let (mut app, mut commands) = option_app();
+        app.settings.plugins[0].setup_pending = true;
+        app.plugins_view = PluginsView::Adding("p".into());
+        app.sync_plugins();
+        let first = app.plugin_generations["p"];
+        let before = app.plugin_started_at["p"];
+        while commands.try_recv().is_ok() {}
+        app.apply_plugin_action(Action::RetryPluginStart("p".into()));
+        let sent: Vec<Command> = std::iter::from_fn(|| commands.try_recv().ok()).collect();
+        let stop = sent
+            .iter()
+            .position(|c| matches!(c, Command::StopPlugin { id } if id == "p"));
+        let start = sent
+            .iter()
+            .position(|c| matches!(c, Command::StartPlugin { id, .. } if id == "p"));
+        assert!(
+            stop.is_some() && start.is_some() && stop < start,
+            "stop, then start"
+        );
+        let second = app.plugin_generations["p"];
+        assert!(second > first);
+        assert!(
+            !app.plugin_event_counts("p", first),
+            "a late event from the old run is dropped"
+        );
+        assert!(app.plugin_event_counts("p", second));
+        assert!(app.plugin_started_at["p"] >= before, "the wait restarts");
+        // Not in an add flow, or not in the list: nothing happens.
+        app.settings.plugins[0].setup_pending = false;
+        app.apply_plugin_action(Action::RetryPluginStart("p".into()));
+        app.apply_plugin_action(Action::RetryPluginStart("nope".into()));
+        assert!(commands.try_recv().is_err());
+        assert_eq!(app.plugin_generations["p"], second);
+    }
+
+    #[test]
+    fn plugin_start_remaining_counts_down_and_ends_with_ready() {
+        let (mut app, ..) = option_app();
+        assert_eq!(app.plugin_start_remaining("p"), None, "never started");
+        app.plugin_started_at.insert("p".into(), Instant::now());
+        let left = app.plugin_start_remaining("p").unwrap();
+        assert!(left > Duration::ZERO && left <= ADD_START_LIMIT);
+        if let Some(past) = Instant::now().checked_sub(ADD_START_LIMIT + Duration::from_secs(1)) {
+            app.plugin_started_at.insert("p".into(), past);
+            assert_eq!(app.plugin_start_remaining("p"), Some(Duration::ZERO));
+            app.plugins.entry("p".into()).or_default().ready_seen = true;
+            assert_eq!(app.plugin_start_remaining("p"), None);
+        }
+    }
+
+    fn summary_of(app: &App, id: &str) -> (SummaryLevel, String) {
+        let summary = app.plugin_summary(id);
+        (summary.level, summary.text)
+    }
+
+    #[test]
+    fn summary_order_follows_the_table() {
+        use SummaryLevel::*;
+        let (mut app, ..) = two_providers();
+        // 10: running, offers nothing exclusive.
+        app.plugins.get_mut("b").unwrap().offers.clear();
+        assert_eq!(summary_of(&app, "b"), (Ok, "Running".into()));
+        // 9: another plugin owns what it offers.
+        app.plugins.get_mut("b").unwrap().offers = vec![registry::CALL_ALERTS];
+        assert_eq!(
+            summary_of(&app, "b"),
+            (Off, "Not used: another plugin provides calls".into())
+        );
+        app.plugins.get_mut("b").unwrap().offers = vec![registry::PUSH];
+        assert_eq!(
+            summary_of(&app, "b"),
+            (Off, "Not used: another plugin provides push".into())
+        );
+        // 8: push owner, tunnel up, then down, then waiting.
+        app.plugins.get_mut("a").unwrap().offers = vec![registry::PUSH];
+        assert_eq!(
+            summary_of(&app, "a"),
+            (Ok, "Tunnel at a.trycloudflare.com".into())
+        );
+        app.on_plugin_event(
+            "a".into(),
+            0,
+            PluginEvent::Push(crate::plugin::event::PushEvent::Down { reason: None }),
+        );
+        assert_eq!(summary_of(&app, "a"), (Ok, "Tunnel down".into()));
+        app.push_plugin_stopped("a");
+        assert_eq!(summary_of(&app, "a"), (Ok, "Waiting for its tunnel".into()));
+        // 7: call alerts owner.
+        app.plugins.get_mut("a").unwrap().offers = vec![registry::CALL_ALERTS];
+        app.plugins.get_mut("a").unwrap().listening = vec!["u1.t".into()];
+        assert_eq!(summary_of(&app, "a"), (Ok, "Listening on 1 account".into()));
+        app.plugins.get_mut("a").unwrap().listening = vec!["u1.t".into(), "u2.t".into()];
+        assert_eq!(
+            summary_of(&app, "a"),
+            (Ok, "Listening on 2 accounts".into())
+        );
+        let state = app.plugins.get_mut("a").unwrap();
+        state.listening.clear();
+        state.sign_in.push(PluginSignIn {
+            plugin: "a".into(),
+            username: None,
+            account: None,
+            verification_uri: "https://x".into(),
+            user_code: "C".into(),
+        });
+        assert_eq!(
+            summary_of(&app, "a"),
+            (Ok, "Waiting for sign-in on 1".into())
+        );
+        // 6: enabled, not running yet.
+        app.plugins.get_mut("a").unwrap().running = false;
+        assert_eq!(summary_of(&app, "a"), (Off, "Starting\u{2026}".into()));
+        // 4: stopped with a reason.
+        app.plugins.get_mut("a").unwrap().message = Some("The file could not be run".into());
+        assert_eq!(
+            summary_of(&app, "a"),
+            (Error, "Stopped: The file could not be run".into())
+        );
+        // 5: turned off beats starting and stopped, not the rules above.
+        app.settings.plugins[0].enabled = false;
+        assert_eq!(summary_of(&app, "a"), (Off, "Off".into()));
+        app.settings.plugins[0].enabled = true;
+        // 3: a required option unset beats stopped.
+        app.plugins.get_mut("a").unwrap().options = vec![OptionSpec {
+            required: true,
+            ..spec("name", OptionKind::Text)
+        }];
+        assert_eq!(summary_of(&app, "a"), (Attention, "Needs setup".into()));
+        // 2: a pending need beats an unset option.
+        app.plugins.get_mut("a").unwrap().pending_needs = vec!["accounts", "push"];
+        assert_eq!(
+            summary_of(&app, "a"),
+            (Attention, "Asks for your accounts".into())
+        );
+        app.plugins.get_mut("a").unwrap().pending_needs = vec!["presence"];
+        assert_eq!(
+            summary_of(&app, "a"),
+            (Attention, "Asks for your presence".into())
+        );
+        app.plugins.get_mut("a").unwrap().pending_needs = vec!["push"];
+        assert_eq!(
+            summary_of(&app, "a"),
+            (Attention, "Asks for your update notifications".into())
+        );
+        // 1: a changed file beats everything.
+        app.plugins.get_mut("a").unwrap().file_changed = Some("h".into());
+        assert_eq!(
+            summary_of(&app, "a"),
+            (Attention, "The file changed. Review it".into())
+        );
+        assert!(app.plugin_summary("a").needs_you());
+        assert!(!app.plugin_summary("b").needs_you());
+        // A plugin in the add flow that stopped before ready.
+        app.settings.plugins[1].setup_pending = true;
+        app.plugins.get_mut("b").unwrap().ready_seen = false;
+        assert_eq!(summary_of(&app, "b"), (Attention, "Finish setup".into()));
+        app.plugins.get_mut("b").unwrap().message = Some("x".into());
+        assert_eq!(
+            summary_of(&app, "b"),
+            (Error, "It stopped before saying what it does".into())
+        );
     }
 
     #[test]

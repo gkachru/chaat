@@ -55,6 +55,10 @@ pub struct PluginEntry {
     /// A random id given when the entry is made. Secret saves carry it, so a
     /// late answer for a removed plugin of the same id is ignored.
     pub instance: String,
+    /// The person has not finished the add flow (Done or Cancel). Such an
+    /// entry does not start at launch; it starts only while its setup page is
+    /// open.
+    pub setup_pending: bool,
 }
 
 impl PluginEntry {
@@ -467,6 +471,7 @@ mod tests {
             denied_needs: vec!["accounts".into()],
             sha256: Some("ab".repeat(32)),
             instance: "0123456789abcdef0123456789abcdef".into(),
+            setup_pending: true,
         };
         let settings = Settings {
             plugins: vec![entry.clone()],
@@ -481,6 +486,7 @@ mod tests {
         assert_eq!(partial.id, "x");
         assert!(!partial.enabled);
         assert!(partial.options.is_empty());
+        assert!(!partial.setup_pending, "older settings load as finished");
     }
 
     #[test]
