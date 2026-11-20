@@ -382,3 +382,38 @@ fn saving_a_plugin_secret_writes_and_deletes_the_store_key() {
     assert_eq!(store.read("plugin-option:b:local_key").unwrap(), None);
     backend.shutdown();
 }
+
+#[test]
+fn options_follow_the_secret_saved_before_them_in_order() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut backend = backend(dir.path(), Arc::default());
+    backend.send(start_command("b", fake(dir.path(), "echo")));
+    wait_ready(&backend, "b");
+    for i in 0..30 {
+        backend.send(Command::SavePluginSecret {
+            plugin: "b".into(),
+            option: "local_key".into(),
+            value: Some(format!("k{i}")),
+        });
+        backend.send(Command::PluginOptions {
+            id: "b".into(),
+            values: Default::default(),
+            secrets: vec!["local_key".into()],
+        });
+    }
+    wait_log(dir.path(), "echo", &[r#""type":"options""#, r#""k29""#]);
+    let keys: Vec<String> = log_lines(dir.path(), "echo")
+        .iter()
+        .filter(|line| line.contains(r#""type":"options""#))
+        .map(|line| {
+            let value: serde_json::Value = serde_json::from_str(line).unwrap();
+            value["values"]["local_key"].as_str().unwrap().to_owned()
+        })
+        .collect();
+    let expected: Vec<String> = (0..30).map(|i| format!("k{i}")).collect();
+    assert_eq!(
+        keys, expected,
+        "each options message holds the secret saved just before it, in order"
+    );
+    backend.shutdown();
+}

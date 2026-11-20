@@ -127,6 +127,18 @@ fn plugin_secret_key(plugin: &str, option: &str) -> String {
     format!("plugin-option:{plugin}:{option}")
 }
 
+/// Starts the task that runs credential store jobs in order, each on the
+/// blocking pool. It ends when the worker drops the sender.
+fn secret_runner() -> mpsc::UnboundedSender<Box<dyn FnOnce() + Send>> {
+    let (tx, mut rx) = mpsc::unbounded_channel::<Box<dyn FnOnce() + Send>>();
+    tokio::spawn(async move {
+        while let Some(job) = rx.recv().await {
+            let _ = tokio::task::spawn_blocking(job).await;
+        }
+    });
+    tx
+}
+
 struct Worker {
     dirs: AppDirs,
     http: reqwest::Client,
@@ -162,6 +174,10 @@ struct Worker {
     call_alerts: Option<crate::plugin::host::Plugin>,
     /// The plugins of the plugin list, by id.
     plugins: HashMap<String, crate::plugin::host::Plugin>,
+    /// Credential store work for plugins, run one job at a time in the order
+    /// given: a saved secret is seen by the options sent after it, and
+    /// options reach a plugin in the order they were asked for.
+    secret_jobs: mpsc::UnboundedSender<Box<dyn FnOnce() + Send>>,
     /// Whether Chaat keeps a presence session (setting), and when it last
     /// refreshed it.
     session_enabled: bool,
@@ -195,6 +211,7 @@ pub(super) async fn run(
         stop_push: None,
         call_alerts: None,
         plugins: HashMap::new(),
+        secret_jobs: secret_runner(),
         session_enabled: true,
         session_refreshed: None,
         sign_in_browser: None,
@@ -523,7 +540,7 @@ impl Worker {
             } => {
                 let store = Arc::clone(&self.secrets);
                 let out = self.out.clone();
-                tokio::task::spawn_blocking(move || {
+                let _ = self.secret_jobs.send(Box::new(move || {
                     let key = plugin_secret_key(&plugin, &option);
                     let set = value.is_some();
                     let result = match value {
@@ -539,7 +556,7 @@ impl Worker {
                         set,
                         ok: result.is_ok(),
                     });
-                });
+                }));
             }
             Command::StopPlugin { id } => {
                 if let Some(plugin) = self.plugins.remove(&id) {
@@ -959,20 +976,14 @@ impl Worker {
         };
         let store = Arc::clone(&self.secrets);
         let outgoing = plugin.sender();
-        tokio::spawn(async move {
-            let read = tokio::task::spawn_blocking(move || {
-                for option in secrets {
-                    if let Ok(Some(value)) = store.read(&plugin_secret_key(&id, &option)) {
-                        values.insert(option, serde_json::Value::String(value));
-                    }
+        let _ = self.secret_jobs.send(Box::new(move || {
+            for option in secrets {
+                if let Ok(Some(value)) = store.read(&plugin_secret_key(&id, &option)) {
+                    values.insert(option, serde_json::Value::String(value));
                 }
-                values
-            })
-            .await;
-            if let Ok(values) = read {
-                let _ = outgoing.send(crate::plugin::protocol::HostMessage::Options { values });
             }
-        });
+            let _ = outgoing.send(crate::plugin::protocol::HostMessage::Options { values });
+        }));
     }
 
     /// Stops every plugin of the plugin list, all at once.
