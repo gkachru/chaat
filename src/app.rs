@@ -30,8 +30,10 @@ use crate::theme::Palette;
 
 mod calls;
 mod history;
+mod plugins;
 pub use calls::Docked;
 pub use history::HistoryLayout;
+pub use plugins::PluginState;
 
 /// Messages and view state of one conversation.
 #[derive(Debug, Default)]
@@ -606,19 +608,12 @@ pub struct App {
     pub toasts: Vec<Toast>,
     /// Ringing calls the call-alerts plugin reported, newest last.
     pub rings: Vec<Ring>,
-    /// A sign-in the call-alerts plugin is waiting for, shown as a panel.
-    pub call_alerts_sign_in: Vec<crate::model::PluginSignIn>,
-    /// Whether the call-alerts plugin last said it is running.
-    pub call_alerts_running: bool,
-    /// Accounts whose sign-in the plugin already asked for (and raised the
-    /// window), since it last started or that account signed in.
-    call_alerts_asked: Vec<Option<String>>,
-    /// Accounts (`oid.tid`) the plugin said it listens for.
-    pub call_alerts_listening: Vec<String>,
-    /// The accounts the plugin was last told about.
-    call_alerts_sent: Vec<crate::calling::PluginAccount>,
-    /// How the running call-alerts plugin describes itself.
-    pub call_alerts_info: crate::plugin::protocol::PluginInfo,
+    /// The plugins of the plugin list at run time, by id. Process-wide, like
+    /// the plugins themselves.
+    pub plugins: std::collections::BTreeMap<String, PluginState>,
+    /// The plugins started, by id, and the path each was started from, so a
+    /// changed path restarts that plugin only.
+    plugins_started: std::collections::BTreeMap<String, std::path::PathBuf>,
     next_toast: u64,
     pub actions: Vec<Action>,
 
@@ -704,7 +699,7 @@ impl App {
                 .as_ref()
                 .and_then(|active| ids.iter().position(|id| id == active))
                 .unwrap_or(0);
-            app.sync_call_alerts();
+            app.sync_plugins();
         }
         app
     }
@@ -755,12 +750,8 @@ impl App {
             jump_to: None,
             toasts: Vec::new(),
             rings: Vec::new(),
-            call_alerts_sign_in: Vec::new(),
-            call_alerts_running: false,
-            call_alerts_asked: Vec::new(),
-            call_alerts_listening: Vec::new(),
-            call_alerts_sent: Vec::new(),
-            call_alerts_info: Default::default(),
+            plugins: Default::default(),
+            plugins_started: Default::default(),
             next_toast: 0,
             actions: Vec::new(),
             palette,
@@ -813,106 +804,6 @@ impl App {
                 .backend
                 .send(Command::Relay(self.settings.relay_url.clone()));
         }
-    }
-
-    /// Starts or stops the external call-alerts plugin to match the settings.
-    /// The plugin is process-wide (one external process), so it runs on the
-    /// service backend, not a per-account one.
-    pub(crate) fn sync_call_alerts(&mut self) {
-        if self.demo {
-            return;
-        }
-        let accounts = self.call_alerts_accounts();
-        let command = match &self.settings.calls.call_alerts_plugin {
-            Some(path) if self.call_alerts_enabled() => Command::StartCallAlerts {
-                path: path.clone(),
-                accounts: accounts.clone(),
-                forget: self.settings.calls.call_alerts_forget.clone(),
-            },
-            _ => Command::StopCallAlerts,
-        };
-        self.call_alerts_sent = accounts;
-        self.service.send(command);
-    }
-
-    /// Whether the call-alerts plugin should run.
-    pub fn call_alerts_enabled(&self) -> bool {
-        self.settings.calls.call_alerts
-            && self
-                .settings
-                .calls
-                .call_alerts_plugin
-                .as_ref()
-                .is_some_and(|path| !path.as_os_str().is_empty())
-    }
-
-    /// Chaat's signed-in accounts, as the call-alerts plugin is told about
-    /// them: ids and sign-in names only.
-    pub fn call_alerts_accounts(&self) -> Vec<crate::calling::PluginAccount> {
-        self.accounts
-            .iter()
-            .filter_map(|account| {
-                Some(crate::calling::PluginAccount {
-                    id: account.id.clone()?,
-                    username: account.username(),
-                })
-            })
-            .collect()
-    }
-
-    /// Tells a running plugin about changes to Chaat's accounts.
-    fn sync_call_alerts_accounts(&mut self) {
-        let back: Vec<String> = self
-            .settings
-            .calls
-            .call_alerts_forget
-            .iter()
-            .filter(|id| {
-                self.accounts
-                    .iter()
-                    .any(|a| a.id.as_deref() == Some(id.as_str()))
-            })
-            .cloned()
-            .collect();
-        self.call_alerts_forget_done(back);
-        if self.demo || !self.call_alerts_enabled() {
-            return;
-        }
-        let accounts = self.call_alerts_accounts();
-        let known = |account: &str| accounts.iter().any(|a| a.id == account);
-        self.call_alerts_sign_in
-            .retain(|s| s.account.as_deref().is_none_or(known));
-        self.call_alerts_asked
-            .retain(|asked| asked.as_deref().is_none_or(known));
-        self.call_alerts_listening.retain(|id| known(id));
-        if accounts != self.call_alerts_sent {
-            self.call_alerts_sent = accounts.clone();
-            self.service.send(Command::CallAlertsAccounts(accounts));
-        }
-    }
-
-    /// Takes accounts off the sign-out queue (forgotten by the plugin, or signed
-    /// in to Chaat again) and stops resending them.
-    fn call_alerts_forget_done(&mut self, done: Vec<String>) {
-        let queue = &mut self.settings.calls.call_alerts_forget;
-        let before = queue.len();
-        queue.retain(|id| !done.contains(id));
-        if queue.len() != before {
-            self.mark_settings_dirty();
-        }
-        if !done.is_empty() && !self.demo {
-            self.service.send(Command::CallAlertsForgetDone(done));
-        }
-    }
-
-    /// The sign-in name Chaat knows for an account id.
-    fn call_alerts_username(&self, account: Option<&str>) -> Option<String> {
-        let account = account?;
-        self.accounts
-            .iter()
-            .find(|a| a.id.as_deref() == Some(account))
-            .map(|a| a.username())
-            .filter(|name| !name.is_empty())
     }
 
     fn start_account(&mut self, index: usize) {
@@ -1068,7 +959,7 @@ impl App {
             self.settings.account = active;
             self.mark_settings_dirty();
         }
-        self.sync_call_alerts_accounts();
+        self.sync_plugin_accounts();
     }
 
     // -- Frame -----------------------------------------------------------------
@@ -1413,6 +1304,7 @@ impl App {
                 }
                 self.observe_call(presence.activity.as_deref());
                 self.my_presence = Some(presence);
+                self.sync_plugin_presence();
             }
             Event::OutOfOffice(value) => {
                 // The fields follow Graph unless the person changed them.
@@ -1574,80 +1466,21 @@ impl App {
                 self.send_relay();
             }
             Event::IncomingCall(alert) => self.on_incoming_call(alert),
-            Event::CallAlertsSignIn {
-                account,
-                username,
-                verification_uri,
-                user_code,
-            } => {
-                self.call_alerts_listening
-                    .retain(|id| Some(id) != account.as_ref());
-                // Bring Chaat forward for an account's first code only; later
-                // codes (an expired or declined one) update the panel quietly.
-                if !self.call_alerts_asked.contains(&account) {
-                    self.call_alerts_asked.push(account.clone());
-                    self.wants_show = true;
-                }
-                let _ = username; // the plugin's word for it; Chaat names its own
-                let sign_in = crate::model::PluginSignIn {
-                    username: self.call_alerts_username(account.as_deref()),
-                    account,
-                    verification_uri,
-                    user_code,
-                };
-                match self
-                    .call_alerts_sign_in
-                    .iter_mut()
-                    .find(|s| s.account == sign_in.account)
-                {
-                    Some(shown) => *shown = sign_in,
-                    None => self.call_alerts_sign_in.push(sign_in),
-                }
-            }
-            Event::CallAlertsSignedIn { account } => {
-                self.call_alerts_sign_in.retain(|s| s.account != account);
-                self.call_alerts_asked.retain(|asked| *asked != account);
-                let text = match self.call_alerts_username(account.as_deref()) {
-                    Some(name) if self.accounts.len() > 1 => {
-                        format!("Call alerts are on for {name}.")
-                    }
-                    _ => "Call alerts are on.".to_owned(),
-                };
-                self.toast(ToastKind::Info, text);
-            }
-            Event::CallAlertsError { account, message } => {
-                self.call_alerts_listening.retain(|id| *id != account);
-                let text = match self.call_alerts_username(Some(&account)) {
-                    Some(name) => format!("Call alerts for {name}: {message}"),
-                    None => format!("Call alerts: {message}"),
-                };
-                self.toast(ToastKind::Error, text);
-            }
-            Event::CallAlertsReady { info, forgotten } => {
-                self.call_alerts_running = true;
-                self.call_alerts_info = info;
-                // Only what the plugin says it cleared leaves the queue.
-                self.call_alerts_forget_done(forgotten);
-            }
-            Event::CallAlertsListening { account } => {
-                if !self.call_alerts_listening.contains(&account) {
-                    self.call_alerts_listening.push(account);
-                }
-            }
-            Event::CallAlertsStatus { running, message } => {
-                self.call_alerts_running = running;
-                // A stopped plugin no longer waits for sign-ins or listens.
-                if !running {
-                    self.call_alerts_sign_in.clear();
-                    self.call_alerts_asked.clear();
-                    self.call_alerts_listening.clear();
-                }
-                if let Some(message) = message {
-                    self.toast(ToastKind::Error, message);
-                }
-            }
-            // T5 wires these into the plugin list.
-            Event::Plugin { .. } | Event::PluginSecretSaved { .. } => {}
+            Event::Plugin { id, event } => self.on_plugin_event(id, event),
+            Event::PluginSecretSaved {
+                plugin,
+                option,
+                set,
+                ok,
+            } => self.on_plugin_secret_saved(&plugin, option, set, ok),
+            // The call-alerts commands are no longer sent; the plugin list
+            // replaced them.
+            Event::CallAlertsSignIn { .. }
+            | Event::CallAlertsSignedIn { .. }
+            | Event::CallAlertsError { .. }
+            | Event::CallAlertsReady { .. }
+            | Event::CallAlertsListening { .. }
+            | Event::CallAlertsStatus { .. } => {}
         }
     }
 
@@ -1744,7 +1577,7 @@ impl App {
             self.settings.account = self.id.clone();
             self.mark_settings_dirty();
         }
-        self.sync_call_alerts_accounts();
+        self.sync_plugin_accounts();
     }
 
     fn on_chats(&mut self, mut chats: Vec<Chat>, cached: bool) {
@@ -2321,6 +2154,7 @@ impl App {
                 let me = self.me().to_owned();
                 self.presence.insert(me, shown.clone());
                 self.my_presence = Some(shown);
+                self.sync_plugin_presence();
                 if !self.demo {
                     self.backend.send(Command::SetAvailability(availability));
                 }
@@ -2344,6 +2178,7 @@ impl App {
                 let me = self.me().to_owned();
                 self.presence.insert(me, presence.clone());
                 self.my_presence = Some(presence);
+                self.sync_plugin_presence();
                 if !self.demo {
                     self.backend.send(Command::SetStatusMessage(text));
                 }
@@ -2679,15 +2514,13 @@ impl App {
             }
             Action::DismissToast(id) => self.toasts.retain(|t| t.id != id),
             Action::DismissRing(id) => self.rings.retain(|r| r.id != id),
-            Action::HideCallAlertsSignIn(account) => {
-                self.call_alerts_sign_in.retain(|s| s.account != account);
-            }
-            Action::CallAlertsSignIn(account) => {
-                if !self.demo {
-                    self.service.send(Command::CallAlertsSignIn(account));
-                }
-            }
-            Action::ChooseCallAlertsPlugin => self.choose_call_alerts_plugin(),
+            action @ (Action::AddPlugin
+            | Action::RemovePlugin(_)
+            | Action::SetPluginEnabled(..)
+            | Action::SetPluginOption { .. }
+            | Action::SetPluginSecret { .. }
+            | Action::PluginSignIn { .. }
+            | Action::HidePluginSignIn { .. }) => self.apply_plugin_action(action),
             Action::RingPlaceCall(id) => self.ring_place_call(&id, ctx),
             Action::RingOpenChat(id) => self.ring_open_chat(&id, ctx),
             Action::Quit => {
@@ -3083,26 +2916,9 @@ impl App {
         if self.demo {
             return;
         }
-        // Signing out of Chaat also ends call alerts for that account: a
-        // running plugin hears now, and every start hears again until one
-        // confirms, so it keeps no sign-in for the account either way.
-        if let Some(id) = self.id.clone()
-            && self
-                .settings
-                .calls
-                .call_alerts_plugin
-                .as_ref()
-                .is_some_and(|path| !path.as_os_str().is_empty())
-        {
-            // Queued until a plugin confirms it (`ready.forgotten`), so a quit
-            // or restart in between can't lose it.
-            if !self.settings.calls.call_alerts_forget.contains(&id) {
-                self.settings.calls.call_alerts_forget.push(id.clone());
-                self.mark_settings_dirty();
-            }
-            if self.call_alerts_enabled() {
-                self.service.send(Command::CallAlertsForget(id));
-            }
+        // Signing out of Chaat also ends plugin sign-ins for that account.
+        if let Some(id) = self.id.clone() {
+            self.forget_account_in_plugins(&id);
         }
         self.sign_out_browser();
         self.backend.send(Command::SignOut);
@@ -3529,58 +3345,528 @@ mod tests {
         assert!(app.toasts.iter().any(|t| t.text.contains("opened Teams")));
     }
 
+    fn plugin_event(id: &str, event: crate::plugin::event::PluginEvent) -> Event {
+        Event::Plugin {
+            id: id.into(),
+            event,
+        }
+    }
+
+    fn sign_in_event(account: Option<&str>, code: &str) -> crate::plugin::event::PluginEvent {
+        crate::plugin::event::PluginEvent::SignIn {
+            account: account.map(str::to_owned),
+            verification_uri: "https://microsoft.com/devicelogin".into(),
+            user_code: code.into(),
+        }
+    }
+
+    fn signed_in_event(account: Option<&str>) -> crate::plugin::event::PluginEvent {
+        crate::plugin::event::PluginEvent::SignedIn {
+            account: account.map(str::to_owned),
+        }
+    }
+
+    fn ready_event(
+        needs: &[&'static str],
+        offers: &[&'static str],
+        options: Vec<crate::plugin::protocol::OptionSpec>,
+        forgotten: &[&str],
+    ) -> crate::plugin::event::PluginEvent {
+        crate::plugin::event::PluginEvent::Ready {
+            info: Default::default(),
+            offers: offers.to_vec(),
+            needs: needs.to_vec(),
+            options,
+            forgotten: forgotten.iter().map(|id| (*id).to_owned()).collect(),
+        }
+    }
+
+    /// An enabled entry in the plugin list, not started.
+    fn plugin_entry(app: &mut App, id: &str, needs: &[&str]) {
+        app.settings.plugins.push(crate::settings::PluginEntry {
+            id: id.into(),
+            path: PathBuf::from(format!("{id}.exe")),
+            enabled: true,
+            needs: needs.iter().map(|n| (*n).to_owned()).collect(),
+            ..Default::default()
+        });
+    }
+
+    /// A running call-alerts plugin, as after its `ready`.
+    fn call_alerts_plugin(app: &mut App, id: &str) {
+        plugin_entry(app, id, &["accounts"]);
+        app.plugins.insert(
+            id.into(),
+            PluginState {
+                running: true,
+                offers: vec![crate::plugin::registry::CALL_ALERTS],
+                needs: vec!["accounts"],
+                ..Default::default()
+            },
+        );
+    }
+
+    fn sent(commands: &mut tokio::sync::mpsc::UnboundedReceiver<Command>) -> Vec<Command> {
+        std::iter::from_fn(|| commands.try_recv().ok()).collect()
+    }
+
+    fn busy() -> Presence {
+        Presence {
+            availability: crate::model::Availability::Busy,
+            ..Default::default()
+        }
+    }
+
+    fn app_with_service() -> (App, tokio::sync::mpsc::UnboundedReceiver<Command>) {
+        let (mut app, _) = app();
+        let (service, commands) = Backend::recording();
+        app.service = service;
+        app.id = Some("u-me.t1".into());
+        (app, commands)
+    }
+
     #[test]
     fn the_plugin_sign_in_panel_shows_until_signed_in_or_stopped() {
         let (mut app, _dir) = demo_app();
         let ctx = egui::Context::default();
-        let ask = || Event::CallAlertsSignIn {
-            account: None,
-            username: None,
-            verification_uri: "https://microsoft.com/devicelogin".into(),
-            user_code: "AB12".into(),
-        };
-        app.handle(ask(), &ctx);
-        assert_eq!(app.call_alerts_sign_in[0].user_code, "AB12");
-        app.handle(Event::CallAlertsSignedIn { account: None }, &ctx);
-        assert!(app.call_alerts_sign_in.is_empty());
-        app.handle(ask(), &ctx);
+        call_alerts_plugin(&mut app, "ca");
+        app.handle(plugin_event("ca", sign_in_event(None, "AB12")), &ctx);
+        assert_eq!(app.plugins["ca"].sign_in[0].user_code, "AB12");
+        app.handle(plugin_event("ca", signed_in_event(None)), &ctx);
+        assert!(app.plugins["ca"].sign_in.is_empty());
+        app.handle(plugin_event("ca", sign_in_event(None, "AB12")), &ctx);
         app.handle(
-            Event::CallAlertsStatus {
-                running: false,
-                message: None,
+            plugin_event(
+                "ca",
+                crate::plugin::event::PluginEvent::Status {
+                    running: false,
+                    message: None,
+                },
+            ),
+            &ctx,
+        );
+        assert!(app.plugins["ca"].sign_in.is_empty());
+        app.handle(plugin_event("ca", sign_in_event(None, "AB12")), &ctx);
+        app.apply(
+            Action::HidePluginSignIn {
+                plugin: "ca".into(),
+                account: None,
             },
             &ctx,
         );
-        assert!(app.call_alerts_sign_in.is_empty());
-        app.handle(ask(), &ctx);
-        app.apply(Action::HideCallAlertsSignIn(None), &ctx);
-        assert!(app.call_alerts_sign_in.is_empty());
+        assert!(app.plugins["ca"].sign_in.is_empty());
     }
 
     #[test]
-    fn changing_the_call_alerts_settings_starts_and_stops_the_plugin() {
-        let (mut app, _) = app();
-        let (service, mut service_commands) = Backend::recording();
-        app.service = service;
+    fn enabling_and_disabling_a_plugin_starts_and_stops_it() {
+        let (mut app, mut commands) = app_with_service();
         let ctx = egui::Context::default();
-        let mut calls = app.settings.calls.clone();
-        calls.call_alerts_plugin = Some(PathBuf::from("plugin.exe"));
-        calls.call_alerts = true;
-        app.apply(Action::SetCallSettings(calls.clone()), &ctx);
+        app.settings.plugins.push(crate::settings::PluginEntry {
+            id: "ca".into(),
+            path: PathBuf::from("plugin.exe"),
+            enabled: false,
+            needs: vec!["accounts".into()],
+            ..Default::default()
+        });
+        app.sync_plugins();
+        assert!(commands.try_recv().is_err(), "off: nothing starts");
+        app.apply(Action::SetPluginEnabled("ca".into(), true), &ctx);
+        let me = crate::calling::PluginAccount {
+            id: "u-me.t1".into(),
+            username: "me@contoso.com".into(),
+        };
         assert!(matches!(
-            service_commands.try_recv(),
-            Ok(Command::StartCallAlerts { path, .. }) if path == std::path::Path::new("plugin.exe")
+            commands.try_recv(),
+            Ok(Command::StartPlugin { id, path, hello: crate::plugin::protocol::HostMessage::Hello { accounts, .. } })
+                if id == "ca" && path == std::path::Path::new("plugin.exe") && accounts == vec![me.clone()]
         ));
-        // Unrelated call settings leave the plugin alone.
-        calls.dock = !calls.dock;
-        app.apply(Action::SetCallSettings(calls.clone()), &ctx);
-        assert!(service_commands.try_recv().is_err());
-        calls.call_alerts = false;
-        app.apply(Action::SetCallSettings(calls), &ctx);
+        // Syncing again with nothing changed starts nothing.
+        app.sync_plugins();
+        assert!(commands.try_recv().is_err());
+        // A new path restarts that plugin only.
+        app.settings.plugins[0].path = PathBuf::from("other.exe");
+        app.sync_plugins();
         assert!(matches!(
-            service_commands.try_recv(),
-            Ok(Command::StopCallAlerts)
+            commands.try_recv(),
+            Ok(Command::StartPlugin { path, .. }) if path == std::path::Path::new("other.exe")
         ));
+        app.apply(Action::SetPluginEnabled("ca".into(), false), &ctx);
+        assert!(matches!(
+            commands.try_recv(),
+            Ok(Command::StopPlugin { id }) if id == "ca"
+        ));
+    }
+
+    #[test]
+    fn only_the_first_sign_in_code_raises_the_window() {
+        let (mut app, _dir) = demo_app();
+        let ctx = egui::Context::default();
+        call_alerts_plugin(&mut app, "ca");
+        app.wants_show = false;
+        app.handle(plugin_event("ca", sign_in_event(None, "FIRST")), &ctx);
+        assert!(app.wants_show);
+        app.wants_show = false;
+        app.apply(
+            Action::HidePluginSignIn {
+                plugin: "ca".into(),
+                account: None,
+            },
+            &ctx,
+        );
+        app.handle(plugin_event("ca", sign_in_event(None, "SECOND")), &ctx);
+        assert!(!app.wants_show, "a later code doesn't pull Chaat forward");
+        assert_eq!(app.plugins["ca"].sign_in[0].user_code, "SECOND");
+        // After signing in, a future expiry may raise it again.
+        app.handle(plugin_event("ca", signed_in_event(None)), &ctx);
+        app.handle(plugin_event("ca", sign_in_event(None, "THIRD")), &ctx);
+        assert!(app.wants_show);
+    }
+
+    #[test]
+    fn accounts_go_only_to_plugins_that_need_them() {
+        let (mut app, mut commands) = app_with_service();
+        plugin_entry(&mut app, "ca", &["accounts"]);
+        plugin_entry(&mut app, "light", &[]);
+        app.sync_plugins();
+        let started = sent(&mut commands);
+        let accounts_in = |id: &str| {
+            started.iter().find_map(|c| match c {
+                Command::StartPlugin {
+                    id: started,
+                    hello: crate::plugin::protocol::HostMessage::Hello { accounts, .. },
+                    ..
+                } if started == id => Some(accounts.len()),
+                _ => None,
+            })
+        };
+        assert_eq!(accounts_in("ca"), Some(1));
+        assert_eq!(accounts_in("light"), Some(0));
+        // Nothing changed: nothing to tell.
+        app.remember_accounts();
+        assert!(commands.try_recv().is_err());
+        app.auth = AuthStatus::SignedIn {
+            account: "u-me.t1".into(),
+            name: "Me".into(),
+            username: "me@fabrikam.com".into(),
+        };
+        app.remember_accounts();
+        let changed = sent(&mut commands);
+        assert!(changed.iter().any(|c| matches!(
+            c,
+            Command::PluginSend { id, message: crate::plugin::protocol::HostMessage::Accounts { accounts } }
+                if id == "ca" && accounts[0].username == "me@fabrikam.com"
+        )));
+        assert!(changed.iter().any(|c| matches!(
+            c,
+            Command::PluginHello { id, accounts: Some(_), .. } if id == "ca"
+        )));
+        assert!(
+            !changed.iter().any(|c| matches!(
+                c,
+                Command::PluginSend { id, .. } | Command::PluginHello { id, .. } if id == "light"
+            )),
+            "a plugin that needs no accounts hears nothing about them"
+        );
+    }
+
+    #[test]
+    fn a_ready_that_asks_for_accounts_gets_them_once() {
+        let (mut app, mut commands) = app_with_service();
+        let ctx = egui::Context::default();
+        plugin_entry(&mut app, "new", &[]);
+        app.sync_plugins();
+        sent(&mut commands);
+        app.handle(
+            plugin_event("new", ready_event(&["accounts"], &[], Vec::new(), &[])),
+            &ctx,
+        );
+        let after = sent(&mut commands);
+        assert!(after.iter().any(|c| matches!(
+            c,
+            Command::PluginSend {
+                message: crate::plugin::protocol::HostMessage::Accounts { .. },
+                ..
+            }
+        )));
+        assert_eq!(app.settings.plugins[0].needs, vec!["accounts".to_owned()]);
+        app.handle(
+            plugin_event("new", ready_event(&["accounts"], &[], Vec::new(), &[])),
+            &ctx,
+        );
+        assert!(!sent(&mut commands).iter().any(|c| matches!(
+            c,
+            Command::PluginSend {
+                message: crate::plugin::protocol::HostMessage::Accounts { .. },
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn presence_goes_only_to_plugins_that_need_it() {
+        let (mut app, mut commands) = app_with_service();
+        let ctx = egui::Context::default();
+        app.my_presence = Some(busy());
+        plugin_entry(&mut app, "light", &[]);
+        plugin_entry(&mut app, "other", &[]);
+        app.sync_plugins();
+        sent(&mut commands);
+        app.handle(
+            plugin_event(
+                "light",
+                ready_event(&["presence"], &["presence_display"], Vec::new(), &[]),
+            ),
+            &ctx,
+        );
+        app.handle(
+            plugin_event(
+                "other",
+                ready_event(&[], &["presence_display"], Vec::new(), &[]),
+            ),
+            &ctx,
+        );
+        let presences: Vec<Command> = sent(&mut commands)
+            .into_iter()
+            .filter(|c| {
+                matches!(
+                    c,
+                    Command::PluginSend {
+                        message: crate::plugin::protocol::HostMessage::Presence { .. },
+                        ..
+                    }
+                )
+            })
+            .collect();
+        assert_eq!(presences.len(), 1);
+        assert!(matches!(
+            &presences[0],
+            Command::PluginSend { id, message: crate::plugin::protocol::HostMessage::Presence { availability, activity } }
+                if id == "light" && availability == "Busy" && activity.is_none()
+        ));
+    }
+
+    #[test]
+    fn presence_is_resent_only_when_it_changes() {
+        let (mut app, mut commands) = app_with_service();
+        let ctx = egui::Context::default();
+        app.my_presence = Some(busy());
+        plugin_entry(&mut app, "light", &[]);
+        app.sync_plugins();
+        app.handle(
+            plugin_event("light", ready_event(&["presence"], &[], Vec::new(), &[])),
+            &ctx,
+        );
+        let count = |commands: &mut tokio::sync::mpsc::UnboundedReceiver<Command>| {
+            sent(commands)
+                .iter()
+                .filter(|c| {
+                    matches!(
+                        c,
+                        Command::PluginSend {
+                            message: crate::plugin::protocol::HostMessage::Presence { .. },
+                            ..
+                        }
+                    )
+                })
+                .count()
+        };
+        assert_eq!(count(&mut commands), 1);
+        app.sync_plugin_presence();
+        app.handle(Event::MyPresence(busy()), &ctx);
+        assert_eq!(count(&mut commands), 0, "the same presence is not resent");
+        app.handle(
+            Event::MyPresence(Presence {
+                availability: crate::model::Availability::Available,
+                ..Default::default()
+            }),
+            &ctx,
+        );
+        assert_eq!(count(&mut commands), 1);
+    }
+
+    #[test]
+    fn a_second_call_alerts_plugin_is_ignored() {
+        let (mut app, _dir) = demo_app();
+        let ctx = egui::Context::default();
+        call_alerts_plugin(&mut app, "first");
+        call_alerts_plugin(&mut app, "second");
+        assert_eq!(app.call_alerts_owner().as_deref(), Some("first"));
+        app.handle(
+            plugin_event(
+                "second",
+                crate::plugin::event::PluginEvent::IncomingCall(ring("c1", "u-ada")),
+            ),
+            &ctx,
+        );
+        app.handle(plugin_event("second", sign_in_event(None, "NO")), &ctx);
+        assert!(app.rings.is_empty());
+        assert!(app.plugins["second"].sign_in.is_empty());
+        app.handle(
+            plugin_event(
+                "first",
+                crate::plugin::event::PluginEvent::IncomingCall(ring("c1", "u-ada")),
+            ),
+            &ctx,
+        );
+        assert_eq!(app.rings.len(), 1);
+        // With the first one off, the second takes over.
+        app.settings.plugins[0].enabled = false;
+        assert_eq!(app.call_alerts_owner().as_deref(), Some("second"));
+    }
+
+    #[test]
+    fn sign_in_cards_key_on_plugin_and_account() {
+        let (mut app, _dir) = demo_app();
+        let ctx = egui::Context::default();
+        for id in ["a", "b"] {
+            plugin_entry(&mut app, id, &[]);
+            app.plugins.insert(id.into(), PluginState::default());
+        }
+        app.handle(
+            plugin_event("a", sign_in_event(Some("u-me.demo"), "A1")),
+            &ctx,
+        );
+        app.handle(
+            plugin_event("b", sign_in_event(Some("u-me.demo"), "B1")),
+            &ctx,
+        );
+        app.handle(
+            plugin_event("b", sign_in_event(Some("u-me.demo"), "B2")),
+            &ctx,
+        );
+        assert_eq!(app.plugins["a"].sign_in.len(), 1);
+        assert_eq!(app.plugins["b"].sign_in.len(), 1);
+        assert_eq!(app.plugins["a"].sign_in[0].user_code, "A1");
+        assert_eq!(app.plugins["b"].sign_in[0].user_code, "B2");
+        assert_eq!(app.plugins["b"].sign_in[0].plugin, "b");
+        app.apply(
+            Action::HidePluginSignIn {
+                plugin: "a".into(),
+                account: Some("u-me.demo".into()),
+            },
+            &ctx,
+        );
+        assert!(app.plugins["a"].sign_in.is_empty());
+        assert_eq!(app.plugins["b"].sign_in.len(), 1);
+    }
+
+    #[test]
+    fn removing_a_plugin_deletes_its_secrets_and_stops_it() {
+        let (mut app, mut commands) = app_with_service();
+        let ctx = egui::Context::default();
+        plugin_entry(&mut app, "light", &["accounts"]);
+        app.settings.plugins[0].secrets = vec!["token".into(), "key".into()];
+        app.sync_plugins();
+        sent(&mut commands);
+        app.apply(Action::RemovePlugin("light".into()), &ctx);
+        let after = sent(&mut commands);
+        assert!(after.iter().any(|c| matches!(
+            c,
+            Command::PluginSend { id, message: crate::plugin::protocol::HostMessage::Forget { account } }
+                if id == "light" && account == "u-me.t1"
+        )));
+        for option in ["token", "key"] {
+            assert!(after.iter().any(|c| matches!(
+                c,
+                Command::SavePluginSecret { plugin, option: o, value: None }
+                    if plugin == "light" && o == option
+            )));
+        }
+        assert!(
+            after
+                .iter()
+                .any(|c| matches!(c, Command::StopPlugin { id } if id == "light"))
+        );
+        assert!(app.settings.plugins.is_empty());
+        assert!(!app.plugins.contains_key("light"));
+    }
+
+    #[test]
+    fn adding_a_plugin_names_it_from_its_file_and_starts_it() {
+        let (mut app, mut commands) = app_with_service();
+        app.add_plugin(PathBuf::from("C:/x/Chaat Status-Light.exe"));
+        app.add_plugin(PathBuf::from("D:/y/chaat status-light.exe"));
+        let ids: Vec<&str> = app.settings.plugins.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, ["chaat-status-light", "chaat-status-light-2"]);
+        assert!(app.settings.plugins.iter().all(|e| e.enabled));
+        let started = sent(&mut commands);
+        assert_eq!(
+            started
+                .iter()
+                .filter(|c| matches!(c, Command::StartPlugin { .. }))
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn options_are_sent_after_ready_and_on_change() {
+        use crate::plugin::protocol::{OptionKind, OptionSpec};
+        let (mut app, mut commands) = app_with_service();
+        let ctx = egui::Context::default();
+        plugin_entry(&mut app, "light", &[]);
+        app.settings.plugins[0]
+            .options
+            .insert("ip".into(), serde_json::json!("10.0.0.5"));
+        app.settings.plugins[0].secrets = vec!["key".into()];
+        app.sync_plugins();
+        sent(&mut commands);
+        let spec = |id: &str, kind, default| OptionSpec {
+            id: id.into(),
+            kind,
+            label: id.into(),
+            default,
+            choices: Vec::new(),
+        };
+        let options = vec![
+            spec("ip", OptionKind::Text, Some(serde_json::json!(""))),
+            spec("flash", OptionKind::Toggle, Some(serde_json::json!(true))),
+            spec("key", OptionKind::Secret, None),
+        ];
+        app.handle(
+            plugin_event("light", ready_event(&[], &[], options, &[])),
+            &ctx,
+        );
+        let values = |commands: &mut tokio::sync::mpsc::UnboundedReceiver<Command>| {
+            sent(commands).into_iter().find_map(|c| match c {
+                Command::PluginOptions {
+                    id,
+                    values,
+                    secrets,
+                } if id == "light" => Some((values, secrets)),
+                _ => None,
+            })
+        };
+        let (first, secrets) = values(&mut commands).expect("options after ready");
+        assert_eq!(first["ip"], serde_json::json!("10.0.0.5"));
+        assert_eq!(first["flash"], serde_json::json!(true));
+        assert_eq!(secrets, vec!["key".to_owned()]);
+        app.apply(
+            Action::SetPluginOption {
+                plugin: "light".into(),
+                option: "flash".into(),
+                value: serde_json::json!(false),
+            },
+            &ctx,
+        );
+        let (changed, _) = values(&mut commands).expect("options after a change");
+        assert_eq!(changed["flash"], serde_json::json!(false));
+        assert_eq!(
+            app.settings.plugins[0].options["flash"],
+            serde_json::json!(false)
+        );
+        // A stored secret appears in the list, and the plugin hears again.
+        app.handle(
+            Event::PluginSecretSaved {
+                plugin: "light".into(),
+                option: "token".into(),
+                set: true,
+                ok: true,
+            },
+            &ctx,
+        );
+        let (_, secrets) = values(&mut commands).expect("options after a secret");
+        assert!(secrets.contains(&"token".to_owned()));
     }
 
     #[test]
@@ -3595,30 +3881,6 @@ mod tests {
         app.apply(Action::RingPlaceCall("group-1".into()), &ctx);
         let call = app.call.as_ref().expect("the call back starts");
         assert_eq!(call.chat, Some(ada_chat(&app)));
-    }
-
-    #[test]
-    fn only_the_first_sign_in_code_raises_the_window() {
-        let (mut app, _dir) = demo_app();
-        let ctx = egui::Context::default();
-        let ask = |code: &str| Event::CallAlertsSignIn {
-            account: None,
-            username: None,
-            verification_uri: "https://microsoft.com/devicelogin".into(),
-            user_code: code.into(),
-        };
-        app.wants_show = false;
-        app.handle(ask("FIRST"), &ctx);
-        assert!(app.wants_show);
-        app.wants_show = false;
-        app.apply(Action::HideCallAlertsSignIn(None), &ctx);
-        app.handle(ask("SECOND"), &ctx);
-        assert!(!app.wants_show, "a later code doesn't pull Chaat forward");
-        assert_eq!(app.call_alerts_sign_in[0].user_code, "SECOND");
-        // After signing in, a future expiry may raise it again.
-        app.handle(Event::CallAlertsSignedIn { account: None }, &ctx);
-        app.handle(ask("THIRD"), &ctx);
-        assert!(app.wants_show);
     }
 
     const FABRIKAM: &str = "u-alex2.fabrikam";
@@ -3670,86 +3932,35 @@ mod tests {
     }
 
     #[test]
-    fn the_plugin_hears_about_chaats_accounts_and_sign_outs() {
-        let (mut app, _) = app();
-        let (service, mut service_commands) = Backend::recording();
-        app.service = service;
-        app.id = Some("u-me.t1".into());
-        app.settings.calls.call_alerts_plugin = Some(PathBuf::from("plugin.exe"));
-        app.settings.calls.call_alerts = true;
-        app.sync_call_alerts();
-        let me = crate::calling::PluginAccount {
-            id: "u-me.t1".into(),
-            username: "me@contoso.com".into(),
-        };
-        assert!(matches!(
-            service_commands.try_recv(),
-            Ok(Command::StartCallAlerts { accounts, .. }) if accounts == vec![me.clone()]
-        ));
-        // Nothing changed: nothing to tell.
-        app.remember_accounts();
-        assert!(service_commands.try_recv().is_err());
-        app.auth = AuthStatus::SignedIn {
-            account: "u-me.t1".into(),
-            name: "Me".into(),
-            username: "me@fabrikam.com".into(),
-        };
-        app.remember_accounts();
-        assert!(matches!(
-            service_commands.try_recv(),
-            Ok(Command::CallAlertsAccounts(accounts))
-                if accounts[0].username == "me@fabrikam.com"
-        ));
-        // The plugin is running: it hears about the sign-out at once.
-        app.call_alerts_running = true;
-        let ctx = egui::Context::default();
-        app.apply(Action::SignOut, &ctx);
-        let sent: Vec<Command> = std::iter::from_fn(|| service_commands.try_recv().ok()).collect();
-        assert!(
-            sent.iter()
-                .any(|c| matches!(c, Command::CallAlertsForget(account) if account == "u-me.t1"))
-        );
-        assert!(
-            sent.iter()
-                .any(|c| matches!(c, Command::CallAlertsAccounts(accounts) if accounts.is_empty()))
-        );
-    }
-
-    #[test]
     fn each_account_gets_its_own_sign_in_card() {
         let (mut app, _dir) = demo_app();
         let ctx = egui::Context::default();
-        let ask = |account: &str, code: &str| Event::CallAlertsSignIn {
-            account: Some(account.into()),
-            username: None,
-            verification_uri: "https://microsoft.com/devicelogin".into(),
-            user_code: code.into(),
-        };
+        call_alerts_plugin(&mut app, "ca");
+        let ask =
+            |account: &str, code: &str| plugin_event("ca", sign_in_event(Some(account), code));
         app.handle(ask("u-me.demo", "ONE"), &ctx);
         app.handle(ask(FABRIKAM, "TWO"), &ctx);
         app.handle(ask(FABRIKAM, "THREE"), &ctx);
-        assert_eq!(app.call_alerts_sign_in.len(), 2);
-        let fabrikam = app
-            .call_alerts_sign_in
+        assert_eq!(app.plugins["ca"].sign_in.len(), 2);
+        let fabrikam = app.plugins["ca"]
+            .sign_in
             .iter()
             .find(|s| s.account.as_deref() == Some(FABRIKAM))
             .unwrap();
         assert_eq!(fabrikam.user_code, "THREE");
         assert_eq!(fabrikam.username.as_deref(), Some("alex@fabrikam.com"));
+        app.handle(plugin_event("ca", signed_in_event(Some(FABRIKAM))), &ctx);
+        assert_eq!(app.plugins["ca"].sign_in.len(), 1);
         app.handle(
-            Event::CallAlertsSignedIn {
-                account: Some(FABRIKAM.into()),
-            },
+            plugin_event(
+                "ca",
+                crate::plugin::event::PluginEvent::Listening {
+                    account: FABRIKAM.into(),
+                },
+            ),
             &ctx,
         );
-        assert_eq!(app.call_alerts_sign_in.len(), 1);
-        app.handle(
-            Event::CallAlertsListening {
-                account: FABRIKAM.into(),
-            },
-            &ctx,
-        );
-        assert_eq!(app.call_alerts_listening, vec![FABRIKAM.to_owned()]);
+        assert_eq!(app.plugins["ca"].listening, vec![FABRIKAM.to_owned()]);
     }
 
     #[test]
@@ -3767,20 +3978,28 @@ mod tests {
     fn an_account_error_names_the_account_and_stops_listening() {
         let (mut app, _dir) = demo_app();
         let ctx = egui::Context::default();
+        call_alerts_plugin(&mut app, "ca");
+        app.plugins.get_mut("ca").unwrap().info.name = Some("Call alerts".into());
         app.handle(
-            Event::CallAlertsListening {
-                account: FABRIKAM.into(),
-            },
+            plugin_event(
+                "ca",
+                crate::plugin::event::PluginEvent::Listening {
+                    account: FABRIKAM.into(),
+                },
+            ),
             &ctx,
         );
         app.handle(
-            Event::CallAlertsError {
-                account: FABRIKAM.into(),
-                message: "could not find the push service host".into(),
-            },
+            plugin_event(
+                "ca",
+                crate::plugin::event::PluginEvent::Error {
+                    account: Some(FABRIKAM.into()),
+                    message: "could not find the push service host".into(),
+                },
+            ),
             &ctx,
         );
-        assert!(app.call_alerts_listening.is_empty());
+        assert!(app.plugins["ca"].listening.is_empty());
         assert!(
             app.toasts
                 .iter()
@@ -3789,57 +4008,95 @@ mod tests {
     }
 
     #[test]
-    fn signing_out_with_call_alerts_off_still_clears_the_plugin_sign_in() {
-        let (mut app, _) = app();
-        let (service, mut service_commands) = Backend::recording();
-        app.service = service;
-        app.id = Some("u-me.t1".into());
-        app.settings.calls.call_alerts_plugin = Some(PathBuf::from("plugin.exe"));
-        app.settings.calls.call_alerts = false;
+    fn signing_out_with_a_plugin_off_still_clears_its_sign_in() {
+        let (mut app, mut commands) = app_with_service();
         let ctx = egui::Context::default();
+        plugin_entry(&mut app, "ca", &["accounts"]);
+        app.settings.plugins[0].enabled = false;
         app.apply(Action::SignOut, &ctx);
         // Not running: queued for the next start, which tells the plugin.
-        assert_eq!(
-            app.settings.calls.call_alerts_forget,
-            vec!["u-me.t1".to_owned()]
-        );
-        assert!(service_commands.try_recv().is_err());
-        app.settings.calls.call_alerts = true;
-        app.sync_call_alerts();
+        assert_eq!(app.settings.plugins[0].forget, vec!["u-me.t1".to_owned()]);
+        assert!(commands.try_recv().is_err());
+        app.settings.plugins[0].enabled = true;
+        app.sync_plugins();
         assert!(matches!(
-            service_commands.try_recv(),
-            Ok(Command::StartCallAlerts { forget, .. }) if forget == vec!["u-me.t1".to_owned()]
+            commands.try_recv(),
+            Ok(Command::StartPlugin { hello: crate::plugin::protocol::HostMessage::Hello { forget, .. }, .. })
+                if forget == vec!["u-me.t1".to_owned()]
         ));
         // Once the plugin is ready, the queue is done.
         app.handle(
-            Event::CallAlertsReady {
-                info: Default::default(),
-                forgotten: vec!["u-me.t1".into()],
-            },
+            plugin_event(
+                "ca",
+                ready_event(&["accounts"], &[], Vec::new(), &["u-me.t1"]),
+            ),
             &ctx,
         );
-        assert!(app.settings.calls.call_alerts_forget.is_empty());
-        assert!(app.call_alerts_running);
+        assert!(app.settings.plugins[0].forget.is_empty());
+        assert!(app.plugins["ca"].running);
+    }
+
+    #[test]
+    fn a_sign_out_queues_forget_per_plugin() {
+        let (mut app, mut commands) = app_with_service();
+        let ctx = egui::Context::default();
+        plugin_entry(&mut app, "a", &["accounts"]);
+        plugin_entry(&mut app, "b", &["accounts"]);
+        plugin_entry(&mut app, "c", &[]);
+        app.sync_plugins();
+        sent(&mut commands);
+        app.apply(Action::SignOut, &ctx);
+        let queue = |id: &str| {
+            app.settings
+                .plugins
+                .iter()
+                .find(|e| e.id == id)
+                .unwrap()
+                .forget
+                .clone()
+        };
+        assert_eq!(queue("a"), vec!["u-me.t1".to_owned()]);
+        assert_eq!(queue("b"), vec!["u-me.t1".to_owned()]);
+        assert!(queue("c").is_empty());
+        let after = sent(&mut commands);
+        for id in ["a", "b"] {
+            assert!(after.iter().any(|c| matches!(
+                c,
+                Command::PluginSend { id: to, message: crate::plugin::protocol::HostMessage::Forget { account } }
+                    if to == id && account == "u-me.t1"
+            )));
+        }
+        assert!(
+            !after.iter().any(|c| matches!(
+                c,
+                Command::PluginSend { id, message: crate::plugin::protocol::HostMessage::Forget { .. } } if id == "c"
+            )),
+            "a plugin that needs no accounts is not told to forget one"
+        );
     }
 
     #[test]
     fn removing_an_account_drops_its_plugin_state() {
-        let (mut app, _) = app();
-        let (service, _commands) = Backend::recording();
-        app.service = service;
-        app.id = Some("u-me.t1".into());
-        app.settings.calls.call_alerts_plugin = Some(PathBuf::from("plugin.exe"));
-        app.settings.calls.call_alerts = true;
-        app.call_alerts_listening = vec!["u-me.t1".into(), "gone.t9".into()];
-        app.call_alerts_sign_in.push(crate::model::PluginSignIn {
-            account: Some("gone.t9".into()),
-            username: None,
-            verification_uri: "https://microsoft.com/devicelogin".into(),
-            user_code: "OLD".into(),
-        });
+        let (mut app, _commands) = app_with_service();
+        plugin_entry(&mut app, "ca", &["accounts"]);
+        app.plugins.insert(
+            "ca".into(),
+            PluginState {
+                running: true,
+                listening: vec!["u-me.t1".into(), "gone.t9".into()],
+                sign_in: vec![crate::model::PluginSignIn {
+                    plugin: "ca".into(),
+                    account: Some("gone.t9".into()),
+                    username: None,
+                    verification_uri: "https://microsoft.com/devicelogin".into(),
+                    user_code: "OLD".into(),
+                }],
+                ..Default::default()
+            },
+        );
         app.remember_accounts();
-        assert_eq!(app.call_alerts_listening, vec!["u-me.t1".to_owned()]);
-        assert!(app.call_alerts_sign_in.is_empty());
+        assert_eq!(app.plugins["ca"].listening, vec!["u-me.t1".to_owned()]);
+        assert!(app.plugins["ca"].sign_in.is_empty());
     }
 
     #[test]
@@ -3855,45 +4112,35 @@ mod tests {
 
     #[test]
     fn a_sign_out_stays_queued_until_the_plugin_confirms_or_the_account_returns() {
-        let (mut app, _) = app();
-        let (service, mut service_commands) = Backend::recording();
-        app.service = service;
-        app.id = Some("u-me.t1".into());
-        app.settings.calls.call_alerts_plugin = Some(PathBuf::from("plugin.exe"));
-        app.settings.calls.call_alerts = true;
-        app.call_alerts_running = true;
+        let (mut app, mut commands) = app_with_service();
         let ctx = egui::Context::default();
+        plugin_entry(&mut app, "ca", &["accounts"]);
+        app.sync_plugins();
+        sent(&mut commands);
         app.apply(Action::SignOut, &ctx);
-        let sent: Vec<Command> = std::iter::from_fn(|| service_commands.try_recv().ok()).collect();
+        let after = sent(&mut commands);
         // Told at once, and still queued in case it never arrives.
-        assert!(
-            sent.iter()
-                .any(|c| matches!(c, Command::CallAlertsForget(id) if id == "u-me.t1"))
-        );
-        assert_eq!(
-            app.settings.calls.call_alerts_forget,
-            vec!["u-me.t1".to_owned()]
-        );
+        assert!(after.iter().any(|c| matches!(
+            c,
+            Command::PluginSend { id, message: crate::plugin::protocol::HostMessage::Forget { account } }
+                if id == "ca" && account == "u-me.t1"
+        )));
+        assert_eq!(app.settings.plugins[0].forget, vec!["u-me.t1".to_owned()]);
         // A ready that didn't clear it keeps it queued.
         app.handle(
-            Event::CallAlertsReady {
-                info: Default::default(),
-                forgotten: Vec::new(),
-            },
+            plugin_event("ca", ready_event(&["accounts"], &[], Vec::new(), &[])),
             &ctx,
         );
-        assert_eq!(
-            app.settings.calls.call_alerts_forget,
-            vec!["u-me.t1".to_owned()]
-        );
+        assert_eq!(app.settings.plugins[0].forget, vec!["u-me.t1".to_owned()]);
+        sent(&mut commands);
         // Signing that account in again takes it off the queue.
         app.id = Some("u-me.t1".into());
         app.remember_accounts();
-        assert!(app.settings.calls.call_alerts_forget.is_empty());
-        let sent: Vec<Command> = std::iter::from_fn(|| service_commands.try_recv().ok()).collect();
-        assert!(sent.iter().any(
-            |c| matches!(c, Command::CallAlertsForgetDone(done) if done == &vec!["u-me.t1".to_owned()])
-        ));
+        assert!(app.settings.plugins[0].forget.is_empty());
+        assert!(sent(&mut commands).iter().any(|c| matches!(
+            c,
+            Command::PluginHello { id, forget: Some(forget), .. } if id == "ca" && forget.is_empty()
+        )));
     }
     #[test]
     fn dismissing_a_ring_removes_only_that_one() {

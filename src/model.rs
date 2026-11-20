@@ -711,12 +711,13 @@ pub enum SettingsPage {
     Calls,
     Push,
     Shortcuts,
+    Plugins,
     Advanced,
     About,
 }
 
 impl SettingsPage {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Account,
         Self::OutOfOffice,
         Self::General,
@@ -724,6 +725,7 @@ impl SettingsPage {
         Self::Calls,
         Self::Push,
         Self::Shortcuts,
+        Self::Plugins,
         Self::Advanced,
         Self::About,
     ];
@@ -737,6 +739,7 @@ impl SettingsPage {
             Self::Calls => "Calls and meetings",
             Self::Push => "Push updates",
             Self::Shortcuts => "Keyboard shortcuts",
+            Self::Plugins => "Plugins",
             Self::Advanced => "Advanced",
             Self::About => "About",
         }
@@ -945,12 +948,35 @@ pub enum Action {
     RingOpenChat(String),
     /// Closes a ring toast (by its call id).
     DismissRing(String),
-    /// Hides the call-alerts sign-in panel; the plugin keeps waiting.
-    HideCallAlertsSignIn(Option<String>),
-    /// Asks the call-alerts plugin for a sign-in code for this account now.
-    CallAlertsSignIn(String),
-    /// Picks the call-alerts plugin's executable with the system's file picker.
-    ChooseCallAlertsPlugin,
+    /// Picks a plugin's executable with the system's file picker and adds it
+    /// to the plugin list, turned on.
+    AddPlugin,
+    /// Stops a plugin and removes it, with its stored secrets.
+    RemovePlugin(String),
+    SetPluginEnabled(String, bool),
+    /// Changes one of a plugin's described options (never a secret).
+    SetPluginOption {
+        plugin: String,
+        option: String,
+        value: serde_json::Value,
+    },
+    /// Stores (or, with `None`, removes) a plugin's secret option value in
+    /// the credential store.
+    SetPluginSecret {
+        plugin: String,
+        option: String,
+        value: Option<String>,
+    },
+    /// Asks a plugin for a sign-in code for this account now.
+    PluginSignIn {
+        plugin: String,
+        account: String,
+    },
+    /// Hides a plugin's sign-in panel; the plugin keeps waiting.
+    HidePluginSignIn {
+        plugin: String,
+        account: Option<String>,
+    },
     Quit,
 }
 
@@ -968,10 +994,12 @@ pub struct Toast {
     pub text: String,
 }
 
-/// A sign-in the call-alerts plugin is waiting for: the person enters the
-/// code at the page. The plugin signs in on its own; Chaat only shows this.
+/// A sign-in a plugin is waiting for: the person enters the code at the page.
+/// The plugin signs in on its own; Chaat only shows this.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PluginSignIn {
+    /// The plugin's id in the plugin list.
+    pub plugin: String,
     /// The Chaat account (`oid.tid`) it is for; `None` from an older plugin.
     pub account: Option<String>,
     /// That account's sign-in name, to say whom to sign in as.

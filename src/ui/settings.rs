@@ -37,6 +37,7 @@ fn icon(page: SettingsPage) -> Icon {
         SettingsPage::Calls => Icon::Phone,
         SettingsPage::Push => Icon::Bell,
         SettingsPage::Shortcuts => Icon::Keyboard,
+        SettingsPage::Plugins => Icon::Settings,
         SettingsPage::Advanced => Icon::Lock,
         SettingsPage::About => Icon::Info,
     }
@@ -239,6 +240,9 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
                                 SettingsPage::Calls => calls(app, ui, &mut actions),
                                 SettingsPage::Push => push(app, ui, &mut actions),
                                 SettingsPage::Shortcuts => shortcuts(app, ui),
+                                SettingsPage::Plugins => {
+                                    super::plugins::page(app, ui, &mut actions)
+                                }
                                 SettingsPage::Advanced => advanced(app, ui, &mut actions),
                                 SettingsPage::About => about(app, ui, &mut actions),
                             }
@@ -250,7 +254,7 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
 
 /// A group's heading inside a page: like [`widgets::section_label`], one
 /// size up to match the page's text.
-fn group(ui: &mut egui::Ui, palette: &Palette, label: &str) {
+pub(super) fn group(ui: &mut egui::Ui, palette: &Palette, label: &str) {
     ui.add_space(14.0);
     ui.label(
         egui::RichText::new(label.to_uppercase())
@@ -261,7 +265,7 @@ fn group(ui: &mut egui::Ui, palette: &Palette, label: &str) {
 }
 
 /// A quiet explanation under a setting.
-fn note(ui: &mut egui::Ui, palette: &Palette, text: impl Into<String>) {
+pub(super) fn note(ui: &mut egui::Ui, palette: &Palette, text: impl Into<String>) {
     ui.add(
         egui::Label::new(
             egui::RichText::new(text.into())
@@ -742,145 +746,24 @@ fn calls(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
             }
         }
     }
-    call_alerts(app, ui, &mut calls, actions);
+    call_alerts(app, ui, actions);
     if calls != app.settings.calls {
         actions.push(Action::SetCallSettings(calls));
     }
 }
 
-/// The optional call-alerts plugin: where it is, and whether it runs.
-fn call_alerts(
-    app: &App,
-    ui: &mut egui::Ui,
-    calls: &mut crate::settings::CallSettings,
-    actions: &mut Vec<Action>,
-) {
+/// Call alerts come from a plugin: one line here, the rest in Plugins.
+fn call_alerts(app: &App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
     let palette = app.palette;
     group(ui, &palette, "Call alerts");
-    // Chaat's own words, whatever the plugin says about itself.
+    // Chaat's own words, whatever a plugin says about itself.
     note(
         ui,
         &palette,
-        "Microsoft Graph can't tell Chaat that a call is ringing. A call-alerts plugin can: a separate program you install, not part of Chaat. It signs in on its own; Chaat never shares its sign-in with it. Check what a plugin does before you use it.",
+        "Microsoft Graph can't tell Chaat that a call is ringing. A plugin can: a separate program you install, not part of Chaat. Add and manage plugins in Settings \u{203A} Plugins.",
     );
-    // How the running plugin describes itself (plain, shortened text).
-    let info = &app.call_alerts_info;
-    if app.call_alerts_running && (info.name.is_some() || info.description.is_some()) {
-        if let Some(name) = &info.name {
-            ui.label(
-                egui::RichText::new(name)
-                    .font(theme::medium(13.0))
-                    .color(palette.text),
-            );
-        }
-        if let Some(description) = &info.description {
-            ui.add(
-                egui::Label::new(
-                    egui::RichText::new(description)
-                        .font(theme::regular(13.0))
-                        .color(palette.secondary),
-                )
-                .wrap(),
-            );
-        }
-        if let Some(url) = &info.docs_url
-            && widgets::text_button(ui, &palette, "About this plugin", theme::regular(13.0))
-                .on_hover_text(url)
-                .clicked()
-        {
-            actions.push(Action::OpenUrl(url.clone()));
-        }
-    }
-    let path = calls
-        .call_alerts_plugin
-        .as_ref()
-        .filter(|p| !p.as_os_str().is_empty())
-        .cloned();
-    ui.horizontal(|ui| {
-        let shown = path.as_ref().map_or_else(
-            || "No plugin chosen".to_owned(),
-            |p| p.display().to_string(),
-        );
-        ui.add(
-            egui::Label::new(egui::RichText::new(shown).font(theme::regular(13.0)).color(
-                if path.is_some() {
-                    palette.text
-                } else {
-                    palette.secondary
-                },
-            ))
-            .truncate(),
-        );
-    });
-    ui.horizontal(|ui| {
-        if widgets::secondary_button(ui, &palette, "Choose plugin…").clicked() {
-            actions.push(Action::ChooseCallAlertsPlugin);
-        }
-        if path.is_some() && widgets::secondary_button(ui, &palette, "Remove").clicked() {
-            calls.call_alerts_plugin = None;
-            calls.call_alerts = false;
-        }
-    });
-    ui.add_enabled_ui(path.is_some(), |ui| {
-        ui.checkbox_hand(&mut calls.call_alerts, "Show incoming calls");
-    });
-    if path.is_some() && calls.call_alerts {
-        let (text, color) = if app.call_alerts_running {
-            ("The plugin is running.", palette.secondary)
-        } else {
-            ("The plugin isn't running.", palette.warning)
-        };
-        ui.label(
-            egui::RichText::new(text)
-                .font(theme::regular(13.0))
-                .color(color),
-        );
-        if app.call_alerts_running {
-            call_alerts_accounts(app, ui, actions);
-        }
-    }
-}
-
-/// Each of Chaat's accounts, and whether the plugin listens for its calls.
-fn call_alerts_accounts(app: &App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
-    let palette = app.palette;
-    for account in app.call_alerts_accounts() {
-        let listening = app.call_alerts_listening.contains(&account.id);
-        let waiting = app
-            .call_alerts_sign_in
-            .iter()
-            .any(|s| s.account.as_deref() == Some(account.id.as_str()));
-        ui.horizontal(|ui| {
-            let name = if account.username.is_empty() {
-                account.id.clone()
-            } else {
-                account.username.clone()
-            };
-            ui.add(
-                egui::Label::new(
-                    egui::RichText::new(name)
-                        .font(theme::regular(13.0))
-                        .color(palette.text),
-                )
-                .truncate(),
-            );
-            let (state, color) = if listening {
-                ("Listening for calls", palette.secondary)
-            } else if waiting {
-                ("Waiting for sign-in", palette.warning)
-            } else {
-                // Signing in or connecting; a sign-in it needs shows on its own.
-                ("Connecting…", palette.secondary)
-            };
-            ui.label(
-                egui::RichText::new(state)
-                    .font(theme::regular(13.0))
-                    .color(color),
-            );
-            if waiting && widgets::secondary_button(ui, &palette, "New code").clicked() {
-                actions.push(Action::CallAlertsSignIn(account.id.clone()));
-            }
-        });
+    if widgets::secondary_button(ui, &palette, "Open Plugins").clicked() {
+        actions.push(Action::ShowSettingsPage(SettingsPage::Plugins));
     }
 }
 

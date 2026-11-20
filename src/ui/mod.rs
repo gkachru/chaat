@@ -8,6 +8,7 @@ pub mod chat_list;
 pub mod conversation;
 pub mod keys;
 pub mod overlays;
+pub mod plugins;
 pub mod rail;
 pub mod rich;
 pub mod settings;
@@ -432,7 +433,7 @@ fn toasts(app: &mut App, ctx: &egui::Context) {
 /// call" and "Open chat". A ring stays until used, dismissed, or about as long
 /// as Teams rings (the plugin cannot tell when the call stops).
 fn rings(app: &mut App, ctx: &egui::Context) {
-    if app.rings.is_empty() && app.call_alerts_sign_in.is_empty() {
+    if app.rings.is_empty() && app.plugins.values().all(|state| state.sign_in.is_empty()) {
         return;
     }
     let palette = app.palette;
@@ -468,10 +469,31 @@ fn rings(app: &mut App, ctx: &egui::Context) {
         .order(egui::Order::Foreground)
         .interactable(true)
         .show(ctx, |ui| {
-            let plugin = app.call_alerts_info.name.clone();
-            for sign_in in app.call_alerts_sign_in.clone() {
-                card(ui, &mut |ui| {
-                    sign_in_card(ui, &palette, plugin.as_deref(), &sign_in, &mut app.actions)
+            // One card per (plugin, account).
+            let sign_ins: Vec<(crate::model::PluginSignIn, Option<String>, bool)> = app
+                .plugins
+                .values()
+                .flat_map(|state| {
+                    let call_alerts = state.offers.contains(&crate::plugin::registry::CALL_ALERTS);
+                    state
+                        .sign_in
+                        .iter()
+                        .map(move |s| (s.clone(), state.info.name.clone(), call_alerts))
+                })
+                .collect();
+            for (sign_in, name, call_alerts) in sign_ins {
+                let key = (sign_in.plugin.clone(), sign_in.account.clone());
+                ui.push_id(key, |ui| {
+                    card(ui, &mut |ui| {
+                        sign_in_card(
+                            ui,
+                            &palette,
+                            name.as_deref(),
+                            call_alerts,
+                            &sign_in,
+                            &mut app.actions,
+                        )
+                    });
                 });
             }
             for ring in app.rings.clone().iter().rev() {
@@ -488,15 +510,20 @@ fn sign_in_card(
     ui: &mut egui::Ui,
     palette: &crate::theme::Palette,
     plugin: Option<&str>,
+    call_alerts: bool,
     sign_in: &crate::model::PluginSignIn,
     actions: &mut Vec<Action>,
 ) {
     ui.horizontal(|ui| {
         theme::icon(ui, Icon::Phone, 20.0, palette.accent);
         ui.label(
-            egui::RichText::new("Sign in for call alerts")
-                .font(theme::semibold(15.0))
-                .color(palette.text),
+            egui::RichText::new(if call_alerts {
+                "Sign in for call alerts"
+            } else {
+                "Sign in for a plugin"
+            })
+            .font(theme::semibold(15.0))
+            .color(palette.text),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
             let close = widgets::icon_button_sized(
@@ -511,14 +538,17 @@ fn sign_in_card(
             widgets::on_click(
                 &close,
                 actions,
-                Action::HideCallAlertsSignIn(sign_in.account.clone()),
+                Action::HidePluginSignIn {
+                    plugin: sign_in.plugin.clone(),
+                    account: sign_in.account.clone(),
+                },
             );
         });
     });
     ui.add_space(4.0);
     ui.add(
         egui::Label::new(
-            egui::RichText::new(sign_in_text(sign_in.username.as_deref()))
+            egui::RichText::new(sign_in_text(call_alerts, sign_in.username.as_deref()))
                 .size(12.0)
                 .color(palette.secondary),
         )
@@ -696,8 +726,12 @@ pub fn install(ctx: &egui::Context, reproducible: bool) {
 
 /// What the sign-in card says. Fixed wording: the only variable part is the
 /// sign-in name of Chaat's own account, never text from the plugin.
-fn sign_in_text(username: Option<&str>) -> String {
-    let intro = "The call-alerts plugin signs in separately from Chaat.";
+fn sign_in_text(call_alerts: bool, username: Option<&str>) -> String {
+    let intro = if call_alerts {
+        "The call-alerts plugin signs in separately from Chaat."
+    } else {
+        "The plugin signs in separately from Chaat."
+    };
     match username.filter(|name| !name.is_empty()) {
         Some(name) => format!("{intro} Open the page, enter this code, and sign in as {name}:"),
         None => format!("{intro} Open the page and enter this code:"),

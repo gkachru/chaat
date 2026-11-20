@@ -3241,12 +3241,25 @@ fn the_call_alerts_sign_in_panel_shows_the_code_in_both_themes_and_widths() {
             h.app.settings.theme = theme.clone();
             h.frames(2);
             let ctx = h.ctx.clone();
+            h.app.settings.plugins.push(chaat::settings::PluginEntry {
+                id: "ca".into(),
+                path: "plugin.exe".into(),
+                enabled: true,
+                ..Default::default()
+            });
+            {
+                let state = h.app.plugins.entry("ca".into()).or_default();
+                state.running = true;
+                state.offers = vec!["call_alerts"];
+            }
             h.app.handle(
-                chaat::backend::Event::CallAlertsSignIn {
-                    account: None,
-                    username: None,
-                    verification_uri: "https://microsoft.com/devicelogin".into(),
-                    user_code: "AB12CD34".into(),
+                chaat::backend::Event::Plugin {
+                    id: "ca".into(),
+                    event: chaat::plugin::event::PluginEvent::SignIn {
+                        account: None,
+                        verification_uri: "https://microsoft.com/devicelogin".into(),
+                        user_code: "AB12CD34".into(),
+                    },
                 },
                 &ctx,
             );
@@ -3263,141 +3276,33 @@ fn the_call_alerts_sign_in_panel_shows_the_code_in_both_themes_and_widths() {
                     "{text:?} shows at {width} in {theme:?}"
                 );
             }
-            assert!(!h.app.call_alerts_sign_in.is_empty());
-            h.act(Action::HideCallAlertsSignIn(None));
+            assert!(!h.app.plugins["ca"].sign_in.is_empty());
+            h.act(Action::HidePluginSignIn {
+                plugin: "ca".into(),
+                account: None,
+            });
             assert!(!painted_texts(&h).iter().any(|t| t == "AB12CD34"));
         }
     }
 }
 
 #[test]
-fn the_calls_settings_page_offers_the_call_alerts_plugin() {
+fn the_calls_settings_page_points_to_plugins() {
     for width in [480.0, 1280.0] {
         let mut h = Harness::new();
         h.size.x = width;
         h.act(Action::ShowSettingsPage(SettingsPage::Calls));
         let painted = painted_texts(&h);
-        for text in [
-            "CALL ALERTS",
-            "No plugin chosen",
-            "Choose plugin…",
-            "Show incoming calls",
-        ] {
+        for text in ["CALL ALERTS", "Open Plugins"] {
             assert!(
                 painted.iter().any(|t| t == text),
                 "{text:?} shows at {width}"
             );
         }
-        let mut calls = h.app.settings.calls.clone();
-        calls.call_alerts_plugin = Some("C:/plugins/call-alerts.exe".into());
-        calls.call_alerts = true;
-        h.act(Action::SetCallSettings(calls));
-        let painted = painted_texts(&h);
-        assert!(
-            painted.iter().any(|t| t == "Remove"),
-            "Remove shows at {width}"
-        );
-        assert!(painted.iter().any(|t| t == "The plugin isn't running."));
-    }
-}
-
-#[test]
-fn call_alerts_settings_list_each_account_and_whether_it_listens() {
-    for width in [480.0, 1280.0] {
-        let mut h = Harness::new();
-        h.size.x = width;
-        // Tall enough that the whole Calls page fits without scrolling.
-        h.size.y = 1800.0;
-        let mut calls = h.app.settings.calls.clone();
-        calls.call_alerts_plugin = Some("C:/plugins/call-alerts.exe".into());
-        calls.call_alerts = true;
-        h.act(Action::SetCallSettings(calls));
-        let ctx = h.ctx.clone();
-        h.app.handle(
-            chaat::backend::Event::CallAlertsStatus {
-                running: true,
-                message: None,
-            },
-            &ctx,
-        );
-        h.app.handle(
-            chaat::backend::Event::CallAlertsListening {
-                account: "u-alex2.fabrikam".into(),
-            },
-            &ctx,
-        );
-        h.act(Action::ShowSettingsPage(SettingsPage::Calls));
-        let painted = painted_texts(&h);
-        for text in ["alex@fabrikam.com", "Listening for calls", "Connecting…"] {
-            assert!(
-                painted.iter().any(|t| t == text),
-                "{text:?} shows at {width}"
-            );
-        }
-    }
-}
-
-#[test]
-fn the_plugins_own_description_shows_in_settings_and_names_the_sign_in() {
-    for width in [480.0, 1280.0] {
-        let mut h = Harness::new();
-        h.size = egui::vec2(width, 1800.0);
-        let mut calls = h.app.settings.calls.clone();
-        calls.call_alerts_plugin = Some("C:/plugins/call-alerts.exe".into());
-        calls.call_alerts = true;
-        h.act(Action::SetCallSettings(calls));
-        let ctx = h.ctx.clone();
-        h.app.handle(
-            chaat::backend::Event::CallAlertsReady {
-                info: chaat::plugin::protocol::PluginInfo::from_ready(
-                    Some("Ring alerts".into()),
-                    Some("Tells Chaat who is calling you in Teams.".into()),
-                    Some("https://github.com/gkachru/call-alerts".into()),
-                ),
-                forgotten: Vec::new(),
-            },
-            &ctx,
-        );
-        h.act(Action::ShowSettingsPage(SettingsPage::Calls));
-        let painted = painted_texts(&h);
-        for text in [
-            "Ring alerts",
-            "Tells Chaat who is calling you in Teams.",
-            "About this plugin",
-        ] {
-            assert!(
-                painted.iter().any(|t| t == text),
-                "{text:?} shows at {width}"
-            );
-        }
-        // Chaat's own line stays, whatever the plugin says.
         assert!(painted.iter().any(|t| t.contains("not part of Chaat")));
-
-        h.act(Action::CloseSettings);
-        h.app.handle(
-            chaat::backend::Event::CallAlertsSignIn {
-                account: Some("u-alex2.fabrikam".into()),
-                // The plugin's claim is ignored: Chaat names its own account.
-                username: Some("someone-else@evil.example".into()),
-                verification_uri: "https://microsoft.com/devicelogin".into(),
-                user_code: "AB12CD34".into(),
-            },
-            &ctx,
-        );
+        let button = ring_text_pos(&h, "Open Plugins").expect("the button is painted");
+        h.click(button);
         h.frames(2);
-        let painted = painted_texts(&h);
-        assert!(
-            painted.iter().any(|t| t
-                .starts_with("The call-alerts plugin signs in separately from Chaat.")
-                && t.ends_with("sign in as alex@fabrikam.com:")),
-            "the sign-in card names Chaat's own account at {width}"
-        );
-        assert!(!painted.iter().any(|t| t.contains("evil.example")));
-        assert!(
-            painted
-                .iter()
-                .any(|t| t == "Plugin: \u{201C}Ring alerts\u{201D}"),
-            "the plugin's name shows apart, quoted, at {width}"
-        );
+        assert_eq!(h.app.settings_page, Some(SettingsPage::Plugins));
     }
 }
