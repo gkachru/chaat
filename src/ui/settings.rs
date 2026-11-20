@@ -186,6 +186,7 @@ fn nav_item(
 /// The chosen page, where the open conversation usually is.
 pub fn page(app: &mut App, ui: &mut egui::Ui) {
     let palette = app.palette;
+    open_plugins_for_setup(app, ui.ctx());
     let page = app.settings_page.unwrap_or_default();
     let mut actions = Vec::new();
     if page != SettingsPage::Plugins {
@@ -254,6 +255,22 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
                 });
         });
     app.actions.extend(actions);
+}
+
+/// A plugin's setup view lives on the Plugins page: when a setup opens (or
+/// was open before Settings was drawn), the page changes to Plugins once.
+fn open_plugins_for_setup(app: &mut App, ctx: &egui::Context) {
+    let frame = ctx.cumulative_frame_nr();
+    let key = egui::Id::new("settings-setup-seen");
+    // What the last frame saw; nothing if Settings was not drawn then.
+    let seen = ctx
+        .data(|d| d.get_temp::<(u64, Option<String>)>(key))
+        .filter(|(last, _)| frame <= last.saturating_add(1))
+        .and_then(|(_, setup)| setup);
+    if app.plugin_setup.is_some() && app.plugin_setup != seen {
+        app.settings_page = Some(SettingsPage::Plugins);
+    }
+    ctx.data_mut(|d| d.insert_temp(key, (frame, app.plugin_setup.clone())));
 }
 
 /// A group's heading inside a page: like [`widgets::section_label`], one

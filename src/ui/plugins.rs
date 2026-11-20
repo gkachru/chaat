@@ -5,14 +5,24 @@ use super::settings::{group, note};
 use super::widgets::{self, PointerControls as _};
 use crate::app::{App, PluginState};
 use crate::model::Action;
-use crate::plugin::protocol::{OptionKind, OptionSpec};
+use crate::plugin::options;
+use crate::plugin::protocol::{OptionKind, OptionSpec, StatusState};
 use crate::plugin::registry;
 use crate::settings::PluginEntry;
 use crate::theme;
+use std::time::{Duration, Instant};
 
 pub fn page(app: &App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
     let palette = app.palette;
     drop_stale_secret_buffers(app, ui);
+    if let Some(entry) = app
+        .plugin_setup
+        .as_deref()
+        .and_then(|id| app.settings.plugins.iter().find(|e| e.id == id))
+    {
+        setup_view(app, ui, entry, actions);
+        return;
+    }
     // Chaat's own words, whatever a plugin says about itself.
     note(
         ui,
@@ -63,6 +73,14 @@ pub fn page(app: &App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
             .truncate(),
         );
         status(app, ui, entry, state);
+        if !app.plugin_missing_required(&entry.id).is_empty() {
+            ui.horizontal_wrapped(|ui| {
+                needs_setup_badge(ui, &palette);
+                if widgets::secondary_button(ui, &palette, "Set up").clicked() {
+                    actions.push(Action::OpenPluginSetup(entry.id.clone()));
+                }
+            });
+        }
         if let Some(hash) = state.and_then(|s| s.file_changed.as_deref()) {
             file_changed_notice(app, ui, entry, hash, actions);
         }
@@ -90,9 +108,9 @@ pub fn page(app: &App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
             }
         });
         if let Some(state) = state {
-            for option in &state.options {
-                option_row(app, ui, entry, option, actions);
-            }
+            let cx = OptionsCx::new(app, entry, state);
+            let all: Vec<&OptionSpec> = state.options.iter().collect();
+            options_block(&cx, ui, &all, actions);
             if state.running && app.plugin_receives(&entry.id).contains(&"accounts") {
                 account_rows(app, ui, entry, state, actions);
             }
@@ -391,14 +409,438 @@ fn labelled(ui: &mut egui::Ui, palette: &theme::Palette, label: &str) {
     );
 }
 
-fn option_row(
-    app: &App,
+/// Chaat's own small marker next to the label of a required option.
+fn required_marker(ui: &mut egui::Ui, palette: &theme::Palette, option: &OptionSpec) {
+    if option.required {
+        ui.label(
+            egui::RichText::new("Required")
+                .font(theme::regular(12.0))
+                .color(palette.dim),
+        );
+    }
+}
+
+fn label_line(ui: &mut egui::Ui, palette: &theme::Palette, option: &OptionSpec) {
+    ui.horizontal(|ui| {
+        labelled(ui, palette, &option.label);
+        required_marker(ui, palette, option);
+    });
+}
+
+/// Chaat's own badge on a plugin that still needs required settings.
+fn needs_setup_badge(ui: &mut egui::Ui, palette: &theme::Palette) {
+    egui::Frame::new()
+        .stroke(egui::Stroke::new(1.0, palette.warning))
+        .corner_radius(10)
+        .inner_margin(egui::Margin::symmetric(8, 2))
+        .show(ui, |ui| {
+            ui.label(
+                egui::RichText::new("Needs setup")
+                    .font(theme::medium(12.0))
+                    .color(palette.warning),
+            );
+        });
+}
+
+/// How long a button shows "Working…" without an answer. The same limit as
+/// `PluginState::action_working`, which decides; this only schedules the
+/// repaint that ends the wait.
+const WORKING_LIMIT: Duration = Duration::from_secs(30);
+
+/// What the option rows of one plugin need: Chaat's state, the plugin's entry
+/// and state, and each option's current value (defaults filled in), which
+/// `visible_when` reads.
+struct OptionsCx<'a> {
+    app: &'a App,
+    entry: &'a PluginEntry,
+    state: &'a PluginState,
+    values: serde_json::Map<String, serde_json::Value>,
+    now: Instant,
+}
+
+impl<'a> OptionsCx<'a> {
+    fn new(app: &'a App, entry: &'a PluginEntry, state: &'a PluginState) -> Self {
+        let stored: serde_json::Map<String, serde_json::Value> = entry
+            .options
+            .iter()
+            .map(|(option, value)| (option.clone(), value.clone()))
+            .collect();
+        Self {
+            app,
+            entry,
+            state,
+            values: options::effective_values(&state.options, &stored),
+            now: Instant::now(),
+        }
+    }
+
+    fn visible(&self, spec: &OptionSpec) -> bool {
+        options::is_visible(spec, &self.values)
+    }
+
+    /// The inline error of the last refused value for an option.
+    fn error(&self, option: &str) -> Option<&String> {
+        self.app
+            .plugin_option_errors
+            .get(&(self.entry.id.clone(), option.to_owned()))
+    }
+}
+
+/// The options under their section headings, in the order the sections first
+/// appear. Each section has "Reset to defaults" and folds its advanced
+/// options into a collapsed "Advanced" area.
+fn options_block(
+    cx: &OptionsCx,
     ui: &mut egui::Ui,
-    entry: &PluginEntry,
-    option: &OptionSpec,
+    specs: &[&OptionSpec],
     actions: &mut Vec<Action>,
 ) {
+    let palette = cx.app.palette;
+    let mut groups: Vec<(Option<&str>, Vec<&OptionSpec>)> = Vec::new();
+    for spec in specs {
+        let section = spec.section.as_deref();
+        match groups.iter_mut().find(|(name, _)| *name == section) {
+            Some((_, members)) => members.push(spec),
+            None => groups.push((section, vec![spec])),
+        }
+    }
+    let named = groups.iter().any(|(name, _)| name.is_some());
+    for (section, members) in groups {
+        let shown: Vec<&OptionSpec> = members
+            .iter()
+            .copied()
+            .filter(|spec| cx.visible(spec))
+            .collect();
+        if shown.is_empty() {
+            continue;
+        }
+        let resettable = members.iter().any(|spec| {
+            !matches!(
+                spec.kind,
+                OptionKind::Secret | OptionKind::Action | OptionKind::Unsupported { .. }
+            )
+        });
+        // Options without a section sit apart from named ones under Chaat's
+        // own heading.
+        let heading = section.or(named.then_some("Other settings"));
+        ui.add_space(6.0);
+        if heading.is_some() || resettable {
+            ui.horizontal(|ui| {
+                if let Some(heading) = heading {
+                    ui.label(
+                        egui::RichText::new(heading)
+                            .font(theme::semibold(13.0))
+                            .color(palette.text),
+                    );
+                }
+                if resettable {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let reset = widgets::text_button(
+                            ui,
+                            &palette,
+                            "Reset to defaults",
+                            theme::regular(12.0),
+                        );
+                        if reset.clicked() {
+                            actions.push(Action::ResetPluginSection {
+                                plugin: cx.entry.id.clone(),
+                                section: section.map(str::to_owned),
+                            });
+                        }
+                    });
+                }
+            });
+        }
+        let (advanced, plain): (Vec<&OptionSpec>, Vec<&OptionSpec>) =
+            shown.iter().copied().partition(|spec| spec.advanced);
+        for spec in plain {
+            option_row(cx, ui, spec, actions);
+        }
+        if !advanced.is_empty() {
+            egui::CollapsingHeader::new(
+                egui::RichText::new("Advanced")
+                    .font(theme::regular(13.0))
+                    .color(palette.secondary),
+            )
+            .id_salt(("plugin-advanced", &cx.entry.id, section))
+            .show(ui, |ui| {
+                for spec in advanced {
+                    option_row(cx, ui, spec, actions);
+                }
+            });
+        }
+    }
+}
+
+/// The setup view of a plugin: its required options first, then the rest.
+fn setup_view(app: &App, ui: &mut egui::Ui, entry: &PluginEntry, actions: &mut Vec<Action>) {
     let palette = app.palette;
+    group(ui, &palette, "Set up");
+    heading(app, ui, entry);
+    note(
+        ui,
+        &palette,
+        "Fill in what this plugin needs. Required settings come first. You can change all of them later in Settings \u{203A} Plugins.",
+    );
+    if let Some(state) = app.plugins.get(&entry.id) {
+        let cx = OptionsCx::new(app, entry, state);
+        let required: Vec<&OptionSpec> = state
+            .options
+            .iter()
+            .filter(|spec| spec.required && cx.visible(spec))
+            .collect();
+        let rest: Vec<&OptionSpec> = state.options.iter().filter(|spec| !spec.required).collect();
+        if !required.is_empty() {
+            group(ui, &palette, "Required");
+            for spec in required {
+                option_row(&cx, ui, spec, actions);
+            }
+        }
+        if rest.iter().any(|spec| cx.visible(spec)) {
+            group(ui, &palette, "More settings");
+            options_block(&cx, ui, &rest, actions);
+        }
+    } else {
+        note(
+            ui,
+            &palette,
+            "This plugin has not described its settings yet.",
+        );
+    }
+    ui.add_space(10.0);
+    if widgets::primary_button(ui, &palette, "Done").clicked() {
+        actions.push(Action::ClosePluginSetup);
+    }
+}
+
+/// Edits one piece of text with a buffer in egui memory. It commits on Enter
+/// or when the field loses focus (Ctrl+Enter for `multiline`, where Enter
+/// adds a line) and returns the text then, if it changed; Escape drops the
+/// edit. The buffer is cleared on commit. A committed value the app refused
+/// (`failed`) stays in the field until the person edits again, so the error
+/// under it still refers to what they typed.
+fn edit_text(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    saved: &str,
+    failed: bool,
+    multiline: bool,
+    add: impl FnOnce(&mut egui::Ui, &mut String, egui::Id) -> egui::Response,
+) -> Option<String> {
+    let field = id.with("field");
+    let editing = ui
+        .data(|d| d.get_temp::<bool>(id.with("editing")))
+        .unwrap_or(false);
+    let pending = ui.data(|d| d.get_temp::<String>(id.with("pending")));
+    if !failed {
+        ui.data_mut(|d| d.remove_temp::<String>(id.with("pending")));
+    }
+    let mut buffer = if editing {
+        ui.data(|d| d.get_temp::<String>(id))
+            .unwrap_or_else(|| saved.to_owned())
+    } else if let Some(text) = pending.filter(|_| failed) {
+        text
+    } else {
+        saved.to_owned()
+    };
+    let ctrl_enter = multiline
+        && editing
+        && ui.input_mut(|input| {
+            input.consume_key(egui::Modifiers::CTRL, egui::Key::Enter)
+                || input.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter)
+        });
+    let escape = ui.input(|input| input.key_pressed(egui::Key::Escape));
+    let response = add(ui, &mut buffer, field);
+    if ctrl_enter {
+        response.surrender_focus();
+    }
+    let cancelled = response.lost_focus() && escape;
+    let commit = (response.lost_focus() && !escape) || ctrl_enter;
+    let changed = buffer != saved;
+    let focused = response.has_focus() && !ctrl_enter;
+    ui.data_mut(|d| {
+        if commit || cancelled {
+            d.remove_temp::<String>(id);
+            d.insert_temp(id.with("editing"), false);
+            if commit && changed {
+                d.insert_temp(id.with("pending"), buffer.clone());
+            }
+        } else if focused {
+            d.insert_temp(id.with("editing"), true);
+            d.insert_temp(id, buffer.clone());
+        } else {
+            d.insert_temp(id.with("editing"), false);
+            d.remove_temp::<String>(id);
+        }
+    });
+    (commit && changed).then_some(buffer)
+}
+
+/// A number the way the plugin takes it: whole numbers without a fraction.
+/// Text that is no number goes on as text, so the check names the problem.
+fn number_value(text: &str) -> serde_json::Value {
+    match text.trim().parse::<f64>() {
+        Ok(number) if number.is_finite() => {
+            if number.fract() == 0.0 && number.abs() < 1e15 {
+                serde_json::Value::from(number as i64)
+            } else {
+                serde_json::Number::from_f64(number)
+                    .map_or_else(|| serde_json::Value::from(text), serde_json::Value::Number)
+            }
+        }
+        _ => serde_json::Value::from(text),
+    }
+}
+
+fn parse_hex(text: &str) -> Option<egui::Color32> {
+    let digits = text.trim().strip_prefix('#')?;
+    if digits.len() != 6 || !digits.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let byte = |at: usize| u8::from_str_radix(&digits[at..at + 2], 16).ok();
+    Some(egui::Color32::from_rgb(byte(0)?, byte(2)?, byte(4)?))
+}
+
+fn to_hex(color: egui::Color32) -> String {
+    format!("#{:02x}{:02x}{:02x}", color.r(), color.g(), color.b())
+}
+
+/// A color option: a swatch that opens egui's picker (the choice is saved
+/// when the picker closes) and a field for the hex value.
+fn color_control(
+    cx: &OptionsCx,
+    ui: &mut egui::Ui,
+    option: &OptionSpec,
+    saved: &str,
+    actions: &mut Vec<Action>,
+) {
+    let palette = cx.app.palette;
+    let entry = cx.entry;
+    let set = |value: String| Action::SetPluginOption {
+        plugin: entry.id.clone(),
+        option: option.id.clone(),
+        value: value.into(),
+    };
+    let id = buffer_id(&entry.id, &option.id, "color");
+    let picked_id = id.with("picked");
+    let open_id = id.with("was-open");
+    let popup_id = id.with("popup");
+    let picked = ui.data(|d| d.get_temp::<String>(picked_id));
+    ui.horizontal(|ui| {
+        let shown = picked.as_deref().unwrap_or(saved);
+        let mut color = parse_hex(shown).unwrap_or(palette.dim);
+        let (rect, swatch) = ui.allocate_exact_size(egui::vec2(32.0, 26.0), egui::Sense::click());
+        if ui.is_rect_visible(rect) {
+            ui.painter().rect_filled(rect, 6.0, color);
+            ui.painter().rect_stroke(
+                rect,
+                6.0,
+                egui::Stroke::new(1.0, palette.outline),
+                egui::StrokeKind::Inside,
+            );
+        }
+        let swatch = swatch.on_hover_cursor(egui::CursorIcon::PointingHand);
+        let mut now_picked = None;
+        egui::Popup::menu(&swatch)
+            .id(popup_id)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| {
+                if egui::color_picker::color_picker_color32(
+                    ui,
+                    &mut color,
+                    egui::color_picker::Alpha::Opaque,
+                ) {
+                    now_picked = Some(to_hex(color));
+                }
+            });
+        if let Some(hex) = now_picked {
+            ui.data_mut(|d| d.insert_temp(picked_id, hex));
+        }
+        let open = egui::Popup::is_id_open(ui.ctx(), popup_id);
+        let was_open = ui.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
+        ui.data_mut(|d| d.insert_temp(open_id, open));
+        if was_open && !open {
+            let chosen = ui.data_mut(|d| d.remove_temp::<String>(picked_id));
+            if let Some(hex) = chosen.filter(|hex| hex != saved) {
+                actions.push(set(hex));
+            }
+        }
+        let hint = option.placeholder.as_deref().unwrap_or("#rrggbb");
+        let failed = cx.error(&option.id).is_some();
+        let hex_id = id.with("hex");
+        if let Some(text) = edit_text(ui, hex_id, saved, failed, false, |ui, buffer, field| {
+            ui.add(
+                widgets::text_field(buffer, hint, theme::regular(14.0))
+                    .id(field)
+                    .desired_width(110.0),
+            )
+        }) {
+            actions.push(set(text));
+        }
+    });
+}
+
+/// The time left until a button that shows "Working…" gives up waiting.
+fn working_ends_in(cx: &OptionsCx, option: &str) -> Duration {
+    let clicked = cx.state.action_started.get(option).copied();
+    let status = cx
+        .state
+        .statuses
+        .get(option)
+        .filter(|(state, _, _)| *state == StatusState::Working)
+        .map(|(_, _, at)| *at);
+    let since = clicked.into_iter().chain(status).max().unwrap_or(cx.now);
+    WORKING_LIMIT.saturating_sub(cx.now.saturating_duration_since(since))
+}
+
+/// Under an option: its help, the error for a refused value, and the
+/// plugin's last status for it, quoted as the plugin's words.
+fn option_footer(cx: &OptionsCx, ui: &mut egui::Ui, option: &OptionSpec) {
+    let palette = cx.app.palette;
+    let line = |ui: &mut egui::Ui, text: String, color: egui::Color32| {
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(text)
+                    .font(theme::regular(12.0))
+                    .color(color),
+            )
+            .wrap(),
+        );
+    };
+    if let Some(help) = &option.help {
+        line(ui, help.clone(), palette.dim);
+    }
+    if let Some(error) = cx.error(&option.id) {
+        line(ui, error.clone(), palette.danger);
+    }
+    let Some((state, message, _)) = cx.state.statuses.get(&option.id) else {
+        return;
+    };
+    let quoted = message
+        .as_ref()
+        .map(|message| format!("\u{201C}{message}\u{201D}"));
+    let (text, color) = match state {
+        StatusState::Ok => (quoted.unwrap_or_else(|| "Done".into()), palette.success),
+        StatusState::Error => (quoted.unwrap_or_else(|| "Failed".into()), palette.danger),
+        StatusState::Working => {
+            if !cx.state.action_working(&option.id, cx.now) {
+                return;
+            }
+            let text = match quoted {
+                Some(quoted) => format!("{quoted}\u{2026}"),
+                // A button already says "Working…".
+                None if option.kind == OptionKind::Action => return,
+                None => "Working\u{2026}".into(),
+            };
+            (text, palette.dim)
+        }
+    };
+    line(ui, text, color);
+}
+
+fn option_row(cx: &OptionsCx, ui: &mut egui::Ui, option: &OptionSpec, actions: &mut Vec<Action>) {
+    let palette = cx.app.palette;
+    let entry = cx.entry;
     let current = entry
         .options
         .get(&option.id)
@@ -409,22 +851,34 @@ fn option_row(
         option: option.id.clone(),
         value,
     };
-    match option.kind {
+    let failed = cx.error(&option.id).is_some();
+    let hint = option.placeholder.as_deref().unwrap_or(&option.label);
+    ui.add_space(2.0);
+    match &option.kind {
         OptionKind::Toggle => {
             let mut on = current.as_ref().and_then(|v| v.as_bool()).unwrap_or(false);
-            if ui.checkbox_hand(&mut on, &option.label).changed() {
-                actions.push(set(on.into()));
-            }
+            ui.horizontal(|ui| {
+                if ui.checkbox_hand(&mut on, &option.label).changed() {
+                    actions.push(set(on.into()));
+                }
+                required_marker(ui, &palette, option);
+            });
         }
         OptionKind::Choice => {
-            let selected = current
-                .as_ref()
-                .and_then(|v| v.as_str())
-                .and_then(|value| option.choices.iter().find(|c| c.value == value));
+            let stored = current.as_ref().and_then(|v| v.as_str());
+            let selected =
+                stored.and_then(|value| option.choices.iter().find(|c| c.value == value));
+            // A stored value the plugin no longer offers is kept and said so.
+            let shown = match (selected, stored) {
+                (Some(choice), _) => choice.label.as_str(),
+                (None, Some(_)) => "(not available)",
+                (None, None) => "Not set",
+            };
             ui.horizontal(|ui| {
                 labelled(ui, &palette, &option.label);
+                required_marker(ui, &palette, option);
                 egui::ComboBox::from_id_salt(buffer_id(&entry.id, &option.id, "choice"))
-                    .selected_text(selected.map_or("Not set", |c| c.label.as_str()))
+                    .selected_text(shown)
                     .show_ui(ui, |ui| {
                         for choice in &option.choices {
                             let on = selected.is_some_and(|s| s.value == choice.value);
@@ -439,35 +893,100 @@ fn option_row(
             let saved = current
                 .as_ref()
                 .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_owned();
-            labelled(ui, &palette, &option.label);
+                .unwrap_or_default();
+            label_line(ui, &palette, option);
             let id = buffer_id(&entry.id, &option.id, "text");
-            let editing = ui
-                .data(|d| d.get_temp::<bool>(id.with("editing")))
-                .unwrap_or(false);
-            let mut buffer = if editing {
-                ui.data(|d| d.get_temp::<String>(id)).unwrap_or_default()
-            } else {
-                saved.clone()
-            };
-            let response = ui.add(
-                widgets::text_field(&mut buffer, &option.label, theme::regular(14.0))
-                    .id(id.with("field")),
-            );
-            // Enter and clicking away both end the edit and commit it.
-            if response.lost_focus() && buffer != saved {
-                actions.push(set(buffer.clone().into()));
-            }
-            let focused = response.has_focus();
-            ui.data_mut(|d| {
-                d.insert_temp(id.with("editing"), focused);
-                d.insert_temp(id, buffer);
+            let edited = edit_text(ui, id, saved, failed, false, |ui, buffer, field| {
+                ui.add(widgets::text_field(buffer, hint, theme::regular(14.0)).id(field))
             });
+            if let Some(text) = edited {
+                actions.push(set(text.into()));
+            }
+        }
+        OptionKind::Multiline => {
+            let saved = current
+                .as_ref()
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            label_line(ui, &palette, option);
+            let id = buffer_id(&entry.id, &option.id, "multiline");
+            let edited = edit_text(ui, id, saved, failed, true, |ui, buffer, field| {
+                ui.add(
+                    egui::TextEdit::multiline(buffer)
+                        .id(field)
+                        .hint_text(egui::RichText::new(hint).font(theme::regular(14.0)))
+                        .font(theme::regular(14.0))
+                        .margin(egui::Margin::symmetric(8, 6))
+                        .desired_width(f32::INFINITY)
+                        .desired_rows(3),
+                )
+            });
+            if let Some(text) = edited {
+                actions.push(set(text.into()));
+            }
+        }
+        OptionKind::Number => {
+            let saved = current
+                .as_ref()
+                .and_then(|v| v.as_f64())
+                .map(|n| n.to_string())
+                .unwrap_or_default();
+            label_line(ui, &palette, option);
+            let id = buffer_id(&entry.id, &option.id, "number");
+            ui.horizontal(|ui| {
+                let edited = edit_text(ui, id, &saved, failed, false, |ui, buffer, field| {
+                    ui.add(
+                        widgets::text_field(buffer, hint, theme::regular(14.0))
+                            .id(field)
+                            .desired_width(110.0),
+                    )
+                });
+                if let Some(text) = edited {
+                    actions.push(set(number_value(&text)));
+                }
+                if let Some(unit) = &option.unit {
+                    ui.label(
+                        egui::RichText::new(unit)
+                            .font(theme::regular(13.0))
+                            .color(palette.dim),
+                    );
+                }
+            });
+        }
+        OptionKind::Color => {
+            let saved = current
+                .as_ref()
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            label_line(ui, &palette, option);
+            color_control(cx, ui, option, saved, actions);
+        }
+        OptionKind::Action => {
+            let working = cx.state.action_working(&option.id, cx.now);
+            let running = cx.state.running;
+            let text = if working {
+                "Working\u{2026}"
+            } else {
+                option.label.as_str()
+            };
+            let response = ui
+                .add_enabled_ui(!working && running, |ui| {
+                    widgets::secondary_button(ui, &palette, text)
+                })
+                .inner;
+            if response.clicked() {
+                actions.push(Action::RunPluginAction {
+                    plugin: entry.id.clone(),
+                    action: option.id.clone(),
+                });
+            }
+            if !running {
+                response.on_disabled_hover_text("The plugin is not running.");
+            }
         }
         OptionKind::Secret => {
             let saved = entry.secrets.contains(&option.id);
-            labelled(ui, &palette, &option.label);
+            label_line(ui, &palette, option);
             ui.label(
                 egui::RichText::new(if saved { "Saved" } else { "Not set" })
                     .font(theme::regular(13.0))
@@ -513,8 +1032,7 @@ fn option_row(
             });
             set_secret_buffer(ui, &entry.id, &option.id, buffer);
         }
-        // C3: draw number, color, multiline and action options.
-        _ => {
+        OptionKind::Unsupported { .. } => {
             labelled(ui, &palette, &option.label);
             ui.label(
                 egui::RichText::new("This setting needs a newer Chaat.")
@@ -522,6 +1040,12 @@ fn option_row(
                     .color(palette.dim),
             );
         }
+    }
+    option_footer(cx, ui, option);
+    if cx.state.action_working(&option.id, cx.now) {
+        // One repaint when the wait ends, not a timer that keeps running.
+        ui.ctx()
+            .request_repaint_after(working_ends_in(cx, &option.id) + Duration::from_millis(50));
     }
 }
 

@@ -3966,3 +3966,658 @@ fn a_secret_option_never_shows_its_value() {
         value: None,
     }));
 }
+
+// Settings › Plugins: the rich options of a plugin.
+
+/// The demo presence light's entry, to change what its options show.
+fn demo_light(h: &mut Harness) -> &mut chaat::settings::PluginEntry {
+    h.app
+        .settings
+        .plugins
+        .iter_mut()
+        .find(|e| e.id == "demo-light")
+        .expect("the demo has a presence light")
+}
+
+/// Where the n-th painted text equal to `wanted` is (top to bottom as drawn).
+fn text_pos_nth(h: &Harness, wanted: &str, n: usize) -> Option<egui::Pos2> {
+    painted_shapes(h)
+        .into_iter()
+        .filter_map(|shape| match shape {
+            egui::epaint::Shape::Text(text) if text.galley.job.text == wanted => {
+                Some(text.pos + text.galley.rect.center().to_vec2())
+            }
+            _ => None,
+        })
+        .nth(n)
+}
+
+/// The color a painted text was drawn in.
+fn text_color(h: &Harness, wanted: &str) -> Option<egui::Color32> {
+    painted_shapes(h).into_iter().find_map(|shape| match shape {
+        egui::epaint::Shape::Text(text) if text.galley.job.text == wanted => text
+            .galley
+            .job
+            .sections
+            .first()
+            .map(|section| section.format.color),
+        _ => None,
+    })
+}
+
+fn plugins_page_press(h: &mut Harness, pos: egui::Pos2) -> Vec<Action> {
+    let button = |pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    let mut actions = plugins_page_frame(h, vec![egui::Event::PointerMoved(pos)]);
+    actions.extend(plugins_page_frame(h, vec![button(true)]));
+    actions.extend(plugins_page_frame(h, vec![button(false)]));
+    actions.extend(plugins_page_frame(h, vec![]));
+    actions
+}
+
+fn key_event(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
+    egui::Event::Key {
+        key,
+        physical_key: Some(key),
+        pressed: true,
+        repeat: false,
+        modifiers,
+    }
+}
+
+/// Clicks a painted text, replaces what the field holds and returns the
+/// actions of the typing frames (nothing should commit yet).
+fn plugins_page_replace_text(h: &mut Harness, field: &str, text: &str) -> Vec<Action> {
+    let pos = ring_text_pos(h, field).unwrap_or_else(|| panic!("{field:?} is painted"));
+    let mut actions = plugins_page_press(h, pos);
+    actions.extend(plugins_page_frame(
+        h,
+        vec![key_event(egui::Key::A, egui::Modifiers::COMMAND)],
+    ));
+    actions.extend(plugins_page_frame(
+        h,
+        vec![egui::Event::Text(text.to_owned())],
+    ));
+    actions.extend(plugins_page_frame(h, vec![]));
+    actions
+}
+
+fn plugins_page_enter(h: &mut Harness) -> Vec<Action> {
+    let enter = key_event(egui::Key::Enter, egui::Modifiers::NONE);
+    let mut actions = plugins_page_frame(h, vec![enter]);
+    actions.extend(plugins_page_frame(h, vec![]));
+    actions
+}
+
+fn set_light(option: &str, value: serde_json::Value) -> Action {
+    Action::SetPluginOption {
+        plugin: "demo-light".into(),
+        option: option.into(),
+        value,
+    }
+}
+
+fn texts_in_order(h: &Harness, wanted: &[&str]) -> bool {
+    let ys: Vec<Option<f32>> = wanted
+        .iter()
+        .map(|t| ring_text_pos(h, t).map(|p| p.y))
+        .collect();
+    ys.iter().all(Option::is_some) && ys.windows(2).all(|w| w[0] < w[1])
+}
+
+fn no_option_set(actions: &[Action]) -> bool {
+    !actions
+        .iter()
+        .any(|a| matches!(a, Action::SetPluginOption { .. }))
+}
+
+#[test]
+fn options_sit_under_section_headings_in_the_order_the_sections_appear() {
+    for width in [480.0, 1280.0] {
+        for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+            let h = plugins_settings_harness(width, theme.clone());
+            assert!(
+                texts_in_order(
+                    &h,
+                    &[
+                        "Bulb",
+                        "Bulb address",
+                        "Colors",
+                        "Busy color",
+                        "Other settings",
+                        "Color wheel"
+                    ]
+                ),
+                "sections in first-appearance order at {width} in {theme:?}"
+            );
+            let painted = painted_texts(&h);
+            let resets = painted.iter().filter(|t| *t == "Reset to defaults").count();
+            assert_eq!(resets, 2, "one per section with something to reset");
+        }
+    }
+}
+
+#[test]
+fn reset_to_defaults_pushes_the_reset_of_that_section() {
+    let mut h = plugins_page_harness();
+    let first = text_pos_nth(&h, "Reset to defaults", 0).expect("Bulb's button");
+    let actions = plugins_page_press(&mut h, first);
+    assert!(
+        actions.contains(&Action::ResetPluginSection {
+            plugin: "demo-light".into(),
+            section: Some("Bulb".into()),
+        }),
+        "{actions:?}"
+    );
+    let second = text_pos_nth(&h, "Reset to defaults", 1).expect("Colors' button");
+    let actions = plugins_page_press(&mut h, second);
+    assert!(
+        actions.contains(&Action::ResetPluginSection {
+            plugin: "demo-light".into(),
+            section: Some("Colors".into()),
+        }),
+        "{actions:?}"
+    );
+}
+
+#[test]
+fn advanced_options_stay_folded_until_the_sections_advanced_area_opens() {
+    for width in [480.0, 1280.0] {
+        for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+            let h = plugins_settings_harness(width, theme.clone());
+            let painted = painted_texts(&h);
+            // The settings menu has an Advanced page of its own.
+            assert!(
+                painted.iter().filter(|t| *t == "Advanced").count() >= 2,
+                "an Advanced area per section with advanced options"
+            );
+            for hidden in ["Device ID", "Turn off when Chaat quits"] {
+                assert!(
+                    !painted.iter().any(|t| t == hidden),
+                    "{hidden:?} is folded at {width} in {theme:?}"
+                );
+            }
+        }
+    }
+    let mut h = plugins_page_harness();
+    let folded = painted_texts(&h);
+    assert_eq!(
+        folded.iter().filter(|t| *t == "Advanced").count(),
+        2,
+        "one Advanced area per section with advanced options"
+    );
+    let advanced = text_pos_nth(&h, "Advanced", 0).expect("Bulb's Advanced");
+    plugins_page_press(&mut h, advanced);
+    let painted = painted_texts(&h);
+    assert!(painted.iter().any(|t| t == "Device ID"), "opened");
+    assert!(
+        !painted.iter().any(|t| t == "Turn off when Chaat quits"),
+        "the other section's area stays folded"
+    );
+}
+
+#[test]
+fn an_option_shows_its_label_control_help_placeholder_and_required_marker() {
+    for width in [480.0, 1280.0] {
+        for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+            let mut h = plugins_settings_harness(width, theme.clone());
+            demo_light(&mut h).options.remove("ip");
+            h.frames(2);
+            let painted = painted_texts(&h);
+            for text in [
+                "Bulb address",
+                "The bulb's address on your network.",
+                "Flash on calls",
+                "Blinks the bulb when a call rings.",
+                // The empty field shows its placeholder.
+                "192.168.1.20",
+                "Anything to remember",
+            ] {
+                assert!(
+                    painted.iter().any(|t| t == text),
+                    "{text:?} shows at {width} in {theme:?}"
+                );
+            }
+            assert_eq!(
+                painted.iter().filter(|t| *t == "Required").count(),
+                2,
+                "the address and the token are required"
+            );
+            assert!(
+                texts_in_order(&h, &["Bulb address", "The bulb's address on your network."]),
+                "help sits under the field"
+            );
+            let palette = h.app.palette;
+            assert_eq!(
+                text_color(&h, "The bulb's address on your network."),
+                Some(palette.dim)
+            );
+        }
+    }
+}
+
+#[test]
+fn an_option_with_visible_when_shows_only_while_its_condition_holds() {
+    for width in [480.0, 1280.0] {
+        for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+            let mut h = plugins_settings_harness(width, theme.clone());
+            assert!(
+                painted_texts(&h).iter().any(|t| t == "Flash color"),
+                "shown while flashing is on, at {width} in {theme:?}"
+            );
+            demo_light(&mut h)
+                .options
+                .insert("flash".into(), serde_json::json!(false));
+            h.frames(2);
+            let painted = painted_texts(&h);
+            assert!(!painted.iter().any(|t| t == "Flash color"), "hidden");
+            assert!(painted.iter().any(|t| t == "Busy color"), "others stay");
+        }
+    }
+}
+
+#[test]
+fn a_choice_whose_stored_value_is_not_offered_says_not_available() {
+    for width in [480.0, 1280.0] {
+        for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+            let mut h = plugins_settings_harness(width, theme.clone());
+            assert!(
+                painted_texts(&h).iter().any(|t| t == "(not available)"),
+                "at {width} in {theme:?}"
+            );
+            demo_light(&mut h)
+                .options
+                .insert("mode".into(), serde_json::json!("blink"));
+            h.frames(2);
+            let painted = painted_texts(&h);
+            assert!(!painted.iter().any(|t| t == "(not available)"));
+            assert!(painted.iter().any(|t| t == "Blink"));
+        }
+    }
+    // Picking an offered entry replaces it at once.
+    let mut h = plugins_page_harness();
+    plugins_page_click(&mut h, "(not available)");
+    plugins_page_frame(&mut h, vec![]);
+    let actions = plugins_page_click(&mut h, "Blink");
+    assert!(
+        actions.contains(&set_light("mode", "blink".into())),
+        "{actions:?}"
+    );
+}
+
+#[test]
+fn text_commits_on_focus_loss_and_leaves_no_buffer_behind() {
+    let mut h = plugins_page_harness();
+    let typed = plugins_page_replace_text(&mut h, "192.168.1.20", "10.0.0.7");
+    assert!(typed.is_empty(), "typing alone sets nothing: {typed:?}");
+    let buffer = egui::Id::new(("plugin-option", "text", "demo-light", "ip"));
+    assert!(
+        h.ctx.data(|d| d.get_temp::<String>(buffer)).is_some(),
+        "control: the typed text waits in memory"
+    );
+    // Clicking another control ends the edit.
+    let away = ring_text_pos(&h, "Bulb address").expect("a label");
+    let actions = plugins_page_press(&mut h, away);
+    assert!(
+        actions.contains(&set_light("ip", "10.0.0.7".into())),
+        "{actions:?}"
+    );
+    assert!(
+        h.ctx.data(|d| d.get_temp::<String>(buffer)).is_none(),
+        "the buffer is cleared on commit"
+    );
+    // An edit that ends where it began commits nothing.
+    let mut h = plugins_page_harness();
+    plugins_page_replace_text(&mut h, "192.168.1.20", "192.168.1.20");
+    let actions = plugins_page_enter(&mut h);
+    assert!(no_option_set(&actions), "{actions:?}");
+}
+
+#[test]
+fn number_options_show_their_unit_and_commit_a_number() {
+    for width in [480.0, 1280.0] {
+        for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+            let h = plugins_settings_harness(width, theme.clone());
+            let painted = painted_texts(&h);
+            for text in ["Dim level", "80", "%"] {
+                assert!(
+                    painted.iter().any(|t| t == text),
+                    "{text:?} shows at {width} in {theme:?}"
+                );
+            }
+        }
+    }
+    let mut h = plugins_page_harness();
+    let typed = plugins_page_replace_text(&mut h, "80", "55");
+    assert!(typed.is_empty(), "{typed:?}");
+    let actions = plugins_page_enter(&mut h);
+    assert!(
+        actions.contains(&set_light("level", serde_json::json!(55))),
+        "{actions:?}"
+    );
+    // Text that is no number goes on as text, so the app can say why.
+    let mut h = plugins_page_harness();
+    plugins_page_replace_text(&mut h, "80", "abc");
+    let actions = plugins_page_enter(&mut h);
+    assert!(
+        actions.contains(&set_light("level", "abc".into())),
+        "{actions:?}"
+    );
+}
+
+#[test]
+fn a_refused_value_shows_its_error_in_the_error_color_and_stays_in_the_field() {
+    for width in [480.0, 1280.0] {
+        for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+            let h = plugins_settings_harness(width, theme.clone());
+            let message = "Enter a number from 10 to 100.";
+            assert!(
+                texts_in_order(&h, &["Dim level", message]),
+                "under its field at {width} in {theme:?}"
+            );
+            assert_eq!(text_color(&h, message), Some(h.app.palette.danger));
+        }
+    }
+    let mut h = plugins_page_harness();
+    plugins_page_replace_text(&mut h, "80", "5");
+    let actions = plugins_page_enter(&mut h);
+    assert!(
+        actions.contains(&set_light("level", serde_json::json!(5))),
+        "{actions:?}"
+    );
+    // The app refused it (the error is still there): the field keeps the
+    // refused text, not the saved one.
+    let painted = painted_texts(&h);
+    assert!(painted.iter().any(|t| t == "5"), "{painted:?}");
+    assert!(!painted.iter().any(|t| t == "80"));
+    // Without an error the field shows the saved value again.
+    h.app
+        .plugin_option_errors
+        .remove(&("demo-light".to_owned(), "level".to_owned()));
+    plugins_page_frame(&mut h, vec![]);
+    let painted = painted_texts(&h);
+    assert!(painted.iter().any(|t| t == "80"));
+}
+
+#[test]
+fn multiline_commits_on_ctrl_enter_or_focus_loss_but_not_on_enter() {
+    let mut h = plugins_page_harness();
+    let typed = plugins_page_replace_text(&mut h, "Anything to remember", "hi");
+    assert!(typed.is_empty(), "{typed:?}");
+    let actions = plugins_page_enter(&mut h);
+    assert!(no_option_set(&actions), "Enter adds a line: {actions:?}");
+    let ctrl_enter = key_event(egui::Key::Enter, egui::Modifiers::CTRL);
+    let mut actions = plugins_page_frame(&mut h, vec![ctrl_enter]);
+    actions.extend(plugins_page_frame(&mut h, vec![]));
+    assert!(
+        actions.contains(&set_light("notes", "hi\n".into())),
+        "{actions:?}"
+    );
+    let mut h = plugins_page_harness();
+    plugins_page_replace_text(&mut h, "Anything to remember", "hi");
+    let away = ring_text_pos(&h, "Dim level").expect("a label");
+    let actions = plugins_page_press(&mut h, away);
+    assert!(
+        actions.contains(&set_light("notes", "hi".into())),
+        "{actions:?}"
+    );
+}
+
+#[test]
+fn a_color_option_shows_its_swatch_and_commits_the_hex_on_enter() {
+    for width in [480.0, 1280.0] {
+        for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+            let h = plugins_settings_harness(width, theme.clone());
+            let painted = painted_texts(&h);
+            assert!(painted.iter().any(|t| t == "Busy color"));
+            assert!(
+                painted.iter().any(|t| t == "#e5484d"),
+                "the hex field shows the value at {width} in {theme:?}"
+            );
+            let swatch = egui::Color32::from_rgb(0xe5, 0x48, 0x4d);
+            assert!(
+                painted_shapes(&h).iter().any(|shape| matches!(
+                    shape,
+                    egui::epaint::Shape::Rect(rect) if rect.fill == swatch
+                )),
+                "a swatch in the color"
+            );
+        }
+    }
+    let mut h = plugins_page_harness();
+    plugins_page_replace_text(&mut h, "#e5484d", "#00AAFF");
+    let actions = plugins_page_enter(&mut h);
+    assert!(
+        actions.contains(&set_light("busy", "#00AAFF".into())),
+        "the app lowercases it: {actions:?}"
+    );
+}
+
+#[test]
+fn closing_the_color_picker_commits_the_picked_color() {
+    let mut h = plugins_page_harness();
+    let swatch = painted_shapes(&h)
+        .into_iter()
+        .find_map(|shape| match shape {
+            egui::epaint::Shape::Rect(rect)
+                if rect.fill == egui::Color32::from_rgb(0xe5, 0x48, 0x4d) =>
+            {
+                Some(rect.rect.center())
+            }
+            _ => None,
+        })
+        .expect("the busy swatch");
+    let actions = plugins_page_press(&mut h, swatch);
+    assert!(actions.is_empty(), "opening commits nothing: {actions:?}");
+    // Pick a color inside the picker, below the swatch.
+    let inside = swatch + egui::vec2(60.0, 90.0);
+    let actions = plugins_page_press(&mut h, inside);
+    assert!(actions.is_empty(), "nothing commits while it is open");
+    // Clicking away closes it.
+    let away = egui::pos2(850.0, 20.0);
+    let actions = plugins_page_press(&mut h, away);
+    let picked = actions.iter().find_map(|a| match a {
+        Action::SetPluginOption { option, value, .. } if option == "busy" => value.as_str(),
+        _ => None,
+    });
+    let picked = picked.unwrap_or_else(|| panic!("closing commits it: {actions:?}"));
+    assert!(picked.starts_with('#') && picked.len() == 7 && picked != "#e5484d");
+}
+
+#[test]
+fn an_action_option_runs_on_click_and_waits_while_the_plugin_works() {
+    for width in [480.0, 1280.0] {
+        for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+            let h = plugins_settings_harness(width, theme.clone());
+            let painted = painted_texts(&h);
+            assert!(
+                painted.iter().any(|t| t == "Test the light"),
+                "at {width} in {theme:?}"
+            );
+            assert!(
+                painted.iter().any(|t| t == "Working\u{2026}"),
+                "Find bulbs is working"
+            );
+            assert!(!painted.iter().any(|t| t == "Find bulbs"));
+        }
+    }
+    let mut h = plugins_page_harness();
+    let actions = plugins_page_click(&mut h, "Test the light");
+    assert!(
+        actions.contains(&Action::RunPluginAction {
+            plugin: "demo-light".into(),
+            action: "test".into(),
+        }),
+        "{actions:?}"
+    );
+    let actions = plugins_page_click(&mut h, "Working\u{2026}");
+    assert!(
+        !actions
+            .iter()
+            .any(|a| matches!(a, Action::RunPluginAction { .. })),
+        "a button that is working is disabled: {actions:?}"
+    );
+    // Once the plugin answers, the button is a button again.
+    h.app
+        .plugins
+        .get_mut("demo-light")
+        .unwrap()
+        .statuses
+        .remove("scan");
+    plugins_page_frame(&mut h, vec![]);
+    let actions = plugins_page_click(&mut h, "Find bulbs");
+    assert!(
+        actions.contains(&Action::RunPluginAction {
+            plugin: "demo-light".into(),
+            action: "scan".into(),
+        }),
+        "{actions:?}"
+    );
+}
+
+#[test]
+fn statuses_show_the_plugins_words_quoted_in_the_palette_colors() {
+    for width in [480.0, 1280.0] {
+        for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+            let h = plugins_settings_harness(width, theme.clone());
+            let palette = h.app.palette;
+            for (text, color) in [
+                ("\u{201C}The light turned on\u{201D}", palette.success),
+                ("\u{201C}No answer from the bulb\u{201D}", palette.danger),
+                ("\u{201C}Searching\u{201D}\u{2026}", palette.dim),
+            ] {
+                assert_eq!(
+                    text_color(&h, text),
+                    Some(color),
+                    "{text:?} at {width} in {theme:?}"
+                );
+            }
+            assert!(
+                texts_in_order(
+                    &h,
+                    &["Test the light", "\u{201C}The light turned on\u{201D}"]
+                ),
+                "an action's status sits under its button"
+            );
+            assert!(
+                texts_in_order(
+                    &h,
+                    &["Bulb address", "\u{201C}No answer from the bulb\u{201D}"]
+                ),
+                "an option's status sits under its field"
+            );
+        }
+    }
+}
+
+#[test]
+fn an_option_of_an_unknown_kind_says_it_needs_a_newer_chaat() {
+    for width in [480.0, 1280.0] {
+        for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+            let h = plugins_settings_harness(width, theme.clone());
+            let painted = painted_texts(&h);
+            for text in ["Color wheel", "This setting needs a newer Chaat."] {
+                assert!(
+                    painted.iter().any(|t| t == text),
+                    "{text:?} at {width} in {theme:?}"
+                );
+            }
+        }
+    }
+}
+
+/// The demo light with its required settings unset.
+fn light_needing_setup(h: &mut Harness) {
+    let entry = demo_light(h);
+    entry.secrets.clear();
+    entry.options.remove("ip");
+}
+
+#[test]
+fn a_plugin_with_unset_required_options_shows_needs_setup_and_a_set_up_button() {
+    for width in [480.0, 1280.0] {
+        for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+            let mut h = plugins_settings_harness(width, theme.clone());
+            let painted = painted_texts(&h);
+            assert!(
+                !painted.iter().any(|t| t == "Needs setup" || t == "Set up"),
+                "nothing is missing yet"
+            );
+            light_needing_setup(&mut h);
+            h.frames(2);
+            let painted = painted_texts(&h);
+            for text in ["Needs setup", "Set up"] {
+                assert!(
+                    painted.iter().any(|t| t == text),
+                    "{text:?} at {width} in {theme:?}"
+                );
+            }
+        }
+    }
+    let mut h = plugins_page_harness();
+    light_needing_setup(&mut h);
+    plugins_page_frame(&mut h, vec![]);
+    let actions = plugins_page_click(&mut h, "Set up");
+    assert!(
+        actions.contains(&Action::OpenPluginSetup("demo-light".into())),
+        "{actions:?}"
+    );
+}
+
+#[test]
+fn the_setup_view_lists_required_options_first_and_ends_with_done() {
+    for width in [480.0, 1280.0] {
+        for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+            let mut h = plugins_settings_harness(width, theme.clone());
+            light_needing_setup(&mut h);
+            h.app.plugin_setup = Some("demo-light".into());
+            h.frames(3);
+            let painted = painted_texts(&h);
+            assert!(
+                texts_in_order(
+                    &h,
+                    &[
+                        "Plugin: \u{201C}Status light\u{201D}",
+                        "Bulb address",
+                        "Access token",
+                        "Flash on calls",
+                        "Busy color",
+                        "Done",
+                    ]
+                ),
+                "required first, then the rest, then Done at {width} in {theme:?}: {painted:?}"
+            );
+            assert!(
+                !painted
+                    .iter()
+                    .any(|t| t == "Add plugin\u{2026}" || t == "Listening for calls"),
+                "the setup view replaces the list"
+            );
+        }
+    }
+    let mut h = plugins_page_harness();
+    light_needing_setup(&mut h);
+    h.app.plugin_setup = Some("demo-light".into());
+    plugins_page_frame(&mut h, vec![]);
+    let actions = plugins_page_click(&mut h, "Done");
+    assert!(actions.contains(&Action::ClosePluginSetup), "{actions:?}");
+}
+
+#[test]
+fn settings_opens_the_plugins_page_once_when_a_setup_starts() {
+    let mut h = Harness::new();
+    h.act(Action::ShowSettingsPage(SettingsPage::General));
+    h.frames(2);
+    assert_eq!(h.app.settings_page, Some(SettingsPage::General));
+    h.app.plugin_setup = Some("demo-light".into());
+    h.frames(2);
+    assert_eq!(h.app.settings_page, Some(SettingsPage::Plugins));
+    // The person may leave the page while the setup stays open.
+    h.act(Action::ShowSettingsPage(SettingsPage::General));
+    h.frames(2);
+    assert_eq!(h.app.settings_page, Some(SettingsPage::General));
+}

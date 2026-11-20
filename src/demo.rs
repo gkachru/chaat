@@ -733,7 +733,7 @@ pub fn populate(app: &mut App) {
 /// for the first account and waits for a sign-in on the second, and a
 /// presence light with one option of every kind.
 fn populate_plugins(app: &mut App) {
-    use crate::plugin::protocol::{OptionChoice, OptionKind, OptionSpec, PluginInfo};
+    use crate::plugin::protocol::{PluginInfo, StatusState};
     use crate::settings::PluginEntry;
 
     let accounts = app.plugin_accounts();
@@ -754,6 +754,10 @@ fn populate_plugins(app: &mut App) {
             options: [
                 ("flash".to_owned(), serde_json::json!(true)),
                 ("ip".to_owned(), serde_json::json!("192.168.1.20")),
+                ("busy".to_owned(), serde_json::json!("#e5484d")),
+                ("level".to_owned(), serde_json::json!(80)),
+                // The plugin no longer offers this effect.
+                ("mode".to_owned(), serde_json::json!("pulse")),
             ]
             .into(),
             secrets: vec!["token".into()],
@@ -797,49 +801,30 @@ fn populate_plugins(app: &mut App) {
     light.needs = vec!["presence"];
     // Asks for presence; the person has not answered yet.
     light.pending_needs = vec!["presence"];
-    light.options = vec![
-        OptionSpec {
-            id: "ip".into(),
-            kind: OptionKind::Text,
-            label: "Bulb address".into(),
-            default: None,
-            choices: vec![],
-            ..OptionSpec::default()
-        },
-        OptionSpec {
-            id: "flash".into(),
-            kind: OptionKind::Toggle,
-            label: "Flash on calls".into(),
-            default: Some(serde_json::json!(false)),
-            choices: vec![],
-            ..OptionSpec::default()
-        },
-        OptionSpec {
-            id: "brightness".into(),
-            kind: OptionKind::Choice,
-            label: "Brightness".into(),
-            default: Some(serde_json::json!("high")),
-            choices: vec![
-                OptionChoice {
-                    value: "low".into(),
-                    label: "Low".into(),
-                },
-                OptionChoice {
-                    value: "high".into(),
-                    label: "High".into(),
-                },
-            ],
-            ..OptionSpec::default()
-        },
-        OptionSpec {
-            id: "token".into(),
-            kind: OptionKind::Secret,
-            label: "Access token".into(),
-            default: None,
-            choices: vec![],
-            ..OptionSpec::default()
-        },
-    ];
+    light.options = demo_light_options();
+    // What the plugin last said about its buttons and one setting.
+    let now = std::time::Instant::now();
+    light.statuses.insert(
+        "scan".into(),
+        (StatusState::Working, Some("Searching".into()), now),
+    );
+    light.statuses.insert(
+        "test".into(),
+        (StatusState::Ok, Some("The light turned on".into()), now),
+    );
+    light.statuses.insert(
+        "ip".into(),
+        (
+            StatusState::Error,
+            Some("No answer from the bulb".into()),
+            now,
+        ),
+    );
+    // A value the person typed that Chaat refused.
+    app.plugin_option_errors.insert(
+        ("demo-light".into(), "level".into()),
+        "Enter a number from 10 to 100.".into(),
+    );
     let lamp = app.plugins.entry("demo-changed".into()).or_default();
     lamp.info = PluginInfo {
         name: Some("Desk lamp".into()),
@@ -848,6 +833,126 @@ fn populate_plugins(app: &mut App) {
     };
     lamp.file_changed =
         Some("3f9a1c07be52d8e4a6b0c9d17f2e8a45b3c6d9e01f7a2b48c5d0e63f91a7b2cd".into());
+}
+
+/// The settings of the demo presence light: every kind and field of the
+/// option schema.
+fn demo_light_options() -> Vec<crate::plugin::protocol::OptionSpec> {
+    use crate::plugin::protocol::{OptionChoice, OptionKind, OptionSpec, TextFormat, VisibleWhen};
+    use serde_json::json;
+
+    let spec = |id: &str, kind: OptionKind, label: &str| OptionSpec {
+        id: id.into(),
+        kind,
+        label: label.into(),
+        ..OptionSpec::default()
+    };
+    let text = |value: &str| Some(value.to_owned());
+    let choice = |value: &str, label: &str| OptionChoice {
+        value: value.into(),
+        label: label.into(),
+    };
+    let bulb = text("Bulb");
+    let colors = text("Colors");
+    vec![
+        OptionSpec {
+            section: bulb.clone(),
+            help: text("Looks for bulbs on your network."),
+            ..spec("scan", OptionKind::Action, "Find bulbs")
+        },
+        OptionSpec {
+            section: bulb.clone(),
+            required: true,
+            format: Some(TextFormat::Ip),
+            placeholder: text("192.168.1.20"),
+            help: text("The bulb's address on your network."),
+            ..spec("ip", OptionKind::Text, "Bulb address")
+        },
+        OptionSpec {
+            section: bulb.clone(),
+            required: true,
+            help: text("Kept in your system's credential store."),
+            ..spec("token", OptionKind::Secret, "Access token")
+        },
+        OptionSpec {
+            section: bulb.clone(),
+            ..spec("test", OptionKind::Action, "Test the light")
+        },
+        OptionSpec {
+            section: bulb.clone(),
+            default: Some(json!(false)),
+            help: text("Blinks the bulb when a call rings."),
+            ..spec("flash", OptionKind::Toggle, "Flash on calls")
+        },
+        OptionSpec {
+            section: bulb,
+            advanced: true,
+            placeholder: text("Optional"),
+            help: text("Picks the bulb when more than one answers."),
+            ..spec("device_id", OptionKind::Text, "Device ID")
+        },
+        OptionSpec {
+            section: colors.clone(),
+            default: Some(json!("high")),
+            choices: vec![choice("low", "Low"), choice("high", "High")],
+            ..spec("brightness", OptionKind::Choice, "Brightness")
+        },
+        OptionSpec {
+            section: colors.clone(),
+            default: Some(json!("steady")),
+            choices: vec![choice("steady", "Steady"), choice("blink", "Blink")],
+            ..spec("mode", OptionKind::Choice, "Effect")
+        },
+        OptionSpec {
+            section: colors.clone(),
+            default: Some(json!("#e5484d")),
+            ..spec("busy", OptionKind::Color, "Busy color")
+        },
+        OptionSpec {
+            section: colors.clone(),
+            default: Some(json!("#f5a524")),
+            ..spec("away", OptionKind::Color, "Away color")
+        },
+        OptionSpec {
+            section: colors.clone(),
+            default: Some(json!("#ffffff")),
+            visible_when: Some(VisibleWhen {
+                option: "flash".into(),
+                equals: json!(true),
+            }),
+            help: text("Shown only while flashing on calls is on."),
+            ..spec("flash_color", OptionKind::Color, "Flash color")
+        },
+        OptionSpec {
+            section: colors.clone(),
+            default: Some(json!(80)),
+            min: Some(10.0),
+            max: Some(100.0),
+            step: Some(5.0),
+            unit: text("%"),
+            placeholder: text("10 to 100"),
+            ..spec("level", OptionKind::Number, "Dim level")
+        },
+        OptionSpec {
+            section: colors.clone(),
+            placeholder: text("Anything to remember"),
+            max_length: Some(500),
+            ..spec("notes", OptionKind::Multiline, "Notes")
+        },
+        OptionSpec {
+            section: colors,
+            advanced: true,
+            default: Some(json!(false)),
+            ..spec("quit_off", OptionKind::Toggle, "Turn off when Chaat quits")
+        },
+        spec(
+            "wheel",
+            OptionKind::Unsupported {
+                kind: "dial".into(),
+            },
+            "Color wheel",
+        ),
+    ]
 }
 
 /// People in the demo directory who are in no chat yet, for "New chat".
