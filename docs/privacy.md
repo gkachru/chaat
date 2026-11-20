@@ -5,7 +5,10 @@
   data). Additional connections: a file larger than 4 MiB is
   uploaded to the one-time upload URL Graph returns (your organisation's
   OneDrive host), without the Graph token; and an optional `chaat-relay` that
-  you run yourself ([realtime.md](realtime.md)); and GitHub for app update
+  you run yourself, or a push plugin you add that receives Graph's
+  notifications through its own tunnel (for the maintainer's plugin,
+  Cloudflare), in both cases seeing notification envelopes only
+  ([realtime.md](realtime.md)); and GitHub for app update
   checks and downloads. Automatic app updates are checked at most daily and
   can be disabled in Settings. No Microsoft credentials or account data are
   sent to GitHub ([updates.md](updates.md)). Chaat opens Microsoft Teams
@@ -13,10 +16,12 @@
 - **Plugins** are separate programs you add and turn on in Settings ›
   Plugins ([plugins.md](plugins.md)). A plugin never receives your tokens,
   your settings or message content. Chaat sends it the ID and sign-in name of
-  each of your accounts, or your busiest presence (availability and activity
-  across accounts, never the status message), only when the plugin declares
+  each of your accounts, your busiest presence (availability and activity
+  across accounts, never the status message), or the random channel names of
+  a push plugin (no account IDs), only when the plugin declares
   that need and you approve it in Settings › Plugins, plus the values of the
-  plugin's own options. Secret option values are kept in the OS credential
+  plugin's own options. A push plugin sees subscription ids, `clientState` and
+  resource paths, never tokens or message text. Secret option values are kept in the OS credential
   store, not in files, and are not logged. A plugin file that changed since
   you added it does not run until you allow it. These needs limit what Chaat
   sends, not what the program can reach: a plugin runs as you and can read

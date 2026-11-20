@@ -49,7 +49,7 @@ the rename, when the app still had a demo mode:
 | Presence, photos | ✅ Implemented |
 | Light, dark and system themes, 8 palettes, keyboard shortcuts, tray, notifications | ✅ Implemented |
 | App updates | ✅ Daily checks and verified downloads from GitHub releases; restart when ready ([details](docs/updates.md)) |
-| Real-time updates | ✅ On open, focus and refresh. ✅ Push through a self-hostable `chaat-relay`, since Microsoft forbids polling ([why](docs/realtime.md)) |
+| Real-time updates | ✅ On open, focus and refresh. ✅ Push through a self-hostable `chaat-relay`, or through a push relay plugin with a `cloudflared` tunnel instead of a hosted relay, since Microsoft forbids polling ([why](docs/realtime.md)) |
 | Multiple accounts, setting your availability and status message | ✅ Implemented |
 | Out of office (automatic replies) | ✅ In Settings and the account menu, for accounts with an Exchange Online mailbox |
 | Incoming-call alerts | ⚠️ Only with the optional, separately installed call-alerts plugin, which uses Teams' push service; Chaat shows who is calling with **Place call** and **Open chat** ([how](docs/calling.md#call-alerts-plugin)) |

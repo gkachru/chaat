@@ -23,8 +23,12 @@ Microsoft Graph. These rules are for coding agents and contributors. Follow
   settings or messages. Only when a plugin declares the need in `ready.needs`
   and the person has approved it may Chaat send it each account's ID
   (`oid.tid`) and sign-in name
-  (`accounts`), and the busiest presence across accounts, availability and
-  activity only, never the status message (`presence`). Beyond that, Chaat
+  (`accounts`), the busiest presence across accounts, availability and
+  activity only, never the status message (`presence`), and one random
+  channel name per account for a push plugin (`push`: channel names only, no
+  account IDs). A push plugin sees only what the relay sees: subscription
+  ids, `clientState` and resource paths, never tokens or message text.
+  Beyond that, Chaat
   sends a plugin only the values of that plugin's own options, with secret
   ones read from the credential store by the backend worker, never from
   settings files, and never logged. A plugin file that changed since the
@@ -37,8 +41,10 @@ Microsoft Graph. These rules are for coding agents and contributors. Follow
   `sync::Freshness::claim` with a `Trigger` caused by the person. Do not add
   timers that fetch. Real-time work goes through Graph change notifications
   (`src/realtime.rs`, the `relay/` crate, `docs/realtime.md`), which trigger
-  ordinary fetches with `Trigger::Push`. Subscriptions carry no resource
-  data, so the relay never sees message content; keep it that way.
+  ordinary fetches with `Trigger::Push`. A push plugin's forwarded bodies take
+  the same path and trigger the same `Trigger::Push` fetches. Subscriptions
+  carry no resource data, so the relay and a push plugin never see message
+  content; keep it that way.
 - **Least privilege.** Do not add a Graph scope to `auth::SIGN_IN_SCOPES`
   without a feature in the interface that needs it. Scopes that one feature
   needs, and every scope needing admin consent, are requested the first time

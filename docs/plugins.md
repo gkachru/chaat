@@ -6,9 +6,11 @@ plugin gets its data its own way and is documented in its own repository;
 what Chaat knows about it is the protocol on this page. Chaat itself uses
 only official, documented Microsoft APIs.
 
-Two plugins exist today: a call-alerts plugin ([calling.md](calling.md#call-alerts-plugin))
-and any program that shows presence (a status light). Presence display is
-covered by tests with fake plugins only, not live.
+Three kinds of plugin exist today: a call-alerts plugin ([calling.md](calling.md#call-alerts-plugin)),
+any program that shows presence (a status light), and a push relay plugin that
+receives Graph's change notifications ([realtime.md](realtime.md#through-a-push-plugin)).
+Presence display and push are covered by tests with fake plugins only, not
+live.
 
 ## In Settings
 
@@ -21,7 +23,8 @@ a plugin is a separate program, each one shows:
   the reason after a failure);
 - a **Receives** line saying what Chaat sends it now: "nothing", or a list
   of "your accounts' IDs and sign-in names", "your presence (availability
-  and activity)" and "its own settings below";
+  and activity)", "your update notifications: which chats changed and when,
+  no message text" and "its own settings below";
 - **Turn on** and **Remove**;
 - a question from Chaat when the plugin asks for data you have not decided
   on, or when its file changed (see [Consent](#consent-for-needs) and
@@ -40,7 +43,8 @@ it from the list.
 Plugins are listed in the order you added them. When two enabled plugins
 offer `call_alerts`, the first one in the list that is running gets rings and
 sign-in cards; the other is ignored and Settings says so. Any number of
-plugins may offer `presence_display`.
+plugins may offer `presence_display`. The same holds for `push`: the first
+enabled one that is running is used.
 
 ## Transport
 
@@ -111,7 +115,7 @@ replaced file; it does not tell you whether the original file was safe.
 Chaat sends `hello` first. The plugin answers with `ready`.
 
 `hello` carries `host: "chaat"`, `capabilities` (the capabilities Chaat
-knows: `call_alerts`, `presence_display`), `accounts` and `forget`.
+knows: `call_alerts`, `presence_display`, `push`), `accounts` and `forget`.
 `accounts` is empty unless the plugin declared the `accounts` need and you
 approved it (see below). `forget` lists accounts signed out of Chaat while the
 plugin was off, and is sent only while accounts are approved and needed.
@@ -132,6 +136,7 @@ Capabilities:
 |---|---|
 | `call_alerts` | Reports ringing calls and sign-ins. Exclusive: only the first enabled plugin offering it, in list order, gets rings and sign-in cards |
 | `presence_display` | Shows your presence. Any number of plugins |
+| `push` | Receives Graph's change notifications and forwards them (see [Push plugins](#push-plugins)). Exclusive: only the first enabled plugin offering it, in list order, that is running is used, and only with the `push` need approved |
 
 A plugin whose `ready` offers none of the capabilities Chaat knows is
 stopped with a notice and not restarted.
@@ -149,6 +154,7 @@ presence.
 |---|---|
 | `accounts` | The ID (`oid.tid`) and sign-in name of each Chaat account, and later changes |
 | `presence` | Your busiest presence across accounts: availability and activity |
+| `push` | One random channel name per account for each run, no account IDs. The plugin sends back notification bodies Graph posted to it |
 
 The first start sends an empty account list. Whatever the need, Chaat never
 sends a plugin its tokens, its settings (except the plugin's own option
@@ -393,6 +399,38 @@ call or meeting wins. Accounts whose presence is not known are skipped.
 This is data about you leaving Chaat for a program you chose. It is sent only
 to plugins that ask for it, and it never includes your status message.
 
+## Push plugins
+
+A plugin that offers `push` and declares the `push` need (approved in
+Settings › Plugins; consent text "your update notifications: which chats
+changed and when, no message text") can carry Graph's change notifications to
+Chaat. [realtime.md](realtime.md#through-a-push-plugin) describes the flow.
+Four messages:
+
+| Direction | Message | Fields and rules |
+|---|---|---|
+| Plugin to Chaat | `push_ready` | `url`: an https origin with a host and an optional port, at most 300 characters. No user info, no path beyond `/`, no query or fragment, no whitespace, control or invisible characters. Anything else drops the message. Send it each time the address is up; Chaat subscribes again with it |
+| Plugin to Chaat | `push` | `channel`: 16 to 64 characters of `A-Z a-z 0-9 - _`, one Chaat announced. `body`: the string Graph posted. A line is at most 64 KiB, which bounds the body; split a large post by its `value` entries. Unknown channels are dropped |
+| Plugin to Chaat | `push_down` | `reason`: optional plain text, cleaned like other plugin text and at most 200 characters. The address no longer works; Chaat stops using it and shows the reason in quotation marks |
+| Chaat to plugin | `push_channels` | `channels`: the channels the plugin may accept. Sent after each accepted `push_ready`, when an account is added or removed, and as an empty list when the route is not used (a relay address is set, the plugin went down, or the need was withdrawn). Accept requests only on listed channels |
+
+Rules:
+
+- Chaat treats every body as untrusted: it checks the `clientState` it set
+  and fetches from Graph as it does for a relay. A forged body can only cause
+  a fetch. Chaat never logs bodies, channels or addresses.
+- Lines from the plugin follow the usual limits. A burst over them is
+  dropped, and a dropped body means one missed fetch, made up the next time
+  you look.
+- Chaat holds up to 64 forwarded bodies per account.
+- A `push_ready` from a plugin that is not the push owner, or whose need is
+  not approved, changes nothing, and it is sent no channels.
+- The plugin sees subscription ids, `clientState` and resource paths such as
+  `chats('19:…')/messages('1702')`. Subscriptions carry no resource data, so
+  there is no message text and Chaat never sends the plugin tokens. A plugin
+  that tunnels through a third party (the maintainer's uses Cloudflare) shows
+  that party the same.
+
 ## Restart and backoff
 
 If a plugin exits, Chaat restarts it with backoff: 1 second, doubling to at
@@ -424,6 +462,7 @@ them (as JSON values; key order does not matter).
 | Chaat to plugin | `presence` | `presence.json` |
 | Chaat to plugin | `action` | `action.json` |
 | Chaat to plugin | `shutdown` | `shutdown.json` |
+| Chaat to plugin | `push_channels` | `push_channels.json` |
 | Plugin to Chaat | `ready` | `ready.json`, `ready_options.json` (with `needs` and `options`), `ready_options_rich.json` (every option kind, format, limit and `visible_when`) |
 | Plugin to Chaat | `sign_in_required` | `sign_in_required.json` |
 | Plugin to Chaat | `signed_in` | `signed_in.json` |
@@ -432,6 +471,9 @@ them (as JSON values; key order does not matter).
 | Plugin to Chaat | `error` | `error.json` |
 | Plugin to Chaat | `option_status` | `option_status.json` |
 | Plugin to Chaat | `options_update` | `options_update.json` |
+| Plugin to Chaat | `push_ready` | `push_ready.json` |
+| Plugin to Chaat | `push` | `push.json` |
+| Plugin to Chaat | `push_down` | `push_down.json` |
 
 ## A minimal exchange
 
@@ -451,7 +493,10 @@ Plugins stay outside Chaat. Chaat launches only what you add and turn on,
 never ships or updates one, and never gives one its tokens, its settings
 (beyond the plugin's own option values) or your messages. Beyond account IDs
 and sign-in names, the only data it can send a plugin is your busiest
-presence, and only to a plugin that asked for it and that you approved. A
+presence and, for a push plugin, channel names (random, one per account, no
+account IDs), and only to a plugin that asked for it and that you approved.
+A push plugin sends Chaat notification bodies, which Chaat checks and treats
+as untrusted. A
 file that changed since you added it does not run until you say so. These
 limits cover what Chaat sends; the program itself runs as you and can read
 what you can. See also [privacy.md](privacy.md).

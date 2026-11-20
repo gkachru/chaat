@@ -19,7 +19,8 @@ Graph pushes changes only to infrastructure a desktop app does not have:
 - Azure Event Hubs;
 - Azure Event Grid.
 
-Chaat therefore has two modes.
+Chaat therefore has three modes: fetch on intent, push through a relay you
+run, and push through a plugin.
 
 ## Without a relay: fetch on intent (default)
 
@@ -123,6 +124,60 @@ could forge a notification could only make Chaat re-fetch from Graph.
 
 With push on, keeping Chaat running in the tray (**Settings → General**)
 gives background notifications for new messages.
+
+### Through a push plugin
+
+A plugin that offers the `push` capability can receive Graph's notifications
+instead of a hosted `chaat-relay`. The maintainer's plugin
+(`chaat-push-relay`, a separate repository) runs a receiver on 127.0.0.1 and
+puts it on the internet through a `cloudflared` tunnel you install yourself.
+Chaat never ships or installs either. It has not yet been tried against real
+Graph notifications.
+
+How it works:
+
+1. You add the plugin in Settings › Plugins, turn it on and allow its `push`
+   need ("your update notifications: which chats changed and when, no
+   message text"). Only the first enabled, running plugin that offers `push`
+   is used, and only when `push` is declared and allowed.
+2. Chaat makes one random channel per account for each run and never saves
+   it. It sends the plugin the list of channels (`push_channels`), with no
+   account IDs, after each accepted `push_ready` and again when an account is
+   added or removed.
+3. When the tunnel is up, the plugin sends `push_ready` with its https
+   address. Chaat gives each account backend the route
+   (`{url}/graph/{channel}`, `{url}/lifecycle/{channel}`). The backend
+   subscribes there exactly as it does for a relay (same `clientState`,
+   renewals, presence subscription and cleanup), but opens no WebSocket.
+   A `push_ready` with a new address, or after a `push_down` or a plugin
+   restart, subscribes again; a repeat of the same address changes nothing.
+4. Graph posts to the tunnel. The plugin forwards each body as a `push` line
+   on its channel. Chaat routes it to the account that owns the channel,
+   checks the `clientState` as for a relay and fetches what changed with
+   `Trigger::Push`. A body is one line, so it is at most 64 KiB. Chaat holds
+   up to 64 bodies per account; more are dropped, and a dropped body costs
+   one missed fetch, which the next look makes up.
+5. When the plugin sends `push_down`, stops, is turned off or removed, or the
+   need is withdrawn, Chaat stops the subscriptions and deletes them in
+   Graph. It sends an empty channel list only to a plugin that is still
+   running (after `push_down`, or when the need is withdrawn); a plugin that
+   is stopping or stopped is sent nothing. While it is down, Chaat fetches on
+   look as without push.
+
+A relay address entered in Settings › Push updates always wins: the plugin
+is sent an empty channel list and is not used. Clearing the address brings
+the plugin route back if its tunnel is up.
+
+What the plugin and Cloudflare see: notification envelopes with a
+subscription id, the `clientState`, and resource paths such as
+`chats('19:…')/messages('1702')`. **No message content and no tokens.** Chaat
+sends the plugin only its channel names. The plugin sees what a relay would.
+
+Settings › Push updates shows the plugin's name and one of "Tunnel at
+<host>", "Waiting for the plugin's tunnel", "The plugin's tunnel is down"
+(with the plugin's reason in quotation marks) or "Allow it in Settings ›
+Plugins", and keeps the per-account status. With a relay address set, it
+says the plugin is not used. See [plugins.md](plugins.md#push-plugins).
 
 ### Running the relay
 
