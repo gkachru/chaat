@@ -185,15 +185,15 @@ mod tests {
 
     #[test]
     fn a_ring_carries_a_neutral_caller_and_its_timeout() {
-        let line = r#"{"v":1,"type":"incoming_call","id":"c1","caller":"Ada","caller_object_id":"u-ada","caller_mri":"8:orgid:ignored","video":true,"account":"o.t","ring_timeout_secs":500}"#;
+        let line = r#"{"v":1,"type":"incoming_call","id":"c1","caller":"Ada","caller_object_id":"u-ada","video":true,"account":"o.t","ring_timeout_secs":500}"#;
         let Some(Event::IncomingCall(ring)) = event_for(line) else {
             panic!("a ring");
         };
         assert_eq!(ring.caller_object_id.as_deref(), Some("u-ada"));
         assert_eq!(ring.ring_timeout, Some(Duration::from_secs(120)));
         assert_eq!(ring.account.as_deref(), Some("o.t"));
-        // Without the neutral field, Chaat doesn't read Teams' own format.
-        let line = r#"{"v":1,"type":"incoming_call","id":"c2","caller_mri":"8:orgid:u-ada"}"#;
+        // Without an object id the caller stays unresolved.
+        let line = r#"{"v":1,"type":"incoming_call","id":"c2"}"#;
         let Some(Event::IncomingCall(ring)) = event_for(line) else {
             panic!("a ring");
         };

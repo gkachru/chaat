@@ -3461,11 +3461,11 @@ mod tests {
         (app, commands)
     }
 
-    fn ring(id: &str, mri: &str) -> crate::calling::RingAlert {
+    fn ring(id: &str, caller: &str) -> crate::calling::RingAlert {
         crate::calling::RingAlert {
             id: id.into(),
             caller: "Caller".into(),
-            caller_object_id: mri.strip_prefix("8:orgid:").map(str::to_owned),
+            caller_object_id: Some(caller.to_owned()),
             video: false,
             group: false,
             thread_id: None,
@@ -3491,13 +3491,13 @@ mod tests {
     fn a_ring_resolves_the_caller_from_their_object_id_and_raises_the_window() {
         let (mut app, _dir) = demo_app();
         app.wants_show = false;
-        app.on_incoming_call(ring("call-1", "8:orgid:u-ada"));
+        app.on_incoming_call(ring("call-1", "u-ada"));
         let shown = &app.rings[0];
         assert_eq!(shown.chat, Some(ada_chat(&app)));
         assert!(shown.email().is_some_and(|e| e.contains('@')));
         assert!(app.wants_show);
         // The same call again replaces the toast rather than stacking it.
-        app.on_incoming_call(ring("call-1", "8:orgid:u-ada"));
+        app.on_incoming_call(ring("call-1", "u-ada"));
         assert_eq!(app.rings.len(), 1);
     }
 
@@ -3506,7 +3506,7 @@ mod tests {
         let (mut app, _dir) = demo_app();
         let ctx = egui::Context::default();
         app.section = Section::Calls;
-        app.on_incoming_call(ring("call-1", "8:orgid:u-ada"));
+        app.on_incoming_call(ring("call-1", "u-ada"));
         app.apply(Action::RingOpenChat("call-1".into()), &ctx);
         assert_eq!(app.open, Some(ada_chat(&app)));
         assert_eq!(app.section, Section::Chats);
@@ -3517,7 +3517,7 @@ mod tests {
     fn an_unknown_caller_cannot_open_a_chat_and_a_call_back_falls_back_to_teams() {
         let (mut app, _dir) = demo_app();
         let ctx = egui::Context::default();
-        app.on_incoming_call(ring("call-2", "8:orgid:someone-new"));
+        app.on_incoming_call(ring("call-2", "someone-new"));
         let shown = &app.rings[0];
         assert!(shown.member.is_none() && shown.chat.is_none());
         assert!(!shown.can_open_chat());
@@ -3585,7 +3585,7 @@ mod tests {
     fn calling_back_a_group_ring_follows_the_callers_own_chat() {
         let (mut app, _dir) = demo_app();
         let ctx = egui::Context::default();
-        let mut alert = ring("group-1", "8:orgid:u-ada");
+        let mut alert = ring("group-1", "u-ada");
         alert.group = true;
         alert.thread_id = Some(LAUNCH.into());
         app.on_incoming_call(alert);
@@ -3635,7 +3635,7 @@ mod tests {
         let ctx = egui::Context::default();
         let fabrikam = fabrikam_index(&app);
         assert_ne!(app.active, fabrikam);
-        let mut alert = ring("f-call", "8:orgid:u-mae");
+        let mut alert = ring("f-call", "u-mae");
         alert.account = Some(FABRIKAM.into());
         app.on_incoming_call(alert);
         let shown = &app.rings[0];
@@ -3653,7 +3653,7 @@ mod tests {
     fn a_ring_on_an_account_chaat_lacks_shows_unresolved() {
         let (mut app, _dir) = demo_app();
         let active = app.active;
-        let mut alert = ring("x-call", "8:orgid:u-ada");
+        let mut alert = ring("x-call", "u-ada");
         alert.account = Some("other.tenant".into());
         alert.username = Some("someone@elsewhere.com".into());
         app.on_incoming_call(alert);
@@ -3754,7 +3754,7 @@ mod tests {
     fn one_call_ringing_two_accounts_shows_a_card_for_each() {
         let (mut app, _dir) = demo_app();
         for account in ["u-me.demo", FABRIKAM] {
-            let mut alert = ring("same-call", "8:orgid:u-ada");
+            let mut alert = ring("same-call", "u-ada");
             alert.account = Some(account.into());
             app.on_incoming_call(alert);
         }
@@ -3843,10 +3843,10 @@ mod tests {
     #[test]
     fn a_ring_card_stays_as_long_as_the_plugin_says_the_call_rings() {
         let (mut app, _dir) = demo_app();
-        let mut alert = ring("short", "8:orgid:u-ada");
+        let mut alert = ring("short", "u-ada");
         alert.ring_timeout = Some(std::time::Duration::from_secs(15));
         app.on_incoming_call(alert);
-        app.on_incoming_call(ring("default", "8:orgid:u-ada"));
+        app.on_incoming_call(ring("default", "u-ada"));
         assert_eq!(app.rings[0].shown_for, std::time::Duration::from_secs(15));
         assert_eq!(app.rings[1].shown_for, crate::calling::alerts::DEFAULT_RING);
     }
@@ -3897,8 +3897,8 @@ mod tests {
     fn dismissing_a_ring_removes_only_that_one() {
         let (mut app, _dir) = demo_app();
         let ctx = egui::Context::default();
-        app.on_incoming_call(ring("a", "8:orgid:u-ada"));
-        app.on_incoming_call(ring("b", "8:orgid:u-grace"));
+        app.on_incoming_call(ring("a", "u-ada"));
+        app.on_incoming_call(ring("b", "u-grace"));
         app.apply(Action::DismissRing("a".into()), &ctx);
         assert_eq!(app.rings.len(), 1);
         assert_eq!(app.rings[0].id, "b");
