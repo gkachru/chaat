@@ -15,6 +15,11 @@ use chaat::plugin::host::{HostEvent, Plugin};
 use chaat::plugin::protocol::{HostMessage, PluginMessage};
 use chaat::secrets::{MemoryStore, SecretStore};
 
+/// How long a wait lasts before a test gives up. Only a hang reaches it: each
+/// fake plugin is a copy of this test binary, and starting a fresh copy can
+/// take many seconds when the machine is busy (the whole suite, antivirus).
+const PATIENCE: Duration = Duration::from_secs(90);
+
 /// The fake plugin. Its mode comes from the copy's name, `fake-<mode>`.
 #[test]
 fn fake_plugin_serve() {
@@ -82,8 +87,7 @@ fn start(path: PathBuf) -> (Plugin, mpsc::Receiver<HostEvent>) {
 
 /// The next event, waiting off the runtime so the host keeps running.
 async fn next(events: &mpsc::Receiver<HostEvent>) -> HostEvent {
-    tokio::task::block_in_place(|| events.recv_timeout(Duration::from_secs(20)))
-        .expect("an event in time")
+    tokio::task::block_in_place(|| events.recv_timeout(PATIENCE)).expect("an event in time")
 }
 
 fn log_lines(dir: &Path, mode: &str) -> Vec<String> {
@@ -157,7 +161,7 @@ async fn a_missing_plugin_reports_once_and_dropping_the_handle_stops_the_host() 
     drop(plugin);
     // With the handle gone the host ends instead of restarting forever.
     let ended = tokio::task::block_in_place(|| {
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let deadline = std::time::Instant::now() + PATIENCE;
         loop {
             match events.recv_timeout(Duration::from_millis(200)) {
                 Err(mpsc::RecvTimeoutError::Disconnected) => return true,
@@ -217,14 +221,20 @@ thread_local! {
     static PENDING: std::cell::RefCell<std::collections::VecDeque<Event>> = Default::default();
 }
 
-fn wait_for<T>(backend: &Backend, mut pick: impl FnMut(Event) -> Option<T>) -> T {
-    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+fn wait_for<T>(backend: &Backend, mut pick: impl FnMut(&Event) -> Option<T>) -> T {
+    let deadline = std::time::Instant::now() + PATIENCE;
     loop {
         PENDING.with(|pending| pending.borrow_mut().extend(backend.poll()));
-        while let Some(event) = PENDING.with(|pending| pending.borrow_mut().pop_front()) {
-            if let Some(found) = pick(event) {
-                return found;
-            }
+        // Take the first match out and leave every other event queued, in
+        // order, for the next wait: plugins start in no fixed order.
+        let found = PENDING.with(|pending| {
+            let mut pending = pending.borrow_mut();
+            let at = pending.iter().position(|event| pick(event).is_some())?;
+            let event = pending.remove(at)?;
+            pick(&event)
+        });
+        if let Some(found) = found {
+            return found;
         }
         assert!(
             std::time::Instant::now() < deadline,
@@ -239,14 +249,14 @@ fn wait_ready(backend: &Backend, plugin: &str) {
         Event::Plugin {
             id,
             event: PluginEvent::Ready { .. },
-        } if id == plugin => Some(()),
+        } if id.as_str() == plugin => Some(()),
         _ => None,
     });
 }
 
 /// Waits until the fake's log has a line holding all of `needles`.
 fn wait_log(dir: &Path, mode: &str, needles: &[&str]) -> String {
-    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let deadline = std::time::Instant::now() + PATIENCE;
     loop {
         if let Some(line) = log_lines(dir, mode)
             .into_iter()
@@ -376,7 +386,7 @@ fn saving_a_plugin_secret_writes_and_deletes_the_store_key() {
             value: value.map(str::to_owned),
         });
         wait_for(backend, |event| match event {
-            Event::PluginSecretSaved { set, ok, .. } => Some((set, ok)),
+            Event::PluginSecretSaved { set, ok, .. } => Some((*set, *ok)),
             _ => None,
         })
     };
