@@ -743,6 +743,7 @@ fn populate_plugins(app: &mut App) {
             path: "plugins/call-alerts.exe".into(),
             enabled: true,
             needs: vec!["accounts".into()],
+            approved_needs: vec!["accounts".into()],
             ..Default::default()
         },
         PluginEntry {
@@ -756,6 +757,13 @@ fn populate_plugins(app: &mut App) {
             ]
             .into(),
             secrets: vec!["token".into()],
+            ..Default::default()
+        },
+        // Its file changed since it was added; it did not run.
+        PluginEntry {
+            id: "demo-changed".into(),
+            path: "plugins/desk-lamp.exe".into(),
+            enabled: true,
             ..Default::default()
         },
     ];
@@ -787,6 +795,8 @@ fn populate_plugins(app: &mut App) {
     };
     light.offers = vec!["presence_display"];
     light.needs = vec!["presence"];
+    // Asks for presence; the person has not answered yet.
+    light.pending_needs = vec!["presence"];
     light.options = vec![
         OptionSpec {
             id: "ip".into(),
@@ -826,6 +836,14 @@ fn populate_plugins(app: &mut App) {
             choices: vec![],
         },
     ];
+    let lamp = app.plugins.entry("demo-changed".into()).or_default();
+    lamp.info = PluginInfo {
+        name: Some("Desk lamp".into()),
+        description: None,
+        docs_url: None,
+    };
+    lamp.file_changed =
+        Some("3f9a1c07be52d8e4a6b0c9d17f2e8a45b3c6d9e01f7a2b48c5d0e63f91a7b2cd".into());
 }
 
 /// People in the demo directory who are in no chat yet, for "New chat".

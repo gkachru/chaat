@@ -3492,6 +3492,218 @@ fn the_plugins_own_name_and_description_show_apart_from_chaats_words() {
     }
 }
 
+/// The Plugins page in settings, drawn in one theme at one width.
+fn plugins_settings_harness(width: f32, theme: ThemeChoice) -> Harness {
+    let mut h = Harness::new();
+    h.size = egui::vec2(width, 3000.0);
+    h.app.settings.theme = theme;
+    h.act(Action::ShowSettingsPage(SettingsPage::Plugins));
+    h.frames(2);
+    h
+}
+
+#[test]
+fn a_pending_need_shows_allow_and_dont_allow() {
+    for width in [480.0, 1280.0] {
+        for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+            let mut h = plugins_settings_harness(width, theme.clone());
+            let painted = painted_texts(&h);
+            for text in [
+                "Plugin \u{201C}Status light\u{201D} asks for:",
+                "your presence (availability and activity)",
+                "Allow",
+                "Don't allow",
+            ] {
+                assert!(
+                    painted.iter().any(|t| t == text),
+                    "{text:?} shows at {width} in {theme:?}"
+                );
+            }
+            // Once answered (nothing pending), the notice is gone.
+            h.app
+                .plugins
+                .get_mut("demo-light")
+                .unwrap()
+                .pending_needs
+                .clear();
+            h.frames(2);
+            let painted = painted_texts(&h);
+            assert!(!painted.iter().any(|t| t == "Allow" || t == "Don't allow"));
+            assert!(!painted.iter().any(|t| t.ends_with("asks for:")));
+        }
+    }
+    let mut h = plugins_page_harness();
+    let actions = plugins_page_click(&mut h, "Allow");
+    assert!(actions.contains(&Action::ApprovePluginNeeds("demo-light".into())));
+    assert!(!actions.contains(&Action::DenyPluginNeeds("demo-light".into())));
+    let mut h = plugins_page_harness();
+    let actions = plugins_page_click(&mut h, "Don't allow");
+    assert!(actions.contains(&Action::DenyPluginNeeds("demo-light".into())));
+    assert!(!actions.contains(&Action::ApprovePluginNeeds("demo-light".into())));
+}
+
+#[test]
+fn the_receives_line_names_what_a_plugin_gets() {
+    for width in [480.0, 1280.0] {
+        for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+            let mut h = plugins_settings_harness(width, theme.clone());
+            let painted = painted_texts(&h);
+            for text in [
+                // Allowed, so sent.
+                "Receives: your accounts' IDs and sign-in names",
+                // Presence is only asked for, not allowed; options are its own.
+                "Receives: its own settings below",
+                "Receives: nothing",
+            ] {
+                assert!(
+                    painted.iter().any(|t| t == text),
+                    "{text:?} shows at {width} in {theme:?}"
+                );
+            }
+            // Allowing presence and accounts adds both, in plain words.
+            let entry = h
+                .app
+                .settings
+                .plugins
+                .iter_mut()
+                .find(|e| e.id == "demo-light")
+                .unwrap();
+            entry.needs = vec!["presence".into(), "accounts".into()];
+            entry.approved_needs = vec!["presence".into(), "accounts".into()];
+            h.frames(2);
+            assert!(
+                painted_texts(&h).iter().any(|t| t
+                    == "Receives: your accounts' IDs and sign-in names, your presence (availability and activity) and its own settings below"),
+                "all three show at {width} in {theme:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_changed_file_offers_run_or_keep_off() {
+    for width in [480.0, 1280.0] {
+        for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+            let mut h = plugins_settings_harness(width, theme.clone());
+            let painted = painted_texts(&h);
+            for text in [
+                "The plugin file changed since you added it. Run the new file only if you trust it.",
+                "Run the new file",
+                "Keep it off",
+                "New file fingerprint: 3f9a1c07be52",
+            ] {
+                assert!(
+                    painted.iter().any(|t| t == text),
+                    "{text:?} shows at {width} in {theme:?}"
+                );
+            }
+            // Only the first 12 characters of the fingerprint are shown.
+            assert!(!painted.iter().any(|t| t.contains("3f9a1c07be52d")));
+            h.app.plugins.get_mut("demo-changed").unwrap().file_changed = None;
+            h.frames(2);
+            let painted = painted_texts(&h);
+            assert!(
+                !painted
+                    .iter()
+                    .any(|t| t == "Run the new file" || t == "Keep it off")
+            );
+        }
+    }
+    let mut h = plugins_page_harness();
+    let actions = plugins_page_click(&mut h, "Run the new file");
+    assert!(actions.contains(&Action::TrustPluginFile("demo-changed".into())));
+    assert!(!actions.contains(&Action::KeepPluginOff("demo-changed".into())));
+    let mut h = plugins_page_harness();
+    let actions = plugins_page_click(&mut h, "Keep it off");
+    assert!(actions.contains(&Action::KeepPluginOff("demo-changed".into())));
+    assert!(!actions.contains(&Action::TrustPluginFile("demo-changed".into())));
+}
+
+#[test]
+fn the_docs_link_shows_its_host() {
+    for width in [480.0, 1280.0] {
+        for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+            let mut h = plugins_settings_harness(width, theme.clone());
+            let y = |h: &Harness, wanted: &str| ring_text_pos(h, wanted).map(|p| p.y);
+            assert!(painted_texts(&h).iter().any(|t| t == "example.com"));
+            assert_eq!(
+                y(&h, "example.com"),
+                y(&h, "About this plugin"),
+                "the host sits beside the link at {width} in {theme:?}"
+            );
+            // Port, path and query are left out.
+            h.app.plugins.get_mut("demo-alerts").unwrap().info.docs_url =
+                Some("https://docs.example.org:8443/a/b?c=d#e".into());
+            h.frames(2);
+            let painted = painted_texts(&h);
+            assert!(painted.iter().any(|t| t == "docs.example.org"));
+            assert!(!painted.iter().any(|t| t == "example.com"));
+        }
+    }
+}
+
+#[test]
+fn a_secret_buffer_does_not_survive_leaving_the_page() {
+    let secret = |value: &str| Action::SetPluginSecret {
+        plugin: "demo-light".into(),
+        option: "token".into(),
+        value: Some(value.into()),
+    };
+    let type_secret = |h: &mut Harness| {
+        plugins_page_click(h, "New value");
+        plugins_page_frame(h, vec![egui::Event::Text("hunter2".into())]);
+        plugins_page_frame(h, vec![]);
+    };
+    let any_secret_save = |actions: &[Action]| {
+        actions
+            .iter()
+            .any(|a| matches!(a, Action::SetPluginSecret { value: Some(_), .. }))
+    };
+
+    // Control: what was typed saves, and saving empties the buffer.
+    let mut h = plugins_page_harness();
+    type_secret(&mut h);
+    let actions = plugins_page_click(&mut h, "Save");
+    assert!(actions.contains(&secret("hunter2")), "{actions:?}");
+    let actions = plugins_page_click(&mut h, "Save");
+    assert!(!any_secret_save(&actions), "Save emptied the buffer");
+
+    // Typed, then the page is not drawn for a frame: nothing is left.
+    let mut h = plugins_page_harness();
+    type_secret(&mut h);
+    h.frames(1);
+    plugins_page_frame(&mut h, vec![]);
+    plugins_page_frame(&mut h, vec![]);
+    let actions = plugins_page_click(&mut h, "Save");
+    assert!(
+        !any_secret_save(&actions),
+        "the page forgot the typed secret"
+    );
+
+    // Typed, then Clear: the buffer goes with the saved value.
+    let mut h = plugins_page_harness();
+    type_secret(&mut h);
+    let actions = plugins_page_click(&mut h, "Clear");
+    assert!(actions.contains(&Action::SetPluginSecret {
+        plugin: "demo-light".into(),
+        option: "token".into(),
+        value: None,
+    }));
+    let actions = plugins_page_click(&mut h, "Save");
+    assert!(!any_secret_save(&actions), "Clear emptied the buffer");
+
+    // The same call Settings can make when it closes.
+    let mut h = plugins_page_harness();
+    type_secret(&mut h);
+    chaat::ui::plugins::forget_secret_buffers(&h.ctx);
+    plugins_page_frame(&mut h, vec![]);
+    let actions = plugins_page_click(&mut h, "Save");
+    assert!(
+        !any_secret_save(&actions),
+        "forget_secret_buffers dropped it"
+    );
+}
+
 #[test]
 fn a_plugin_sign_in_card_names_chaats_account_not_the_plugins_claim() {
     for width in [480.0, 1280.0] {

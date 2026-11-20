@@ -12,6 +12,7 @@ use crate::theme;
 
 pub fn page(app: &App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
     let palette = app.palette;
+    drop_stale_secret_buffers(app, ui);
     // Chaat's own words, whatever a plugin says about itself.
     note(
         ui,
@@ -37,10 +38,21 @@ pub fn page(app: &App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
                 .wrap(),
             );
         }
-        if let Some(url) = state.and_then(|s| s.info.docs_url.as_ref())
-            && ui.link("About this plugin").clicked()
-        {
-            actions.push(Action::OpenUrl(url.clone()));
+        if let Some(url) = state.and_then(|s| s.info.docs_url.as_ref()) {
+            // The host shows next to the link, so the person sees where it
+            // leads before clicking.
+            ui.horizontal(|ui| {
+                if ui.link("About this plugin").clicked() {
+                    actions.push(Action::OpenUrl(url.clone()));
+                }
+                if let Some(host) = link_host(url) {
+                    ui.label(
+                        egui::RichText::new(host)
+                            .font(theme::regular(12.0))
+                            .color(palette.dim),
+                    );
+                }
+            });
         }
         ui.add(
             egui::Label::new(
@@ -51,6 +63,15 @@ pub fn page(app: &App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
             .truncate(),
         );
         status(app, ui, entry, state);
+        if let Some(hash) = state.and_then(|s| s.file_changed.as_deref()) {
+            file_changed_notice(app, ui, entry, hash, actions);
+        }
+        if let Some(state) = state
+            && !state.pending_needs.is_empty()
+        {
+            pending_notice(app, ui, entry, &state.pending_needs, actions);
+        }
+        receives_line(app, ui, entry);
         let offers_alerts = state.is_some_and(|s| s.offers.contains(&registry::CALL_ALERTS));
         if offers_alerts && entry.enabled && owner.as_deref().is_some_and(|o| o != entry.id) {
             note(
@@ -81,6 +102,154 @@ pub fn page(app: &App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
     if widgets::secondary_button(ui, &palette, "Add plugin\u{2026}").clicked() {
         actions.push(Action::AddPlugin);
     }
+}
+
+/// Chaat's words for what one kind of data is.
+fn need_words(need: &str) -> &'static str {
+    match need {
+        "accounts" => "your accounts' IDs and sign-in names",
+        "presence" => "your presence (availability and activity)",
+        "options" => "its own settings below",
+        _ => "something Chaat does not know",
+    }
+}
+
+/// "a", "a and b", "a, b and c".
+fn join_plainly(items: &[&str]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => (*one).to_owned(),
+        [init @ .., last] => format!("{} and {last}", init.join(", ")),
+    }
+}
+
+/// What the plugin gets from Chaat now, in Chaat's words.
+fn receives_line(app: &App, ui: &mut egui::Ui, entry: &PluginEntry) {
+    let palette = app.palette;
+    let words: Vec<&str> = app
+        .plugin_receives(&entry.id)
+        .into_iter()
+        .map(need_words)
+        .collect();
+    let text = if words.is_empty() {
+        "nothing".to_owned()
+    } else {
+        join_plainly(&words)
+    };
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new(format!("Receives: {text}"))
+                .font(theme::regular(13.0))
+                .color(palette.secondary),
+        )
+        .wrap(),
+    );
+}
+
+/// A boxed notice that stands apart from the plugin's own text.
+fn notice(ui: &mut egui::Ui, palette: &theme::Palette, add_contents: impl FnOnce(&mut egui::Ui)) {
+    ui.add_space(4.0);
+    egui::Frame::new()
+        .fill(palette.surface)
+        .stroke(egui::Stroke::new(1.0, palette.warning))
+        .corner_radius(6)
+        .inner_margin(egui::Margin::same(10))
+        .show(ui, add_contents);
+    ui.add_space(4.0);
+}
+
+/// The needs the plugin declared that the person has not answered yet.
+fn pending_notice(
+    app: &App,
+    ui: &mut egui::Ui,
+    entry: &PluginEntry,
+    pending: &[&'static str],
+    actions: &mut Vec<Action>,
+) {
+    let palette = app.palette;
+    notice(ui, &palette, |ui| {
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(format!(
+                    "Plugin \u{201C}{}\u{201D} asks for:",
+                    app.plugin_name(&entry.id)
+                ))
+                .font(theme::medium(13.0))
+                .color(palette.text),
+            )
+            .wrap(),
+        );
+        for need in pending {
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(need_words(need))
+                        .font(theme::regular(13.0))
+                        .color(palette.secondary),
+                )
+                .wrap(),
+            );
+        }
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            if widgets::primary_button(ui, &palette, "Allow").clicked() {
+                actions.push(Action::ApprovePluginNeeds(entry.id.clone()));
+            }
+            if widgets::secondary_button(ui, &palette, "Don't allow").clicked() {
+                actions.push(Action::DenyPluginNeeds(entry.id.clone()));
+            }
+        });
+    });
+}
+
+/// The plugin's file no longer matches the one the person added.
+fn file_changed_notice(
+    app: &App,
+    ui: &mut egui::Ui,
+    entry: &PluginEntry,
+    hash: &str,
+    actions: &mut Vec<Action>,
+) {
+    let palette = app.palette;
+    notice(ui, &palette, |ui| {
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(
+                    "The plugin file changed since you added it. Run the new file only if you trust it.",
+                )
+                .font(theme::regular(13.0))
+                .color(palette.text),
+            )
+            .wrap(),
+        );
+        let short: String = hash.chars().take(12).collect();
+        ui.label(
+            egui::RichText::new(format!("New file fingerprint: {short}"))
+                .font(theme::regular(12.0))
+                .color(palette.dim),
+        );
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            if widgets::secondary_button(ui, &palette, "Run the new file").clicked() {
+                actions.push(Action::TrustPluginFile(entry.id.clone()));
+            }
+            if widgets::secondary_button(ui, &palette, "Keep it off").clicked() {
+                actions.push(Action::KeepPluginOff(entry.id.clone()));
+            }
+        });
+    });
+}
+
+/// The host of an `https://` link: no scheme, user info, port or path.
+fn link_host(url: &str) -> Option<String> {
+    let rest = url.strip_prefix("https://")?;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let authority = authority.rsplit('@').next()?;
+    let host = if authority.starts_with('[') {
+        authority.split_inclusive(']').next()?
+    } else {
+        authority.split(':').next()?
+    };
+    (!host.is_empty()).then(|| host.to_owned())
 }
 
 /// The plugin's own name, quoted so it reads as the plugin's, not Chaat's.
@@ -118,6 +287,73 @@ fn status(app: &App, ui: &mut egui::Ui, entry: &PluginEntry, state: Option<&Plug
         )
         .wrap(),
     );
+}
+
+/// Typed but unsaved secrets, by plugin and option, in one egui memory slot so
+/// they can all be dropped at once.
+type SecretBuffers = std::collections::HashMap<(String, String), String>;
+
+fn secret_buffers_id() -> egui::Id {
+    egui::Id::new("plugin-secret-buffers")
+}
+
+/// Drops every unsaved secret the person typed. The page calls it when it was
+/// not drawn in the frame before; Settings may call it when it closes.
+pub fn forget_secret_buffers(ctx: &egui::Context) {
+    ctx.data_mut(|d| d.remove_temp::<SecretBuffers>(secret_buffers_id()));
+}
+
+/// An unsaved secret does not survive leaving the page: if the page was not
+/// drawn in the previous frame, the buffers go. Buffers of plugins or options
+/// that no longer exist go too.
+fn drop_stale_secret_buffers(app: &App, ui: &egui::Ui) {
+    let frame = ui.ctx().cumulative_frame_nr();
+    let seen = egui::Id::new("plugin-page-last-frame");
+    let last = ui.data(|d| d.get_temp::<u64>(seen));
+    if last.is_none_or(|last| frame > last.saturating_add(1)) {
+        forget_secret_buffers(ui.ctx());
+    }
+    let live = |plugin: &str, option: &str| {
+        app.plugins.get(plugin).is_some_and(|state| {
+            state
+                .options
+                .iter()
+                .any(|o| o.id == option && o.kind == OptionKind::Secret)
+        })
+    };
+    ui.data_mut(|d| {
+        d.insert_temp(seen, frame);
+        if let Some(buffers) = d.get_temp::<SecretBuffers>(secret_buffers_id()) {
+            let mut buffers = buffers;
+            buffers.retain(|(plugin, option), _| live(plugin, option));
+            d.insert_temp(secret_buffers_id(), buffers);
+        }
+    });
+}
+
+fn secret_buffer(ui: &egui::Ui, plugin: &str, option: &str) -> String {
+    ui.data(|d| d.get_temp::<SecretBuffers>(secret_buffers_id()))
+        .and_then(|buffers| {
+            buffers
+                .get(&(plugin.to_owned(), option.to_owned()))
+                .cloned()
+        })
+        .unwrap_or_default()
+}
+
+fn set_secret_buffer(ui: &egui::Ui, plugin: &str, option: &str, value: String) {
+    ui.data_mut(|d| {
+        let mut buffers = d
+            .get_temp::<SecretBuffers>(secret_buffers_id())
+            .unwrap_or_default();
+        let key = (plugin.to_owned(), option.to_owned());
+        if value.is_empty() {
+            buffers.remove(&key);
+        } else {
+            buffers.insert(key, value);
+        }
+        d.insert_temp(secret_buffers_id(), buffers);
+    });
 }
 
 /// A typing buffer lives in egui memory, per plugin and option.
@@ -216,8 +452,7 @@ fn option_row(
                     .color(palette.dim),
             );
             // The stored value is never read back into the interface.
-            let id = buffer_id(&entry.id, &option.id, "secret");
-            let mut buffer = ui.data(|d| d.get_temp::<String>(id)).unwrap_or_default();
+            let mut buffer = secret_buffer(ui, &entry.id, &option.id);
             ui.horizontal(|ui| {
                 ui.add(
                     widgets::text_field(&mut buffer, "New value", theme::regular(14.0))
@@ -233,6 +468,7 @@ fn option_row(
                     });
                 }
                 if ui.add_enabled(saved, egui::Button::new("Clear")).clicked() {
+                    buffer.clear();
                     actions.push(Action::SetPluginSecret {
                         plugin: entry.id.clone(),
                         option: option.id.clone(),
@@ -240,7 +476,7 @@ fn option_row(
                     });
                 }
             });
-            ui.data_mut(|d| d.insert_temp(id, buffer));
+            set_secret_buffer(ui, &entry.id, &option.id, buffer);
         }
     }
 }
