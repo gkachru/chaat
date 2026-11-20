@@ -742,8 +742,70 @@ fn calls(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
             }
         }
     }
+    call_alerts(app, ui, &mut calls, actions);
     if calls != app.settings.calls {
         actions.push(Action::SetCallSettings(calls));
+    }
+}
+
+/// The optional call-alerts plugin: where it is, and whether it runs.
+fn call_alerts(
+    app: &App,
+    ui: &mut egui::Ui,
+    calls: &mut crate::settings::CallSettings,
+    actions: &mut Vec<Action>,
+) {
+    let palette = app.palette;
+    group(ui, &palette, "Call alerts");
+    note(
+        ui,
+        &palette,
+        "Microsoft Graph can't tell Chaat that a call is ringing. An optional plugin you install can: it signs in to Teams separately, outside Microsoft's documented APIs, and tells Chaat who is calling so you can call back or open the chat. Chaat never shares its own sign-in with it.",
+    );
+    let path = calls
+        .call_alerts_plugin
+        .as_ref()
+        .filter(|p| !p.as_os_str().is_empty())
+        .cloned();
+    ui.horizontal(|ui| {
+        let shown = path.as_ref().map_or_else(
+            || "No plugin chosen".to_owned(),
+            |p| p.display().to_string(),
+        );
+        ui.add(
+            egui::Label::new(egui::RichText::new(shown).font(theme::regular(13.0)).color(
+                if path.is_some() {
+                    palette.text
+                } else {
+                    palette.secondary
+                },
+            ))
+            .truncate(),
+        );
+    });
+    ui.horizontal(|ui| {
+        if widgets::secondary_button(ui, &palette, "Choose plugin…").clicked() {
+            actions.push(Action::ChooseCallAlertsPlugin);
+        }
+        if path.is_some() && widgets::secondary_button(ui, &palette, "Remove").clicked() {
+            calls.call_alerts_plugin = None;
+            calls.call_alerts = false;
+        }
+    });
+    ui.add_enabled_ui(path.is_some(), |ui| {
+        ui.checkbox_hand(&mut calls.call_alerts, "Show incoming calls");
+    });
+    if path.is_some() && calls.call_alerts {
+        let (text, color) = if app.call_alerts_running {
+            ("The plugin is running.", palette.secondary)
+        } else {
+            ("The plugin isn't running.", palette.warning)
+        };
+        ui.label(
+            egui::RichText::new(text)
+                .font(theme::regular(13.0))
+                .color(color),
+        );
     }
 }
 

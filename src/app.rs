@@ -608,6 +608,8 @@ pub struct App {
     pub rings: Vec<Ring>,
     /// A sign-in the call-alerts plugin is waiting for, shown as a panel.
     pub call_alerts_sign_in: Option<crate::model::PluginSignIn>,
+    /// Whether the call-alerts plugin last said it is running.
+    pub call_alerts_running: bool,
     next_toast: u64,
     pub actions: Vec<Action>,
 
@@ -745,6 +747,7 @@ impl App {
             toasts: Vec::new(),
             rings: Vec::new(),
             call_alerts_sign_in: None,
+            call_alerts_running: false,
             next_toast: 0,
             actions: Vec::new(),
             palette,
@@ -1488,6 +1491,7 @@ impl App {
                 self.toast(ToastKind::Info, "Call alerts are on.");
             }
             Event::CallAlertsStatus { running, message } => {
+                self.call_alerts_running = running;
                 // A stopped plugin no longer waits for its sign-in.
                 if !running {
                     self.call_alerts_sign_in = None;
@@ -2527,6 +2531,7 @@ impl App {
             Action::DismissToast(id) => self.toasts.retain(|t| t.id != id),
             Action::DismissRing(id) => self.rings.retain(|r| r.id != id),
             Action::HideCallAlertsSignIn => self.call_alerts_sign_in = None,
+            Action::ChooseCallAlertsPlugin => self.choose_call_alerts_plugin(),
             Action::RingPlaceCall(id) => self.ring_place_call(&id, ctx),
             Action::RingOpenChat(id) => self.ring_open_chat(&id),
             Action::Quit => {
@@ -3368,6 +3373,32 @@ mod tests {
         app.handle(ask(), &ctx);
         app.apply(Action::HideCallAlertsSignIn, &ctx);
         assert!(app.call_alerts_sign_in.is_none());
+    }
+
+    #[test]
+    fn changing_the_call_alerts_settings_starts_and_stops_the_plugin() {
+        let (mut app, _) = app();
+        let (service, mut service_commands) = Backend::recording();
+        app.service = service;
+        let ctx = egui::Context::default();
+        let mut calls = app.settings.calls.clone();
+        calls.call_alerts_plugin = Some(PathBuf::from("plugin.exe"));
+        calls.call_alerts = true;
+        app.apply(Action::SetCallSettings(calls.clone()), &ctx);
+        assert!(matches!(
+            service_commands.try_recv(),
+            Ok(Command::StartCallAlerts(path)) if path == std::path::Path::new("plugin.exe")
+        ));
+        // Unrelated call settings leave the plugin alone.
+        calls.dock = !calls.dock;
+        app.apply(Action::SetCallSettings(calls.clone()), &ctx);
+        assert!(service_commands.try_recv().is_err());
+        calls.call_alerts = false;
+        app.apply(Action::SetCallSettings(calls), &ctx);
+        assert!(matches!(
+            service_commands.try_recv(),
+            Ok(Command::StopCallAlerts)
+        ));
     }
     #[test]
     fn dismissing_a_ring_removes_only_that_one() {

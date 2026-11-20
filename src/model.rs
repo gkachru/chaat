@@ -947,6 +947,8 @@ pub enum Action {
     DismissRing(String),
     /// Hides the call-alerts sign-in panel; the plugin keeps waiting.
     HideCallAlertsSignIn,
+    /// Picks the call-alerts plugin's executable with the system's file picker.
+    ChooseCallAlertsPlugin,
     Quit,
 }
 

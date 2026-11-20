@@ -3262,3 +3262,34 @@ fn the_call_alerts_sign_in_panel_shows_the_code_in_both_themes_and_widths() {
         }
     }
 }
+
+#[test]
+fn the_calls_settings_page_offers_the_call_alerts_plugin() {
+    for width in [480.0, 1280.0] {
+        let mut h = Harness::new();
+        h.size.x = width;
+        h.act(Action::ShowSettingsPage(SettingsPage::Calls));
+        let painted = painted_texts(&h);
+        for text in [
+            "CALL ALERTS",
+            "No plugin chosen",
+            "Choose plugin…",
+            "Show incoming calls",
+        ] {
+            assert!(
+                painted.iter().any(|t| t == text),
+                "{text:?} shows at {width}"
+            );
+        }
+        let mut calls = h.app.settings.calls.clone();
+        calls.call_alerts_plugin = Some("C:/plugins/call-alerts.exe".into());
+        calls.call_alerts = true;
+        h.act(Action::SetCallSettings(calls));
+        let painted = painted_texts(&h);
+        assert!(
+            painted.iter().any(|t| t == "Remove"),
+            "Remove shows at {width}"
+        );
+        assert!(painted.iter().any(|t| t == "The plugin isn't running."));
+    }
+}

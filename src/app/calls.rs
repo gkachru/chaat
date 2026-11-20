@@ -557,9 +557,29 @@ impl App {
         if self.settings.calls == calls {
             return;
         }
+        let plugin_changed = self.settings.calls.call_alerts_plugin != calls.call_alerts_plugin
+            || self.settings.calls.call_alerts != calls.call_alerts;
         self.settings.calls = calls;
         self.mark_settings_dirty();
         self.sync_call_browser();
+        if plugin_changed {
+            self.sync_call_alerts();
+        }
+    }
+
+    /// Picks the call-alerts plugin with the system's file picker (modal, like
+    /// a dialog) and turns call alerts on with it.
+    pub(super) fn choose_call_alerts_plugin(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Choose the call-alerts plugin")
+            .pick_file()
+        else {
+            return;
+        };
+        let mut calls = self.settings.calls.clone();
+        calls.call_alerts_plugin = Some(path);
+        calls.call_alerts = true;
+        self.set_call_settings(calls);
     }
 }
 
