@@ -3194,17 +3194,22 @@ fn a_ring_toast_offers_place_call_and_open_chat_in_both_themes_and_widths() {
             h.frames(2);
             let ctx = h.ctx.clone();
             h.app.handle(
-                chaat::backend::Event::IncomingCall(chaat::calling::RingAlert {
-                    id: "call-1".into(),
-                    caller: "Ada Lovelace".into(),
-                    caller_object_id: Some("u-ada".into()),
-                    ring_timeout: None,
-                    video: true,
-                    group: false,
-                    thread_id: None,
-                    account: None,
-                    username: None,
-                }),
+                chaat::backend::Event::Plugin {
+                    id: "demo-alerts".into(),
+                    event: chaat::plugin::event::PluginEvent::IncomingCall(
+                        chaat::calling::RingAlert {
+                            id: "call-1".into(),
+                            caller: "Ada Lovelace".into(),
+                            caller_object_id: Some("u-ada".into()),
+                            ring_timeout: None,
+                            video: true,
+                            group: false,
+                            thread_id: None,
+                            account: None,
+                            username: None,
+                        },
+                    ),
+                },
                 &ctx,
             );
             h.frames(2);
@@ -3239,6 +3244,9 @@ fn the_call_alerts_sign_in_panel_shows_the_code_in_both_themes_and_widths() {
             let mut h = Harness::new();
             h.size.x = width;
             h.app.settings.theme = theme.clone();
+            // Only this test's plugin, not the demo's.
+            h.app.settings.plugins.clear();
+            h.app.plugins.clear();
             h.frames(2);
             let ctx = h.ctx.clone();
             h.app.settings.plugins.push(chaat::settings::PluginEntry {
@@ -3305,4 +3313,234 @@ fn the_calls_settings_page_points_to_plugins() {
         h.frames(2);
         assert_eq!(h.app.settings_page, Some(SettingsPage::Plugins));
     }
+}
+
+/// One frame of just the Plugins page, so the actions it pushes can be read
+/// before the app applies them.
+fn plugins_page_frame(h: &mut Harness, events: Vec<egui::Event>) -> Vec<Action> {
+    h.time += 1.0 / 60.0;
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, h.size)),
+        time: Some(h.time),
+        events,
+        ..Default::default()
+    };
+    let mut actions = Vec::new();
+    let app = &h.app;
+    let mut output = h.ctx.run_ui(input, |ui| {
+        chaat::ui::plugins::page(app, ui, &mut actions);
+    });
+    output.textures_delta.clear();
+    h.shapes = output.shapes;
+    actions
+}
+
+fn plugins_page_click(h: &mut Harness, wanted: &str) -> Vec<Action> {
+    let pos = ring_text_pos(h, wanted).unwrap_or_else(|| panic!("{wanted:?} is painted"));
+    let button = |pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    let mut actions = plugins_page_frame(h, vec![egui::Event::PointerMoved(pos)]);
+    actions.extend(plugins_page_frame(h, vec![button(true)]));
+    actions.extend(plugins_page_frame(h, vec![button(false)]));
+    actions.extend(plugins_page_frame(h, vec![]));
+    actions
+}
+
+fn plugins_page_harness() -> Harness {
+    let mut h = Harness::new();
+    h.size = egui::vec2(900.0, 3000.0);
+    plugins_page_frame(&mut h, vec![]);
+    plugins_page_frame(&mut h, vec![]);
+    h
+}
+
+#[test]
+fn plugins_page_draws_in_both_themes_narrow_and_wide() {
+    for width in [480.0, 1280.0] {
+        for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+            let mut h = Harness::new();
+            h.size = egui::vec2(width, 3000.0);
+            h.app.settings.theme = theme.clone();
+            h.act(Action::ShowSettingsPage(SettingsPage::Plugins));
+            assert!(h.frames(2) > 20, "draws at {width} in {theme:?}");
+            let painted = painted_texts(&h);
+            for text in [
+                "Plugin: \u{201C}Ring alerts\u{201D}",
+                "Plugin: \u{201C}Status light\u{201D}",
+                "Add plugin\u{2026}",
+                "Flash on calls",
+                "Access token",
+                "Saved",
+            ] {
+                assert!(
+                    painted.iter().any(|t| t == text),
+                    "{text:?} shows at {width} in {theme:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn plugin_text_is_quoted_under_chaats_line() {
+    let mut h = plugins_page_harness();
+    let y = |h: &Harness, wanted: &str| ring_text_pos(h, wanted).map(|p| p.y);
+    let painted = painted_texts(&h);
+    let intro = painted
+        .iter()
+        .find(|t| t.contains("not part of Chaat"))
+        .expect("the line from Chaat shows")
+        .clone();
+    let name = "Plugin: \u{201C}Ring alerts\u{201D}";
+    assert!(
+        y(&h, &intro).unwrap() < y(&h, name).expect("the quoted name shows"),
+        "the line from Chaat comes first"
+    );
+    assert!(
+        painted
+            .iter()
+            .any(|t| t == "Tells Chaat who is calling you in Teams.")
+    );
+    assert_eq!(
+        painted.iter().filter(|t| *t == "About this plugin").count(),
+        1,
+        "only the plugin with a link shows one"
+    );
+    let actions = plugins_page_click(&mut h, "About this plugin");
+    assert!(actions.contains(&Action::OpenUrl("https://example.com/call-alerts".into())));
+}
+
+#[test]
+fn the_plugins_page_lists_each_account_and_whether_it_listens() {
+    let mut h = plugins_page_harness();
+    let painted = painted_texts(&h);
+    for text in [
+        "alex@contoso.com",
+        "Listening",
+        "alex@fabrikam.com",
+        "Waiting for sign-in",
+    ] {
+        assert!(painted.iter().any(|t| t == text), "{text:?} shows");
+    }
+    let second = h.app.plugin_accounts()[1].id.clone();
+    let actions = plugins_page_click(&mut h, "Sign in");
+    assert!(actions.contains(&Action::PluginSignIn {
+        plugin: "demo-alerts".into(),
+        account: second,
+    }));
+}
+
+#[test]
+fn a_plugin_sign_in_card_names_the_plugin() {
+    let mut h = Harness::new();
+    h.frames(3);
+    let painted = painted_texts(&h);
+    assert!(
+        painted
+            .iter()
+            .any(|t| t == "Plugin: \u{201C}Ring alerts\u{201D}"),
+        "the card quotes the name of the plugin"
+    );
+    assert!(painted.iter().any(|t| t == "DEMO1234"));
+}
+
+#[test]
+fn toggle_choice_and_text_options_push_set_plugin_option() {
+    let mut h = plugins_page_harness();
+    let set = |option: &str, value: serde_json::Value| Action::SetPluginOption {
+        plugin: "demo-light".into(),
+        option: option.into(),
+        value,
+    };
+    let actions = plugins_page_click(&mut h, "Flash on calls");
+    assert!(actions.contains(&set("flash", false.into())), "{actions:?}");
+
+    // The choice opens a list; picking the other entry sets it.
+    plugins_page_click(&mut h, "High");
+    plugins_page_frame(&mut h, vec![]);
+    let actions = plugins_page_click(&mut h, "Low");
+    assert!(
+        actions.contains(&set("brightness", "low".into())),
+        "{actions:?}"
+    );
+
+    // Text commits on Enter, not on each key.
+    let mut h = plugins_page_harness();
+    let field = ring_text_pos(&h, "192.168.1.20").expect("the saved text shows");
+    let press = |pressed| egui::Event::PointerButton {
+        pos: field,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    plugins_page_frame(&mut h, vec![egui::Event::PointerMoved(field)]);
+    plugins_page_frame(&mut h, vec![press(true)]);
+    plugins_page_frame(&mut h, vec![press(false)]);
+    let typed = plugins_page_frame(&mut h, vec![egui::Event::Text("9".into())]);
+    assert!(typed.is_empty(), "typing alone sets nothing");
+    let enter = egui::Event::Key {
+        key: egui::Key::Enter,
+        physical_key: Some(egui::Key::Enter),
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    };
+    let mut actions = plugins_page_frame(&mut h, vec![enter]);
+    actions.extend(plugins_page_frame(&mut h, vec![]));
+    let value = actions
+        .iter()
+        .find_map(|a| match a {
+            Action::SetPluginOption { option, value, .. } if option == "ip" => {
+                value.as_str().map(str::to_owned)
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("Enter commits the text: {actions:?}"));
+    assert!(value.contains('9') && value.len() == "192.168.1.20".len() + 1);
+}
+
+#[test]
+fn a_secret_option_never_shows_its_value() {
+    let mut h = plugins_page_harness();
+    let painted = painted_texts(&h);
+    assert!(
+        painted.iter().any(|t| t == "Saved"),
+        "a stored secret says so"
+    );
+    assert!(
+        !painted.iter().any(|t| t.contains("s3cret")),
+        "the stored value is never drawn"
+    );
+    let field = ring_text_pos(&h, "New value").expect("the empty field shows its hint");
+    let press = |pressed| egui::Event::PointerButton {
+        pos: field,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    plugins_page_frame(&mut h, vec![egui::Event::PointerMoved(field)]);
+    plugins_page_frame(&mut h, vec![press(true)]);
+    plugins_page_frame(&mut h, vec![press(false)]);
+    plugins_page_frame(&mut h, vec![egui::Event::Text("hunter2".into())]);
+    plugins_page_frame(&mut h, vec![]);
+    assert!(
+        !painted_texts(&h).iter().any(|t| t.contains("hunter2")),
+        "what is typed is masked"
+    );
+    let actions = plugins_page_click(&mut h, "Save");
+    assert!(actions.contains(&Action::SetPluginSecret {
+        plugin: "demo-light".into(),
+        option: "token".into(),
+        value: Some("hunter2".into()),
+    }));
+    let actions = plugins_page_click(&mut h, "Clear");
+    assert!(actions.contains(&Action::SetPluginSecret {
+        plugin: "demo-light".into(),
+        option: "token".into(),
+        value: None,
+    }));
 }

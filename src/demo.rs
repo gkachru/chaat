@@ -726,6 +726,106 @@ pub fn populate(app: &mut App) {
     app.active = app.accounts.len() - 1;
     populate_second(app, now);
     app.active = shown;
+    populate_plugins(app);
+}
+
+/// Two demo plugins for the Plugins page: a call-alerts plugin that listens
+/// for the first account and waits for a sign-in on the second, and a
+/// presence light with one option of every kind.
+fn populate_plugins(app: &mut App) {
+    use crate::plugin::protocol::{OptionChoice, OptionKind, OptionSpec, PluginInfo};
+    use crate::settings::PluginEntry;
+
+    let accounts = app.plugin_accounts();
+    app.settings.plugins = vec![
+        PluginEntry {
+            id: "demo-alerts".into(),
+            path: "plugins/call-alerts.exe".into(),
+            enabled: true,
+            needs: vec!["accounts".into()],
+            ..Default::default()
+        },
+        PluginEntry {
+            id: "demo-light".into(),
+            path: "plugins/status-light.exe".into(),
+            enabled: true,
+            needs: vec!["presence".into()],
+            options: [
+                ("flash".to_owned(), serde_json::json!(true)),
+                ("ip".to_owned(), serde_json::json!("192.168.1.20")),
+            ]
+            .into(),
+            secrets: vec!["token".into()],
+            ..Default::default()
+        },
+    ];
+    let alerts = app.plugins.entry("demo-alerts".into()).or_default();
+    alerts.running = true;
+    alerts.info = PluginInfo {
+        name: Some("Ring alerts".into()),
+        description: Some("Tells Chaat who is calling you in Teams.".into()),
+        docs_url: Some("https://example.com/call-alerts".into()),
+    };
+    alerts.offers = vec!["call_alerts"];
+    alerts.needs = vec!["accounts"];
+    alerts.listening = accounts.first().map(|a| a.id.clone()).into_iter().collect();
+    if let Some(second) = accounts.get(1) {
+        alerts.sign_in.push(PluginSignIn {
+            plugin: "demo-alerts".into(),
+            account: Some(second.id.clone()),
+            username: Some(second.username.clone()),
+            verification_uri: "https://microsoft.com/devicelogin".into(),
+            user_code: "DEMO1234".into(),
+        });
+    }
+    let light = app.plugins.entry("demo-light".into()).or_default();
+    light.running = true;
+    light.info = PluginInfo {
+        name: Some("Status light".into()),
+        description: Some("Shows your Teams presence on a bulb.".into()),
+        docs_url: None,
+    };
+    light.offers = vec!["presence_display"];
+    light.needs = vec!["presence"];
+    light.options = vec![
+        OptionSpec {
+            id: "ip".into(),
+            kind: OptionKind::Text,
+            label: "Bulb address".into(),
+            default: None,
+            choices: vec![],
+        },
+        OptionSpec {
+            id: "flash".into(),
+            kind: OptionKind::Toggle,
+            label: "Flash on calls".into(),
+            default: Some(serde_json::json!(false)),
+            choices: vec![],
+        },
+        OptionSpec {
+            id: "brightness".into(),
+            kind: OptionKind::Choice,
+            label: "Brightness".into(),
+            default: Some(serde_json::json!("high")),
+            choices: vec![
+                OptionChoice {
+                    value: "low".into(),
+                    label: "Low".into(),
+                },
+                OptionChoice {
+                    value: "high".into(),
+                    label: "High".into(),
+                },
+            ],
+        },
+        OptionSpec {
+            id: "token".into(),
+            kind: OptionKind::Secret,
+            label: "Access token".into(),
+            default: None,
+            choices: vec![],
+        },
+    ];
 }
 
 /// People in the demo directory who are in no chat yet, for "New chat".
