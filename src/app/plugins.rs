@@ -3,19 +3,35 @@
 //! cards. Plugins are process-wide, so this state lives on `App`, not on an
 //! `Account`. The processes run on the service backend (`plugin::host`).
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use super::App;
 use crate::backend::Command;
 use crate::model::{Action, PluginSignIn, ToastKind};
 use crate::plugin::event::PluginEvent;
+use crate::plugin::options;
 use crate::plugin::presence;
-use crate::plugin::protocol::{HostMessage, OptionKind, OptionSpec, PluginAccount, PluginInfo};
+use crate::plugin::protocol::{
+    HostMessage, OptionKind, OptionSpec, PluginAccount, PluginInfo, StatusState,
+};
 use crate::plugin::registry;
 use crate::settings::{PluginEntry, plugin_id_for};
 
 /// The shortest time between two toasts from one plugin.
-const PLUGIN_TOAST_GAP: std::time::Duration = std::time::Duration::from_secs(10);
+const PLUGIN_TOAST_GAP: Duration = Duration::from_secs(10);
+
+/// The most `option_status` messages Chaat takes from one plugin in a second;
+/// the rest are dropped.
+const STATUS_PER_SECOND: u32 = 5;
+
+/// How long an action's button shows "Working…" without an answer.
+pub const ACTION_WORKING_LIMIT: Duration = Duration::from_secs(30);
+
+/// The last status of one option or action: its state, the plugin's words
+/// (plain text) and when it arrived.
+pub type OptionStatusEntry = (StatusState, Option<String>, Instant);
 
 /// What Chaat knows about one plugin of the plugin list while it runs.
 #[derive(Debug, Default)]
@@ -33,6 +49,14 @@ pub struct PluginState {
     /// Whether the current run sent its `ready`; no option values go to a run
     /// before it described its options.
     pub(super) ready_seen: bool,
+    /// The last status of each option or action its current `ready` describes,
+    /// by id. Cleared when the plugin (re)starts.
+    pub statuses: BTreeMap<String, OptionStatusEntry>,
+    /// When the person last clicked each action's button, until a status
+    /// (`ok` or `error`) for it arrives. See `PluginState::action_working`.
+    pub action_started: BTreeMap<String, Instant>,
+    /// The start of the current second of statuses and how many it took.
+    pub(super) status_window: Option<(Instant, u32)>,
     /// Sign-ins it is waiting for, one per account.
     pub sign_in: Vec<PluginSignIn>,
     /// Accounts (`oid.tid`) it said it listens for.
@@ -65,7 +89,57 @@ impl PluginState {
         self.asked.clear();
         self.listening.clear();
         self.sent_presence = None;
+        self.statuses.clear();
+        self.action_started.clear();
+        self.status_window = None;
     }
+
+    /// Whether an action's button shows "Working…": the person clicked it and
+    /// no `ok` or `error` came since, or its last status is `working`; for at
+    /// most 30 seconds either way.
+    pub fn action_working(&self, id: &str, now: Instant) -> bool {
+        let within = |since: Instant| now.saturating_duration_since(since) < ACTION_WORKING_LIMIT;
+        self.action_started
+            .get(id)
+            .is_some_and(|since| within(*since))
+            || self
+                .statuses
+                .get(id)
+                .is_some_and(|(state, _, at)| *state == StatusState::Working && within(*at))
+    }
+
+    /// Takes one status, unless the plugin already sent too many this second.
+    fn take_status(&mut self, id: String, state: StatusState, message: Option<String>) {
+        let now = Instant::now();
+        let (start, count) = match self.status_window {
+            Some((start, count))
+                if now.saturating_duration_since(start) < Duration::from_secs(1) =>
+            {
+                (start, count)
+            }
+            _ => (now, 0),
+        };
+        if count >= STATUS_PER_SECOND {
+            self.status_window = Some((start, count));
+            return;
+        }
+        self.status_window = Some((start, count + 1));
+        // An answer ends the wait of a button that was clicked.
+        if state != StatusState::Working {
+            self.action_started.remove(&id);
+        }
+        self.statuses.insert(id, (state, message, now));
+    }
+}
+
+/// A plugin entry's stored option values, as the checks in `plugin::options`
+/// take them.
+fn stored_map(entry: &PluginEntry) -> serde_json::Map<String, serde_json::Value> {
+    entry
+        .options
+        .iter()
+        .map(|(option, value)| (option.clone(), value.clone()))
+        .collect()
 }
 
 impl App {
@@ -455,15 +529,19 @@ impl App {
         if !state.ready_seen {
             return;
         }
-        let mut values = std::collections::BTreeMap::new();
+        // Defaults filled in; secrets are named, never valued; buttons have
+        // no value.
+        let values: BTreeMap<String, serde_json::Value> =
+            options::effective_values(&state.options, &stored_map(entry))
+                .into_iter()
+                .collect();
         let mut secrets = Vec::new();
         for spec in &state.options {
-            if spec.kind == OptionKind::Secret {
-                if entry.secrets.contains(&spec.id) && !secrets.contains(&spec.id) {
-                    secrets.push(spec.id.clone());
-                }
-            } else if let Some(value) = entry.options.get(&spec.id).or(spec.default.as_ref()) {
-                values.insert(spec.id.clone(), value.clone());
+            if spec.kind == OptionKind::Secret
+                && entry.secrets.contains(&spec.id)
+                && !secrets.contains(&spec.id)
+            {
+                secrets.push(spec.id.clone());
             }
         }
         self.send_service(Command::PluginOptions {
@@ -629,8 +707,37 @@ impl App {
                 state.stopped();
                 state.file_changed = Some(sha256);
             }
-            // C2: record the status and the new choices.
-            PluginEvent::OptionStatus { .. } | PluginEvent::OptionsUpdate { .. } => {}
+            PluginEvent::OptionStatus {
+                id: option,
+                state,
+                message,
+            } => {
+                let Some(plugin) = self.plugins.get_mut(&id) else {
+                    return;
+                };
+                // Only the options of the current run's `ready` have a status.
+                if plugin.ready_seen && plugin.options.iter().any(|spec| spec.id == option) {
+                    plugin.take_status(option, state, message);
+                }
+            }
+            PluginEvent::OptionsUpdate {
+                id: option,
+                choices,
+            } => {
+                let Some(plugin) = self.plugins.get_mut(&id) else {
+                    return;
+                };
+                // A stored value that is no longer offered stays; the page
+                // shows it as not available.
+                if plugin.ready_seen
+                    && let Some(spec) = plugin
+                        .options
+                        .iter_mut()
+                        .find(|spec| spec.id == option && spec.kind == OptionKind::Choice)
+                {
+                    spec.choices = choices;
+                }
+            }
         }
     }
 
@@ -697,13 +804,53 @@ impl App {
         }
         if let Some(entry) = self.settings.plugins.iter_mut().find(|e| e.id == id) {
             let before = entry.options.len();
-            entry
-                .options
-                .retain(|option, _| !now_secret.contains(option));
+            let specs = self
+                .plugins
+                .get(id)
+                .map(|state| state.options.as_slice())
+                .unwrap_or_default();
+            // Values that no longer fit what the plugin now describes go:
+            // secrets, and anything its kind, range or choices refuse. Values
+            // for options it does not describe, or of a kind this Chaat does
+            // not know, are kept.
+            entry.options.retain(|option, value| {
+                if now_secret.contains(option) {
+                    return false;
+                }
+                match specs.iter().find(|spec| spec.id == *option) {
+                    // A choice the plugin no longer lists stays (the page shows
+                    // it as not available until `options_update` offers it),
+                    // if it is still a well-formed choice value.
+                    Some(spec) if spec.kind == OptionKind::Choice => value
+                        .as_str()
+                        .is_some_and(|text| (1..=64).contains(&text.chars().count())),
+                    Some(spec) if !matches!(spec.kind, OptionKind::Unsupported { .. }) => {
+                        options::check_value(spec, value).is_ok_and(|checked| checked == *value)
+                    }
+                    _ => true,
+                }
+            });
             if entry.options.len() != before {
                 self.mark_settings_dirty();
             }
         }
+        if let Some(state) = self.plugins.get_mut(id) {
+            // What a status or a click said about an option that is gone.
+            let described: Vec<String> = state.options.iter().map(|s| s.id.clone()).collect();
+            state
+                .statuses
+                .retain(|option, _| described.contains(option));
+            state
+                .action_started
+                .retain(|option, _| described.contains(option));
+        }
+        let described: Vec<String> = self
+            .plugins
+            .get(id)
+            .map(|state| state.options.iter().map(|s| s.id.clone()).collect())
+            .unwrap_or_default();
+        self.plugin_option_errors
+            .retain(|(plugin, option), _| plugin != id || described.contains(option));
         let Some(state) = self.plugins.get_mut(id) else {
             return;
         };
@@ -725,15 +872,34 @@ impl App {
             self.send_plugin_accounts(id, accounts);
         }
         self.send_plugin_options(id);
+        // A plugin the person just added opens its setup the first time it
+        // describes required options that are still empty.
+        if self.plugin_added.remove(id) && !self.plugin_missing_required(id).is_empty() {
+            self.plugin_setup = Some(id.to_owned());
+        }
         // Only what the plugin says it cleared leaves the queue.
         self.plugin_forget_done(id, forgotten);
         self.sync_plugin_presence();
+    }
+
+    /// The ids of the required options of a plugin that have no value yet
+    /// (saved secrets count as set), in the order it described them. Empty
+    /// while the plugin has not described its options.
+    pub fn plugin_missing_required(&self, id: &str) -> Vec<String> {
+        let (Some(state), Some(entry)) = (
+            self.plugins.get(id),
+            self.settings.plugins.iter().find(|e| e.id == id),
+        ) else {
+            return Vec::new();
+        };
+        options::missing_required(&state.options, &stored_map(entry), &entry.secrets)
     }
 
     /// Adds a plugin to the list, turned on, and starts it.
     pub(super) fn add_plugin(&mut self, path: PathBuf) {
         let taken: Vec<String> = self.settings.plugins.iter().map(|e| e.id.clone()).collect();
         let id = plugin_id_for(&path, &taken);
+        self.plugin_added.insert(id.clone());
         self.settings.plugins.push(PluginEntry {
             id,
             path,
@@ -792,6 +958,12 @@ impl App {
             });
         }
         self.plugin_toasts.remove(id);
+        self.plugin_added.remove(id);
+        self.plugin_option_errors
+            .retain(|(plugin, _), _| plugin != id);
+        if self.plugin_setup.as_deref() == Some(id) {
+            self.plugin_setup = None;
+        }
         if self.plugins_started.remove(id).is_some() {
             self.retire_plugin_generation(id);
             self.send_service(Command::StopPlugin { id: id.to_owned() });
@@ -818,12 +990,18 @@ impl App {
                 option,
                 value,
             } => {
-                if let Some(entry) = self.settings.plugins.iter_mut().find(|e| e.id == plugin) {
-                    entry.options.insert(option, value);
-                    self.mark_settings_dirty();
-                    self.send_plugin_options(&plugin);
+                self.set_plugin_option(plugin, option, value);
+            }
+            Action::RunPluginAction { plugin, action } => self.run_plugin_action(plugin, action),
+            Action::ResetPluginSection { plugin, section } => {
+                self.reset_plugin_section(&plugin, section.as_deref());
+            }
+            Action::OpenPluginSetup(id) => {
+                if self.settings.plugins.iter().any(|e| e.id == id) {
+                    self.plugin_setup = Some(id);
                 }
             }
+            Action::ClosePluginSetup => self.plugin_setup = None,
             Action::SetPluginSecret {
                 plugin,
                 option,
@@ -868,6 +1046,89 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// Checks and stores one option value, then sends the options. An invalid
+    /// value is neither stored nor sent: its error waits in
+    /// `plugin_option_errors` for the page. Secrets and buttons have no stored
+    /// value, and an option the plugin does not describe is ignored.
+    fn set_plugin_option(&mut self, plugin: String, option: String, value: serde_json::Value) {
+        let Some(spec) = self
+            .plugins
+            .get(&plugin)
+            .and_then(|state| state.options.iter().find(|spec| spec.id == option))
+        else {
+            return;
+        };
+        let checked = if spec.kind == OptionKind::Secret {
+            Err("Secrets are saved separately.".to_owned())
+        } else {
+            options::check_value(spec, &value)
+        };
+        let key = (plugin.clone(), option.clone());
+        let checked = match checked {
+            Ok(checked) => checked,
+            Err(error) => {
+                self.plugin_option_errors.insert(key, error);
+                return;
+            }
+        };
+        self.plugin_option_errors.remove(&key);
+        if let Some(entry) = self.settings.plugins.iter_mut().find(|e| e.id == plugin) {
+            entry.options.insert(option, checked);
+            self.mark_settings_dirty();
+            self.send_plugin_options(&plugin);
+        }
+    }
+
+    /// Tells a plugin its button was clicked: only a running plugin that has
+    /// said `ready`, and only for a button it described.
+    fn run_plugin_action(&mut self, plugin: String, action: String) {
+        let Some(state) = self.plugins.get_mut(&plugin) else {
+            return;
+        };
+        let is_button = state
+            .options
+            .iter()
+            .any(|spec| spec.id == action && spec.kind == OptionKind::Action);
+        if !(state.running && state.ready_seen && is_button) {
+            return;
+        }
+        // The last answer is old now; the button shows its wait.
+        state.statuses.remove(&action);
+        state.action_started.insert(action.clone(), Instant::now());
+        self.send_service(Command::PluginSend {
+            id: plugin,
+            message: HostMessage::Action { id: action },
+        });
+    }
+
+    /// "Reset to defaults" for one section (`None` is the options with no
+    /// section): options with a default get it, those without lose their
+    /// stored value, secrets stay.
+    fn reset_plugin_section(&mut self, plugin: &str, section: Option<&str>) {
+        let Some(state) = self.plugins.get(plugin) else {
+            return;
+        };
+        let defaults = options::defaults_for_section(&state.options, section);
+        let cleared: Vec<String> = state
+            .options
+            .iter()
+            .filter(|spec| spec.section.as_deref() == section)
+            .filter(|spec| !matches!(spec.kind, OptionKind::Secret | OptionKind::Action))
+            .map(|spec| spec.id.clone())
+            .collect();
+        let Some(entry) = self.settings.plugins.iter_mut().find(|e| e.id == plugin) else {
+            return;
+        };
+        for option in &cleared {
+            entry.options.remove(option);
+        }
+        entry.options.extend(defaults);
+        self.plugin_option_errors
+            .retain(|(p, option), _| p != plugin || !cleared.contains(option));
+        self.mark_settings_dirty();
+        self.send_plugin_options(plugin);
     }
 
     /// Allows or refuses what the plugin's current `ready` asked for and the
@@ -1193,5 +1454,465 @@ mod tests {
         app.remove_plugin("p");
         app.plugins.entry("p".into()).or_default().running = false;
         assert!(!running(&mut app, third, true));
+    }
+
+    // Options: statuses, choices, checks, actions, reset, setup.
+
+    use crate::plugin::protocol::OptionChoice;
+    use serde_json::json;
+
+    fn spec(id: &str, kind: OptionKind) -> OptionSpec {
+        OptionSpec {
+            id: id.into(),
+            kind,
+            label: id.into(),
+            ..OptionSpec::default()
+        }
+    }
+
+    fn choice_spec(id: &str, values: &[&str]) -> OptionSpec {
+        OptionSpec {
+            choices: values
+                .iter()
+                .map(|v| OptionChoice {
+                    value: (*v).into(),
+                    label: (*v).into(),
+                })
+                .collect(),
+            ..spec(id, OptionKind::Choice)
+        }
+    }
+
+    fn number_spec(id: &str, min: f64, max: f64, default: f64) -> OptionSpec {
+        OptionSpec {
+            min: Some(min),
+            max: Some(max),
+            default: Some(json!(default)),
+            ..spec(id, OptionKind::Number)
+        }
+    }
+
+    fn ready_with(app: &mut App, specs: Vec<OptionSpec>) {
+        app.on_plugin_ready(
+            "p",
+            PluginInfo::default(),
+            Vec::new(),
+            Vec::new(),
+            specs,
+            Vec::new(),
+        );
+    }
+
+    fn drain(commands: &mut tokio::sync::mpsc::UnboundedReceiver<Command>) -> Vec<Command> {
+        std::iter::from_fn(|| commands.try_recv().ok()).collect()
+    }
+
+    fn plugin_event(app: &mut App, event: PluginEvent) {
+        let generation = app.plugin_generations.get("p").copied().unwrap_or(0);
+        app.on_plugin_event("p".into(), generation, event);
+    }
+
+    fn status(app: &mut App, id: &str, state: StatusState, message: &str) {
+        plugin_event(
+            app,
+            PluginEvent::OptionStatus {
+                id: id.into(),
+                state,
+                message: Some(message.into()),
+            },
+        );
+    }
+
+    fn sent_values(
+        commands: &mut tokio::sync::mpsc::UnboundedReceiver<Command>,
+    ) -> Option<BTreeMap<String, serde_json::Value>> {
+        drain(commands).into_iter().rev().find_map(|c| match c {
+            Command::PluginOptions { values, .. } => Some(values),
+            _ => None,
+        })
+    }
+
+    fn action_sent(commands: &mut tokio::sync::mpsc::UnboundedReceiver<Command>) -> usize {
+        drain(commands)
+            .into_iter()
+            .filter(|c| {
+                matches!(
+                    c,
+                    Command::PluginSend {
+                        message: HostMessage::Action { .. },
+                        ..
+                    }
+                )
+            })
+            .count()
+    }
+
+    #[test]
+    fn statuses_are_rate_limited_and_cleared_on_restart() {
+        let (mut app, _commands) = option_app();
+        app.sync_plugins();
+        ready_with(&mut app, vec![spec("scan", OptionKind::Action)]);
+        for n in 1..=7 {
+            status(&mut app, "scan", StatusState::Ok, &format!("m{n}"));
+        }
+        assert_eq!(
+            app.plugins["p"].statuses["scan"].1.as_deref(),
+            Some("m5"),
+            "five a second; the rest are dropped"
+        );
+        // A second later the limit is open again.
+        let past = Instant::now().checked_sub(Duration::from_secs(2)).unwrap();
+        app.plugins.get_mut("p").unwrap().status_window = Some((past, 5));
+        status(&mut app, "scan", StatusState::Error, "later");
+        assert_eq!(
+            app.plugins["p"].statuses["scan"].1.as_deref(),
+            Some("later")
+        );
+        // Only options the current `ready` describes have a status.
+        status(&mut app, "unknown", StatusState::Ok, "x");
+        assert!(!app.plugins["p"].statuses.contains_key("unknown"));
+        // A restart forgets them.
+        app.settings.plugins[0].path = PathBuf::from("q.exe");
+        app.sync_plugins();
+        assert!(app.plugins["p"].statuses.is_empty());
+        status(&mut app, "scan", StatusState::Ok, "stale");
+        assert!(
+            app.plugins["p"].statuses.is_empty(),
+            "nothing counts before the new run's ready"
+        );
+    }
+
+    #[test]
+    fn options_update_replaces_choices_and_keeps_old_value() {
+        let (mut app, _commands) = option_app();
+        app.sync_plugins();
+        app.settings.plugins[0]
+            .options
+            .insert("bulb".into(), json!("a"));
+        ready_with(
+            &mut app,
+            vec![choice_spec("bulb", &["a"]), spec("name", OptionKind::Text)],
+        );
+        let update = |id: &str, values: &[&str]| PluginEvent::OptionsUpdate {
+            id: id.into(),
+            choices: values
+                .iter()
+                .map(|v| OptionChoice {
+                    value: (*v).into(),
+                    label: (*v).into(),
+                })
+                .collect(),
+        };
+        plugin_event(&mut app, update("bulb", &["b", "c"]));
+        let values: Vec<&str> = app.plugins["p"].options[0]
+            .choices
+            .iter()
+            .map(|c| c.value.as_str())
+            .collect();
+        assert_eq!(values, ["b", "c"]);
+        assert_eq!(
+            app.settings.plugins[0].options["bulb"],
+            json!("a"),
+            "the stored value stays"
+        );
+        // Not a choice option, or not described: ignored.
+        plugin_event(&mut app, update("name", &["x"]));
+        plugin_event(&mut app, update("nope", &["x"]));
+        assert!(app.plugins["p"].options[1].choices.is_empty());
+        assert_eq!(app.plugins["p"].options.len(), 2);
+    }
+
+    #[test]
+    fn invalid_values_are_not_stored_or_sent() {
+        let (mut app, mut commands) = option_app();
+        app.sync_plugins();
+        ready_with(
+            &mut app,
+            vec![
+                number_spec("bright", 10.0, 100.0, 50.0),
+                spec("name", OptionKind::Text),
+                spec("key", OptionKind::Secret),
+            ],
+        );
+        drain(&mut commands);
+        let set = |app: &mut App, option: &str, value| {
+            app.apply_plugin_action(Action::SetPluginOption {
+                plugin: "p".into(),
+                option: option.into(),
+                value,
+            });
+        };
+        let error = |app: &App, option: &str| {
+            app.plugin_option_errors
+                .get(&("p".to_owned(), option.to_owned()))
+                .cloned()
+        };
+        set(&mut app, "bright", json!(5));
+        assert_eq!(
+            error(&app, "bright").as_deref(),
+            Some("Enter a number from 10 to 100.")
+        );
+        assert!(!app.settings.plugins[0].options.contains_key("bright"));
+        assert!(sent_values(&mut commands).is_none(), "nothing is sent");
+        // A secret never becomes a stored value, and neither does an unknown
+        // option.
+        set(&mut app, "key", json!("k3y"));
+        set(&mut app, "nope", json!("x"));
+        assert!(app.settings.plugins[0].options.is_empty());
+        assert!(sent_values(&mut commands).is_none());
+        // A valid value clears the error; only the normalized value is kept.
+        set(&mut app, "bright", json!(60));
+        assert_eq!(error(&app, "bright"), None);
+        assert_eq!(app.settings.plugins[0].options["bright"], json!(60));
+        assert_eq!(sent_values(&mut commands).unwrap()["bright"], json!(60));
+        set(&mut app, "name", json!("  hi "));
+        assert_eq!(app.settings.plugins[0].options["name"], json!("hi"));
+    }
+
+    #[test]
+    fn stored_values_that_no_longer_fit_are_dropped_on_ready() {
+        let (mut app, mut commands) = option_app();
+        app.sync_plugins();
+        {
+            let stored = &mut app.settings.plugins[0].options;
+            stored.insert("bright".into(), json!(500));
+            stored.insert("bulb".into(), json!(7));
+            stored.insert("name".into(), json!("ok"));
+            stored.insert("old".into(), json!("kept"));
+        }
+        ready_with(
+            &mut app,
+            vec![
+                number_spec("bright", 10.0, 100.0, 50.0),
+                choice_spec("bulb", &["a"]),
+                spec("name", OptionKind::Text),
+            ],
+        );
+        let stored = &app.settings.plugins[0].options;
+        assert!(!stored.contains_key("bright"));
+        assert!(!stored.contains_key("bulb"), "not a choice value");
+        assert_eq!(stored["name"], json!("ok"));
+        assert!(stored.contains_key("old"), "undescribed values are kept");
+        let values = sent_values(&mut commands).expect("options after ready");
+        assert_eq!(values["bright"], json!(50.0), "the default stands in");
+        assert_eq!(values["name"], json!("ok"));
+        assert!(!values.contains_key("bulb"));
+    }
+
+    #[test]
+    fn actions_go_only_to_a_ready_plugin() {
+        let (mut app, mut commands) = option_app();
+        let run = |app: &mut App, action: &str| {
+            app.apply_plugin_action(Action::RunPluginAction {
+                plugin: "p".into(),
+                action: action.into(),
+            });
+        };
+        app.sync_plugins();
+        drain(&mut commands);
+        run(&mut app, "scan");
+        assert_eq!(action_sent(&mut commands), 0, "not before a ready");
+        ready_with(
+            &mut app,
+            vec![
+                spec("scan", OptionKind::Action),
+                spec("name", OptionKind::Text),
+            ],
+        );
+        drain(&mut commands);
+        run(&mut app, "name");
+        run(&mut app, "nope");
+        assert_eq!(action_sent(&mut commands), 0, "only a described button");
+        run(&mut app, "scan");
+        let sent = drain(&mut commands);
+        assert!(sent.iter().any(|c| matches!(
+            c,
+            Command::PluginSend {
+                id,
+                message: HostMessage::Action { id: action },
+            } if id == "p" && action == "scan"
+        )));
+        assert!(app.plugins["p"].action_started.contains_key("scan"));
+        // Not running: no click goes out.
+        app.plugins.get_mut("p").unwrap().running = false;
+        run(&mut app, "scan");
+        assert_eq!(action_sent(&mut commands), 0);
+        // A restart is not ready until its own ready.
+        app.plugins.get_mut("p").unwrap().running = true;
+        app.settings.plugins[0].path = PathBuf::from("q.exe");
+        app.sync_plugins();
+        app.plugins.get_mut("p").unwrap().running = true;
+        drain(&mut commands);
+        run(&mut app, "scan");
+        assert_eq!(action_sent(&mut commands), 0);
+    }
+
+    #[test]
+    fn an_action_is_working_until_its_status_or_30s() {
+        let (mut app, _commands) = option_app();
+        app.sync_plugins();
+        ready_with(&mut app, vec![spec("scan", OptionKind::Action)]);
+        let now = Instant::now();
+        assert!(!app.plugins["p"].action_working("scan", now));
+        let run = |app: &mut App| {
+            app.apply_plugin_action(Action::RunPluginAction {
+                plugin: "p".into(),
+                action: "scan".into(),
+            });
+        };
+        run(&mut app);
+        assert!(app.plugins["p"].action_working("scan", Instant::now()));
+        assert!(
+            !app.plugins["p"].action_working("scan", Instant::now() + Duration::from_secs(31)),
+            "30 seconds without an answer ends the wait"
+        );
+        status(&mut app, "scan", StatusState::Working, "Looking");
+        assert!(app.plugins["p"].action_working("scan", Instant::now()));
+        status(&mut app, "scan", StatusState::Ok, "Found 2 bulbs");
+        assert!(!app.plugins["p"].action_working("scan", Instant::now()));
+        assert!(app.plugins["p"].action_started.is_empty());
+        // The same for an error, and a click clears the old answer.
+        run(&mut app);
+        assert!(!app.plugins["p"].statuses.contains_key("scan"));
+        status(&mut app, "scan", StatusState::Error, "No bulbs");
+        assert!(!app.plugins["p"].action_working("scan", Instant::now()));
+    }
+
+    #[test]
+    fn reset_section_restores_defaults_and_keeps_secrets() {
+        let (mut app, mut commands) = option_app();
+        app.sync_plugins();
+        let in_section = |section: &str, spec: OptionSpec| OptionSpec {
+            section: Some(section.into()),
+            ..spec
+        };
+        ready_with(
+            &mut app,
+            vec![
+                in_section("Colors", number_spec("bright", 10.0, 100.0, 50.0)),
+                in_section("Colors", spec("note", OptionKind::Text)),
+                in_section("Colors", spec("key", OptionKind::Secret)),
+                in_section("Bulb", number_spec("other", 1.0, 100.0, 10.0)),
+            ],
+        );
+        {
+            let entry = &mut app.settings.plugins[0];
+            entry.options.insert("bright".into(), json!(70));
+            entry.options.insert("note".into(), json!("x"));
+            entry.options.insert("other".into(), json!(20));
+            entry.secrets = vec!["key".into()];
+        }
+        app.plugin_option_errors
+            .insert(("p".into(), "bright".into()), "Enter a number.".into());
+        drain(&mut commands);
+        app.apply_plugin_action(Action::ResetPluginSection {
+            plugin: "p".into(),
+            section: Some("Colors".into()),
+        });
+        let stored = &app.settings.plugins[0].options;
+        assert_eq!(stored["bright"], json!(50.0));
+        assert!(!stored.contains_key("note"), "no default: cleared");
+        assert_eq!(stored["other"], json!(20), "other sections stay");
+        assert_eq!(app.settings.plugins[0].secrets, ["key"]);
+        assert!(app.plugin_option_errors.is_empty());
+        let sent = drain(&mut commands);
+        assert!(sent.iter().any(|c| matches!(
+            c,
+            Command::PluginOptions { values, secrets, .. }
+                if values["bright"] == json!(50.0) && secrets == &["key".to_owned()]
+        )));
+        assert!(
+            !sent
+                .iter()
+                .any(|c| matches!(c, Command::SavePluginSecret { .. })),
+            "secrets are untouched"
+        );
+    }
+
+    #[test]
+    fn a_new_plugin_with_missing_required_options_opens_setup() {
+        let (mut app, _commands) = option_app();
+        let required = |id: &str, kind| OptionSpec {
+            required: true,
+            ..spec(id, kind)
+        };
+        // A plugin that was already in the list does not open it.
+        app.sync_plugins();
+        ready_with(&mut app, vec![required("key", OptionKind::Secret)]);
+        assert_eq!(app.plugin_setup, None);
+        assert_eq!(app.plugin_missing_required("p"), ["key"]);
+        app.settings.plugins[0].secrets = vec!["key".into()];
+        assert!(app.plugin_missing_required("p").is_empty());
+        app.settings.plugins[0].secrets.clear();
+        // One added by the person does, on its first ready only.
+        app.add_plugin(PathBuf::from("added-plugin.exe"));
+        let id = app.settings.plugins.last().unwrap().id.clone();
+        let described = |app: &mut App| {
+            app.on_plugin_ready(
+                &id,
+                PluginInfo::default(),
+                Vec::new(),
+                Vec::new(),
+                vec![
+                    required("name", OptionKind::Text),
+                    spec("extra", OptionKind::Text),
+                ],
+                Vec::new(),
+            );
+        };
+        described(&mut app);
+        assert_eq!(app.plugin_setup.as_deref(), Some(id.as_str()));
+        assert_eq!(app.plugin_missing_required(&id), ["name"]);
+        app.apply_plugin_action(Action::ClosePluginSetup);
+        assert_eq!(app.plugin_setup, None);
+        described(&mut app);
+        assert_eq!(app.plugin_setup, None, "a later ready does not reopen it");
+        app.apply_plugin_action(Action::OpenPluginSetup(id.clone()));
+        assert_eq!(app.plugin_setup.as_deref(), Some(id.as_str()));
+        app.apply_plugin_action(Action::OpenPluginSetup("nope".into()));
+        assert_eq!(app.plugin_setup.as_deref(), Some(id.as_str()));
+        app.remove_plugin(&id);
+        assert_eq!(app.plugin_setup, None);
+    }
+
+    #[test]
+    fn a_stored_choice_survives_a_restart_until_options_update() {
+        let (mut app, mut commands) = option_app();
+        app.sync_plugins();
+        app.settings.plugins[0]
+            .options
+            .insert("bulb".into(), json!("old-bulb"));
+        // The new run does not list it (yet): it is kept and still sent.
+        ready_with(&mut app, vec![choice_spec("bulb", &["a"])]);
+        assert_eq!(app.settings.plugins[0].options["bulb"], json!("old-bulb"));
+        assert_eq!(
+            sent_values(&mut commands).unwrap()["bulb"],
+            json!("old-bulb")
+        );
+        let update = |values: &[&str]| PluginEvent::OptionsUpdate {
+            id: "bulb".into(),
+            choices: values
+                .iter()
+                .map(|v| OptionChoice {
+                    value: (*v).into(),
+                    label: (*v).into(),
+                })
+                .collect(),
+        };
+        plugin_event(&mut app, update(&["b"]));
+        assert_eq!(app.settings.plugins[0].options["bulb"], json!("old-bulb"));
+        // Choosing it by hand still needs it to be offered.
+        app.apply_plugin_action(Action::SetPluginOption {
+            plugin: "p".into(),
+            option: "bulb".into(),
+            value: json!("zzz"),
+        });
+        assert_eq!(app.settings.plugins[0].options["bulb"], json!("old-bulb"));
+        // A malformed stored value still goes.
+        app.settings.plugins[0]
+            .options
+            .insert("bulb".into(), json!("x".repeat(65)));
+        ready_with(&mut app, vec![choice_spec("bulb", &["a"])]);
+        assert!(!app.settings.plugins[0].options.contains_key("bulb"));
     }
 }

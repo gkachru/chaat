@@ -965,12 +965,29 @@ pub enum Action {
     TrustPluginFile(String),
     /// Turns a plugin off whose file changed, and drops the question.
     KeepPluginOff(String),
-    /// Changes one of a plugin's described options (never a secret).
+    /// Changes one of a plugin's described options (never a secret). The
+    /// value is checked first; an invalid one is neither stored nor sent, and
+    /// its error appears in `App::plugin_option_errors`.
     SetPluginOption {
         plugin: String,
         option: String,
         value: serde_json::Value,
     },
+    /// Clicks the button of an `action` option. Sent only to a running plugin
+    /// that has said `ready`.
+    RunPluginAction {
+        plugin: String,
+        action: String,
+    },
+    /// "Reset to defaults" for one section (`None`: options without a
+    /// section). Secrets stay.
+    ResetPluginSection {
+        plugin: String,
+        section: Option<String>,
+    },
+    /// Opens a plugin's setup view.
+    OpenPluginSetup(String),
+    ClosePluginSetup,
     /// Stores (or, with `None`, removes) a plugin's secret option value in
     /// the credential store.
     SetPluginSecret {

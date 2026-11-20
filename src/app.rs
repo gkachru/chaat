@@ -623,6 +623,14 @@ pub struct App {
     plugin_generation: u64,
     /// When each plugin last raised a toast, so a chatty one is limited.
     plugin_toasts: std::collections::BTreeMap<String, std::time::Instant>,
+    /// What is wrong with the value last entered for a plugin option, by
+    /// (plugin id, option id); shown under the field until a valid value is
+    /// entered.
+    pub plugin_option_errors: std::collections::BTreeMap<(String, String), String>,
+    /// The plugin whose setup view is open (required options first).
+    pub plugin_setup: Option<String>,
+    /// Plugins the person just added that have not sent their first `ready`.
+    plugin_added: std::collections::BTreeSet<String>,
     next_toast: u64,
     pub actions: Vec<Action>,
 
@@ -765,6 +773,9 @@ impl App {
             plugin_generations: Default::default(),
             plugin_generation: 0,
             plugin_toasts: Default::default(),
+            plugin_option_errors: Default::default(),
+            plugin_setup: None,
+            plugin_added: Default::default(),
             next_toast: 0,
             actions: Vec::new(),
             palette,
@@ -2533,6 +2544,10 @@ impl App {
             | Action::TrustPluginFile(_)
             | Action::KeepPluginOff(_)
             | Action::SetPluginOption { .. }
+            | Action::RunPluginAction { .. }
+            | Action::ResetPluginSection { .. }
+            | Action::OpenPluginSetup(_)
+            | Action::ClosePluginSetup
             | Action::SetPluginSecret { .. }
             | Action::PluginSignIn { .. }
             | Action::HidePluginSignIn { .. }) => self.apply_plugin_action(action),
