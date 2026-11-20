@@ -2,8 +2,9 @@
 
 Chaat opens calls in Microsoft Teams on the web and stays beside them for
 chat and call status. Audio, video, screen sharing and call controls stay in
-Teams. Chaat does not show incoming-call alerts or request microphone, camera
-or screen-recording access.
+Teams. Chaat does not request microphone, camera or screen-recording access.
+Graph cannot tell Chaat that a call is ringing; an optional, separately
+installed [call-alerts plugin](#call-alerts-plugin) can.
 
 The implementation has mock, headless UI and macOS screenshot coverage.
 A real call has not yet been confirmed; see [open questions](#open-questions).
@@ -26,6 +27,7 @@ The **Calls and meetings** page in Settings controls:
 | A separate browser profile for each account | Optional, shown with multiple accounts; off by default |
 | Signing out of Chaat also signs the browser out of Microsoft | Optional; off by default |
 | Sign in to Teams on the web | Open Teams once to complete browser sign-in and choose whether to stay signed in |
+| Call alerts | The call-alerts plugin's executable (chosen with the system file picker, or removed), **Show incoming calls**, and whether it is running. Off by default; see [below](#call-alerts-plugin) |
 
 Docking needs a window at least 960 × 400 points. It is unavailable on
 Wayland and beside the Teams desktop app. Browser window placement is a
@@ -64,6 +66,71 @@ other Microsoft sites too.
 Only HTTPS links on Teams hosts are opened, using process arguments without
 a shell. Join links and browser command lines are not logged.
 
+## Call-alerts plugin
+
+Microsoft Graph has no delegated way to learn that a call is ringing: change
+notifications arrive only after the call, and Graph calling is for bots.
+Teams rings its own clients through a push service
+that only accepts Teams' first-party sign-in. Chaat itself never uses either
+(see [AGENTS.md](../AGENTS.md)). The separate, opt-in `call-alerts`
+plugin does, so people who accept that trade-off can see who is calling.
+
+Using it means signing in with Teams' own client ID and an undocumented
+service, outside Microsoft's documented APIs and possibly against your
+organization's policy. It is the person's choice; Chaat does not ship,
+download or update it.
+
+### Turning it on
+
+Settings › Calls › Call alerts: **Choose plugin…** picks the executable and
+turns **Show incoming calls** on. Chaat starts it as `<plugin> serve` on its
+own background runtime, restarts it with backoff if it exits, and stops it
+when the switch is turned off, the plugin is removed, or Chaat quits.
+
+On first use (or when its stored sign-in expires) the plugin asks to sign in.
+Chaat shows a **Sign in for call alerts** panel with the code, **Open
+sign-in page** and **Copy code**. The plugin keeps its refresh token in the
+system's credential store and tells Chaat when sign-in finished.
+
+### When a call rings
+
+Chaat raises its window and shows a ring card at the top right: the caller,
+whether it is a video or group call, and two actions:
+
+| Action | What happens |
+|---|---|
+| **Place call** | Calls the caller back in Teams, the same way as **Call** in a chat, using the address Chaat knows from chat members. If Chaat does not know it, opens Teams on the web instead |
+| **Open chat** | Opens the call's chat in Chaat: the group's thread when the ring carried one, otherwise the one-on-one chat with the caller, or starts that chat if Chaat knows the caller but has none yet. Unavailable for a caller Chaat has never seen |
+
+The caller is matched by the Entra object ID in the ring (`8:orgid:<id>`),
+which is the `userId` of chat members Chaat already has. Chaat makes no
+extra Graph request for it.
+
+The card cannot answer the call. Answering needs a Teams client that was
+registered before the call started ringing; Teams on the web opened during
+the ring does not receive it (tested). The plugin also cannot see when a
+call ends, so the card closes after 40 seconds, on either action, or on
+dismiss. A repeat of the same call replaces its card; at most three show.
+
+### Protocol
+
+Newline-delimited JSON over the plugin's stdin and stdout, each message with
+`"v": 1` and a `type`. Chaat ignores lines it does not understand, so either
+side can be newer.
+
+| Direction | `type` | Fields |
+|---|---|---|
+| Chaat → plugin | `hello` | `host: "chaat"`, `capabilities: ["call_alerts"]` |
+| Chaat → plugin | `shutdown` | |
+| plugin → Chaat | `ready` | `capabilities` |
+| plugin → Chaat | `sign_in_required` | `verification_uri`, `user_code` |
+| plugin → Chaat | `signed_in` | |
+| plugin → Chaat | `incoming_call` | `id`, `caller`, `caller_mri`, `video`, `group`, `thread_id` (optional, usually absent for one-on-one calls) |
+| plugin → Chaat | `error` | `message`, shown as an error notice |
+
+`call_ended` is reserved for when a plugin can report it. Chaat passes the
+plugin no tokens, settings or account data, and discards its stderr.
+
 ## API limits
 
 Graph calling is for bots, with no delegated calling permission. ACS carries
@@ -71,7 +138,8 @@ additional usage charges; Chaat keeps media in Microsoft's own clients.
 See the official sources in the [API reference](microsoft-api-research.md#calling).
 
 Chaat has no embedded browser engine and uses no undocumented Teams endpoints
-or call-control protocols. Ringing, mute, camera and leave controls belong to
+or call-control protocols. The optional call-alerts plugin does (push service);
+it is a separate program, outside Chaat. Ringing, mute, camera and leave controls belong to
 the Teams client carrying the call.
 
 ## Open questions
@@ -85,3 +153,4 @@ These still need a real browser, meeting and tenant:
 | Browser session reuse and creation of missing account profiles | Sign in to Teams on the web; separate profiles are optional |
 | Presence timing when entering or leaving a real call | One-minute grace period and **Done** |
 | Focusing the exact call window | **Show call** activates the browser on macOS |
+| Call-alerts plugin with a real group call, and with a plugin signed in to a different account than the one on screen | The ring card still shows; callers are matched only against the account on screen, so **Open chat** may be unavailable |

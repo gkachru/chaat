@@ -52,7 +52,8 @@ the rename, when the app still had a demo mode:
 | Real-time updates | ✅ On open, focus and refresh. ✅ Push through a self-hostable `chaat-relay`, since Microsoft forbids polling ([why](docs/realtime.md)) |
 | Multiple accounts, setting your availability and status message | ✅ Implemented |
 | Out of office (automatic replies) | ✅ In Settings and the account menu, for accounts with an Exchange Online mailbox |
-| Audio and video inside Chaat's own window, incoming calls | ❌ No free official way: Microsoft's licence covers call media only in its own clients ([why](docs/calling.md)) |
+| Incoming-call alerts | ⚠️ Only with the optional, separately installed call-alerts plugin, which uses Teams' push service; Chaat shows who is calling with **Place call** and **Open chat** ([how](docs/calling.md#call-alerts-plugin)) |
+| Audio and video inside Chaat's own window, answering calls | ❌ No free official way: Microsoft's licence covers call media only in its own clients ([why](docs/calling.md)) |
 
 The full matrix, including what was verified and how, is in
 [docs/features.md](docs/features.md). API constraints and official references
