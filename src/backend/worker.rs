@@ -428,10 +428,16 @@ impl Worker {
                     plugin.accounts.send_replace(accounts);
                 }
             }
-            Command::CallAlertsForget(account) => self.call_alerts_request(serde_json::json!({
-                "type": "forget",
-                "account": account,
-            })),
+            Command::CallAlertsForget { account, plugin } => {
+                if self.call_alerts.is_some() {
+                    self.call_alerts_request(serde_json::json!({
+                        "type": "forget",
+                        "account": account,
+                    }));
+                } else if let Some(plugin) = plugin {
+                    tokio::spawn(forget_with_plugin(plugin, account));
+                }
+            }
             Command::CallAlertsSignIn(account) => self.call_alerts_request(serde_json::json!({
                 "type": "sign_in",
                 "account": account,
@@ -1882,6 +1888,35 @@ async fn run_call_alerts_once(
     }
 }
 
+/// Runs `<plugin> logout <account>` once, for a sign-out while the plugin is
+/// off, so its stored sign-in for that account goes too.
+async fn forget_with_plugin(plugin: std::path::PathBuf, account: String) {
+    let mut command = tokio::process::Command::new(plugin);
+    command
+        .arg("logout")
+        .arg(account)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    #[cfg(target_os = "windows")]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    match command.spawn() {
+        Ok(mut child) => {
+            if tokio::time::timeout(Duration::from_secs(10), child.wait())
+                .await
+                .is_err()
+            {
+                log::info!("call-alerts: plugin logout did not finish in time");
+            }
+        }
+        Err(error) => log::info!("call-alerts: could not run plugin logout: {error}"),
+    }
+}
+
 /// Whether a sign-in page the plugin names is an HTTPS page on Microsoft's
 /// own sign-in hosts. Plugin lines are untrusted; Chaat offers to open only
 /// these.
@@ -1950,10 +1985,13 @@ fn decode_call_alert(line: &str, out: &Outbox) {
             running: true,
             message: None,
         }),
-        Some("error") => out.send(Event::CallAlertsStatus {
-            running: true,
-            message: text("message"),
-        }),
+        Some("error") => match (text("account"), text("message")) {
+            (Some(account), Some(message)) => out.send(Event::CallAlertsError { account, message }),
+            (_, message) => out.send(Event::CallAlertsStatus {
+                running: true,
+                message,
+            }),
+        },
         _ => {}
     }
 }

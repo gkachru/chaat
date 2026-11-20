@@ -191,7 +191,11 @@ pub enum Command {
     CallAlertsAccounts(Vec<crate::calling::PluginAccount>),
     /// The person signed this account (`oid.tid`) out of Chaat: the plugin
     /// forgets its own sign-in for it too.
-    CallAlertsForget(String),
+    /// With no plugin running, Chaat runs `<plugin> logout <account>` once.
+    CallAlertsForget {
+        account: String,
+        plugin: Option<std::path::PathBuf>,
+    },
     /// Asks the plugin for a fresh sign-in code for this account now.
     CallAlertsSignIn(String),
     /// Stop the call-alerts plugin, if one is running.
@@ -359,6 +363,11 @@ pub enum Event {
     /// The plugin is listening for this account's calls.
     CallAlertsListening {
         account: String,
+    },
+    /// The plugin hit a problem with one account (it still runs).
+    CallAlertsError {
+        account: String,
+        message: String,
     },
     /// The call-alerts plugin reported a problem (e.g. not signed in) or its
     /// status changed. `running` says whether it is currently active.

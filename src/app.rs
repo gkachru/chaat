@@ -862,6 +862,12 @@ impl App {
             return;
         }
         let accounts = self.call_alerts_accounts();
+        let known = |account: &str| accounts.iter().any(|a| a.id == account);
+        self.call_alerts_sign_in
+            .retain(|s| s.account.as_deref().is_none_or(known));
+        self.call_alerts_asked
+            .retain(|asked| asked.as_deref().is_none_or(known));
+        self.call_alerts_listening.retain(|id| known(id));
         if accounts != self.call_alerts_sent {
             self.call_alerts_sent = accounts.clone();
             self.service.send(Command::CallAlertsAccounts(accounts));
@@ -1578,6 +1584,14 @@ impl App {
                     _ => "Call alerts are on.".to_owned(),
                 };
                 self.toast(ToastKind::Info, text);
+            }
+            Event::CallAlertsError { account, message } => {
+                self.call_alerts_listening.retain(|id| *id != account);
+                let text = match self.call_alerts_username(Some(&account)) {
+                    Some(name) => format!("Call alerts for {name}: {message}"),
+                    None => format!("Call alerts: {message}"),
+                };
+                self.toast(ToastKind::Error, text);
             }
             Event::CallAlertsListening { account } => {
                 if !self.call_alerts_listening.contains(&account) {
@@ -3032,10 +3046,19 @@ impl App {
             return;
         }
         // Signing out of Chaat also ends call alerts for that account.
+        // Even with call alerts off, so the plugin keeps no sign-in for it.
         if let Some(id) = self.id.clone()
-            && self.call_alerts_enabled()
+            && let Some(plugin) = self
+                .settings
+                .calls
+                .call_alerts_plugin
+                .clone()
+                .filter(|path| !path.as_os_str().is_empty())
         {
-            self.service.send(Command::CallAlertsForget(id));
+            self.service.send(Command::CallAlertsForget {
+                account: id,
+                plugin: Some(plugin),
+            });
         }
         self.sign_out_browser();
         self.backend.send(Command::SignOut);
@@ -3577,7 +3600,8 @@ mod tests {
         assert_eq!(shown.account_name.as_deref(), Some("alex@fabrikam.com"));
         assert_eq!(shown.chat, Some(ConversationId::Chat(FABRIKAM_MAE.into())));
         assert_eq!(shown.email(), Some("mae@fabrikam.com"));
-        app.apply(Action::RingOpenChat("f-call".into()), &ctx);
+        let key = app.rings[0].id.clone();
+        app.apply(Action::RingOpenChat(key), &ctx);
         assert_eq!(app.active, fabrikam);
         assert_eq!(app.open, Some(ConversationId::Chat(FABRIKAM_MAE.into())));
     }
@@ -3595,7 +3619,8 @@ mod tests {
         assert_eq!(shown.account_name.as_deref(), Some("someone@elsewhere.com"));
         assert!(shown.member.is_none() && !shown.can_open_chat());
         let ctx = egui::Context::default();
-        app.apply(Action::RingPlaceCall("x-call".into()), &ctx);
+        let key = app.rings[0].id.clone();
+        app.apply(Action::RingPlaceCall(key), &ctx);
         assert_eq!(app.active, active, "no account to switch to");
     }
 
@@ -3633,10 +3658,9 @@ mod tests {
         let ctx = egui::Context::default();
         app.apply(Action::SignOut, &ctx);
         let sent: Vec<Command> = std::iter::from_fn(|| service_commands.try_recv().ok()).collect();
-        assert!(
-            sent.iter()
-                .any(|c| matches!(c, Command::CallAlertsForget(id) if id == "u-me.t1"))
-        );
+        assert!(sent.iter().any(
+            |c| matches!(c, Command::CallAlertsForget { account, .. } if account == "u-me.t1")
+        ));
         assert!(
             sent.iter()
                 .any(|c| matches!(c, Command::CallAlertsAccounts(accounts) if accounts.is_empty()))
@@ -3678,6 +3702,79 @@ mod tests {
             &ctx,
         );
         assert_eq!(app.call_alerts_listening, vec![FABRIKAM.to_owned()]);
+    }
+
+    #[test]
+    fn one_call_ringing_two_accounts_shows_a_card_for_each() {
+        let (mut app, _dir) = demo_app();
+        for account in ["u-me.demo", FABRIKAM] {
+            let mut alert = ring("same-call", "8:orgid:u-ada");
+            alert.account = Some(account.into());
+            app.on_incoming_call(alert);
+        }
+        assert_eq!(app.rings.len(), 2);
+    }
+
+    #[test]
+    fn an_account_error_names_the_account_and_stops_listening() {
+        let (mut app, _dir) = demo_app();
+        let ctx = egui::Context::default();
+        app.handle(
+            Event::CallAlertsListening {
+                account: FABRIKAM.into(),
+            },
+            &ctx,
+        );
+        app.handle(
+            Event::CallAlertsError {
+                account: FABRIKAM.into(),
+                message: "could not find the push service host".into(),
+            },
+            &ctx,
+        );
+        assert!(app.call_alerts_listening.is_empty());
+        assert!(
+            app.toasts
+                .iter()
+                .any(|t| t.text.starts_with("Call alerts for alex@fabrikam.com:"))
+        );
+    }
+
+    #[test]
+    fn signing_out_with_call_alerts_off_still_clears_the_plugin_sign_in() {
+        let (mut app, _) = app();
+        let (service, mut service_commands) = Backend::recording();
+        app.service = service;
+        app.id = Some("u-me.t1".into());
+        app.settings.calls.call_alerts_plugin = Some(PathBuf::from("plugin.exe"));
+        app.settings.calls.call_alerts = false;
+        let ctx = egui::Context::default();
+        app.apply(Action::SignOut, &ctx);
+        let sent: Vec<Command> = std::iter::from_fn(|| service_commands.try_recv().ok()).collect();
+        assert!(sent.iter().any(|c| matches!(
+            c,
+            Command::CallAlertsForget { account, plugin: Some(_) } if account == "u-me.t1"
+        )));
+    }
+
+    #[test]
+    fn removing_an_account_drops_its_plugin_state() {
+        let (mut app, _) = app();
+        let (service, _commands) = Backend::recording();
+        app.service = service;
+        app.id = Some("u-me.t1".into());
+        app.settings.calls.call_alerts_plugin = Some(PathBuf::from("plugin.exe"));
+        app.settings.calls.call_alerts = true;
+        app.call_alerts_listening = vec!["u-me.t1".into(), "gone.t9".into()];
+        app.call_alerts_sign_in.push(crate::model::PluginSignIn {
+            account: Some("gone.t9".into()),
+            username: None,
+            verification_uri: "https://microsoft.com/devicelogin".into(),
+            user_code: "OLD".into(),
+        });
+        app.remember_accounts();
+        assert_eq!(app.call_alerts_listening, vec!["u-me.t1".to_owned()]);
+        assert!(app.call_alerts_sign_in.is_empty());
     }
     #[test]
     fn dismissing_a_ring_removes_only_that_one() {

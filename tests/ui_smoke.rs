@@ -3327,12 +3327,7 @@ fn call_alerts_settings_list_each_account_and_whether_it_listens() {
         );
         h.act(Action::ShowSettingsPage(SettingsPage::Calls));
         let painted = painted_texts(&h);
-        for text in [
-            "alex@fabrikam.com",
-            "Listening for calls",
-            "Not signed in",
-            "Sign in",
-        ] {
+        for text in ["alex@fabrikam.com", "Listening for calls", "Connecting…"] {
             assert!(
                 painted.iter().any(|t| t == text),
                 "{text:?} shows at {width}"

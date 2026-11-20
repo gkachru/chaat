@@ -617,9 +617,14 @@ impl App {
         let account = index
             .and_then(|i| self.accounts.get(i))
             .and_then(|a| a.id.clone());
-        self.rings.retain(|ring| ring.id != alert.id);
+        // One group call can ring several accounts: a card for each.
+        let key = match &alert.account {
+            Some(account) => format!("{}#{account}", alert.id),
+            None => alert.id.clone(),
+        };
+        self.rings.retain(|ring| ring.id != key);
         self.rings.push(Ring {
-            id: alert.id,
+            id: key,
             caller: alert.caller,
             video: alert.video,
             group: alert.group,

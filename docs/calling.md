@@ -122,8 +122,10 @@ accounts, never a token. The plugin listens for each one on its own
 connection, in one process, and asks to sign in to each separately: the
 panel names the account to sign in as, and a sign-in to a different account
 is turned down with a new code. Settings lists every account as **Listening
-for calls**, **Waiting for sign-in** (with **New code**) or **Not signed in**
-(with **Sign in**).
+for calls** (its connection came up, and the plugin has reported no problem
+with it since), **Waiting for sign-in** (with **New code**) or
+**Connecting…**. Errors reach Chaat once per run of failures, naming the
+account.
 
 A ring says which account it came in on. When Chaat has several accounts,
 the card names it, and **Place call** and **Open chat** switch to that
@@ -131,7 +133,8 @@ account first, so the call uses its browser profile and the chat is its
 own. A ring on an account the plugin has but Chaat does not still shows,
 named by its sign-in name; **Place call** opens Teams on the web and **Open
 chat** is unavailable. Signing an account out of Chaat also clears the
-plugin's sign-in for it; an account only removed from the list stops
+plugin's sign-in for it, even with call alerts off (Chaat then runs
+`<plugin> logout <account>` once); an account only removed from the list stops
 listening but keeps its plugin sign-in.
 
 ### Protocol
@@ -151,8 +154,8 @@ side can be newer.
 | plugin → Chaat | `sign_in_required` | `verification_uri`, `user_code`, `account` and `username` (optional) |
 | plugin → Chaat | `signed_in` | `account`, `username` |
 | plugin → Chaat | `listening` | `account`, `username`; sent each time an account's connection comes up |
-| plugin → Chaat | `incoming_call` | `id`, `caller`, `caller_mri`, `video`, `group`, `account`, `username`, `thread_id` (optional, usually absent for one-on-one calls) |
-| plugin → Chaat | `error` | `message`, shown as an error notice; `account` (optional) |
+| plugin → Chaat | `incoming_call` | `id`, `caller`, `caller_mri`, `video`, `group`, `account`, `username`, `thread_id` (optional, usually absent for one-on-one calls) | A call ringing two accounts shows a card for each.
+| plugin → Chaat | `error` | `message`, shown as an error notice; with `account`, the notice names it and the account is no longer shown as listening |
 
 `call_ended` is reserved for when a plugin can report it. Chaat passes the
 plugin its accounts' IDs and sign-in names only: no tokens, settings or

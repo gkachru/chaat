@@ -840,18 +840,16 @@ fn call_alerts_accounts(app: &App, ui: &mut egui::Ui, actions: &mut Vec<Action>)
             } else if waiting {
                 ("Waiting for sign-in", palette.warning)
             } else {
-                ("Not signed in", palette.warning)
+                // Signing in or connecting; a sign-in it needs shows on its own.
+                ("Connecting…", palette.secondary)
             };
             ui.label(
                 egui::RichText::new(state)
                     .font(theme::regular(13.0))
                     .color(color),
             );
-            if !listening {
-                let label = if waiting { "New code" } else { "Sign in" };
-                if widgets::secondary_button(ui, &palette, label).clicked() {
-                    actions.push(Action::CallAlertsSignIn(account.id.clone()));
-                }
+            if waiting && widgets::secondary_button(ui, &palette, "New code").clicked() {
+                actions.push(Action::CallAlertsSignIn(account.id.clone()));
             }
         });
     }
