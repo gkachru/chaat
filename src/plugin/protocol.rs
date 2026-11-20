@@ -6,6 +6,8 @@
 //! Everything here is plugin-neutral: identities are Entra object and tenant
 //! ids and sign-in names. How a plugin learns them is its own business.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use serde::{Deserialize, Serialize};
 
 /// The protocol version Chaat speaks. Messages with another `v` are dropped.
@@ -49,6 +51,17 @@ pub enum HostMessage {
     SignIn {
         account: String,
     },
+    /// The current option values (secrets included), after `ready` and after
+    /// each change. Keys are option ids.
+    Options {
+        values: BTreeMap<String, serde_json::Value>,
+    },
+    /// The busiest presence across accounts; only for plugins that need it.
+    Presence {
+        availability: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        activity: Option<String>,
+    },
     Shutdown,
 }
 
@@ -82,6 +95,14 @@ pub enum PluginMessage {
         /// The `hello.forget` accounts whose sign-ins the plugin cleared.
         #[serde(default)]
         forgotten: Vec<String>,
+        /// What the plugin asks for (`accounts`, `presence`); a non-array
+        /// reads as none.
+        #[serde(default, deserialize_with = "lenient_strings")]
+        needs: Vec<String>,
+        /// Raw option descriptions; see `clean_options`. A non-array reads
+        /// as none.
+        #[serde(default, deserialize_with = "lenient_array")]
+        options: Vec<serde_json::Value>,
     },
     SignInRequired {
         /// How to sign in. Absent means `device_code` (older plugins).
@@ -172,6 +193,139 @@ impl PluginInfo {
     }
 }
 
+/// The most options a plugin may describe.
+const MAX_OPTIONS: usize = 16;
+/// The most choices one `choice` option may offer.
+const MAX_CHOICES: usize = 12;
+
+/// What kind of control an option is drawn as.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OptionKind {
+    Toggle,
+    Choice,
+    Text,
+    Secret,
+}
+
+/// One choice of a `choice` option.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OptionChoice {
+    pub value: String,
+    pub label: String,
+}
+
+/// A plugin-described setting, cleaned for display.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OptionSpec {
+    /// `[a-z0-9_]{1,32}`.
+    pub id: String,
+    pub kind: OptionKind,
+    pub label: String,
+    /// A bool for `toggle`, a string for `text`, one of the choice values for
+    /// `choice`, never present for `secret`.
+    pub default: Option<serde_json::Value>,
+    pub choices: Vec<OptionChoice>,
+}
+
+/// Cleans untrusted `ready.options`: drops what is malformed (bad id, kind,
+/// label or default), keeps the first of a duplicate id and the first 16.
+pub fn clean_options(raw: Vec<serde_json::Value>) -> Vec<OptionSpec> {
+    let mut seen = BTreeSet::new();
+    let mut specs = Vec::new();
+    for item in raw {
+        let Some(spec) = clean_option(&item) else {
+            continue;
+        };
+        if seen.insert(spec.id.clone()) {
+            specs.push(spec);
+            if specs.len() == MAX_OPTIONS {
+                break;
+            }
+        }
+    }
+    specs
+}
+
+fn clean_option(item: &serde_json::Value) -> Option<OptionSpec> {
+    let id = item.get("id")?.as_str()?;
+    let id_ok = (1..=32).contains(&id.len())
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
+    if !id_ok {
+        return None;
+    }
+    let kind = match item.get("kind")?.as_str()? {
+        "toggle" => OptionKind::Toggle,
+        "choice" => OptionKind::Choice,
+        "text" => OptionKind::Text,
+        "secret" => OptionKind::Secret,
+        _ => return None,
+    };
+    let label = plain(item.get("label")?.as_str()?, 60)?;
+    let default = item.get("default").filter(|v| !v.is_null());
+    let mut choices = Vec::new();
+    let default = match kind {
+        OptionKind::Toggle => match default {
+            None => None,
+            Some(v) if v.is_boolean() => Some(v.clone()),
+            Some(_) => return None,
+        },
+        OptionKind::Text => match default {
+            None => None,
+            Some(v) => {
+                let text = v.as_str()?;
+                if text.chars().count() > 200 || text.chars().any(|c| c.is_control()) {
+                    return None;
+                }
+                Some(v.clone())
+            }
+        },
+        OptionKind::Secret => {
+            if default.is_some() {
+                return None;
+            }
+            None
+        }
+        OptionKind::Choice => {
+            let list = item.get("choices")?.as_array()?;
+            if list.is_empty() || list.len() > MAX_CHOICES {
+                return None;
+            }
+            for entry in list {
+                let value = entry.get("value")?.as_str()?;
+                let label = plain(entry.get("label")?.as_str()?, 60)?;
+                if value.is_empty()
+                    || value.chars().count() > 64
+                    || value.chars().any(|c| c.is_control() || is_invisible(c))
+                    || choices.iter().any(|c: &OptionChoice| c.value == value)
+                {
+                    return None;
+                }
+                choices.push(OptionChoice {
+                    value: value.to_owned(),
+                    label,
+                });
+            }
+            match default {
+                None => None,
+                Some(v) => {
+                    let text = v.as_str()?;
+                    choices.iter().any(|c| c.value == text).then(|| v.clone())?;
+                    Some(v.clone())
+                }
+            }
+        }
+    };
+    Some(OptionSpec {
+        id: id.to_owned(),
+        kind,
+        label,
+        default,
+        choices,
+    })
+}
+
 /// Invisible formatting characters (direction overrides, zero-width marks)
 /// that could make a plugin's text read differently from what it says.
 fn is_invisible(c: char) -> bool {
@@ -186,6 +340,30 @@ fn is_invisible(c: char) -> bool {
             | '\u{FEFF}'
             | '\u{FFF9}'..='\u{FFFB}'
     )
+}
+
+/// The strings of a JSON array; anything else is empty.
+fn lenient_strings<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    Ok(match serde_json::Value::deserialize(d)? {
+        serde_json::Value::Array(items) => items
+            .into_iter()
+            .filter_map(|item| match item {
+                serde_json::Value::String(text) => Some(text),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    })
+}
+
+/// The items of a JSON array; anything else is empty.
+fn lenient_array<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Vec<serde_json::Value>, D::Error> {
+    Ok(match serde_json::Value::deserialize(d)? {
+        serde_json::Value::Array(items) => items,
+        _ => Vec::new(),
+    })
 }
 
 /// A string field, or `None` for anything else.
@@ -332,6 +510,8 @@ mod tests {
                 description: Some("Tells Chaat who is calling you in Teams.".into()),
                 docs_url: Some("https://github.com/gkachru/call-alerts".into()),
                 forgotten: vec!["o9.t9".into()],
+                needs: vec![],
+                options: vec![],
             })
         );
         assert_eq!(
@@ -434,5 +614,160 @@ mod tests {
         let info = PluginInfo::from_ready(None, Some(" \n ".into()), Some("https://a.b/c".into()));
         assert_eq!(info.description, None);
         assert_eq!(info.docs_url.as_deref(), Some("https://a.b/c"));
+    }
+
+    fn opt(v: serde_json::Value) -> Vec<OptionSpec> {
+        clean_options(vec![v])
+    }
+
+    #[test]
+    fn a_text_option_cleans_to_a_spec() {
+        let specs = opt(serde_json::json!({"id":"ip","kind":"text","label":"Bulb address"}));
+        assert_eq!(
+            specs,
+            vec![OptionSpec {
+                id: "ip".into(),
+                kind: OptionKind::Text,
+                label: "Bulb address".into(),
+                default: None,
+                choices: vec![],
+            }]
+        );
+    }
+
+    #[test]
+    fn options_with_bad_ids_kinds_or_defaults_are_dropped() {
+        use serde_json::json;
+        let raw = vec![
+            json!({"id":"Bad Id","kind":"text","label":"x"}),
+            json!({"id":"a","kind":"script","label":"x"}),
+            json!({"id":"","kind":"text","label":"x"}),
+            json!({"id": "a".repeat(33),"kind":"text","label":"x"}),
+            json!({"id":"b","kind":"toggle","label":"x","default":"yes"}),
+            json!({"id":"c","kind":"text","label":"x","default":3}),
+            json!({"id":"d","kind":"text","label":"  "}),
+            json!({"id":7,"kind":"text","label":"x"}),
+            json!("nope"),
+        ];
+        assert!(clean_options(raw).is_empty());
+        let ok = opt(json!({"id":"t","kind":"toggle","label":"T","default":true}));
+        assert_eq!(ok[0].default, Some(json!(true)));
+    }
+
+    #[test]
+    fn more_than_16_options_keep_the_first_16() {
+        let raw = (0..20)
+            .map(|i| serde_json::json!({"id":format!("o{i}"),"kind":"toggle","label":"x"}))
+            .collect();
+        let specs = clean_options(raw);
+        assert_eq!(specs.len(), 16);
+        assert_eq!(specs[15].id, "o15");
+    }
+
+    #[test]
+    fn duplicate_option_ids_keep_the_first() {
+        let specs = clean_options(vec![
+            serde_json::json!({"id":"a","kind":"text","label":"First"}),
+            serde_json::json!({"id":"a","kind":"toggle","label":"Second"}),
+        ]);
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].label, "First");
+    }
+
+    #[test]
+    fn choice_without_choices_or_over_12_is_dropped() {
+        use serde_json::json;
+        assert!(opt(json!({"id":"c","kind":"choice","label":"x"})).is_empty());
+        assert!(opt(json!({"id":"c","kind":"choice","label":"x","choices":[]})).is_empty());
+        let many: Vec<_> = (0..13)
+            .map(|i| json!({"value":format!("v{i}"),"label":"L"}))
+            .collect();
+        assert!(opt(json!({"id":"c","kind":"choice","label":"x","choices":many})).is_empty());
+        let twelve: Vec<_> = (0..12)
+            .map(|i| json!({"value":format!("v{i}"),"label":"L"}))
+            .collect();
+        let specs = opt(json!({"id":"c","kind":"choice","label":"x","choices":twelve}));
+        assert_eq!(specs[0].choices.len(), 12);
+        let bad_default = json!({"id":"c","kind":"choice","label":"x","default":"zz",
+            "choices":[{"value":"a","label":"A"}]});
+        assert!(opt(bad_default).is_empty());
+    }
+
+    #[test]
+    fn secret_with_a_default_is_dropped() {
+        use serde_json::json;
+        assert!(opt(json!({"id":"s","kind":"secret","label":"x","default":"p"})).is_empty());
+        let plain_secret = opt(json!({"id":"s","kind":"secret","label":"x"}));
+        assert_eq!(plain_secret[0].kind, OptionKind::Secret);
+    }
+
+    #[test]
+    fn option_labels_lose_invisible_characters() {
+        let specs =
+            opt(serde_json::json!({"id":"a","kind":"text","label":"Sa\u{202E}fe\n\u{200B}x"}));
+        assert_eq!(specs[0].label, "Safe x");
+    }
+
+    #[test]
+    fn a_ready_without_needs_or_options_still_parses() {
+        let ready = PluginMessage::parse(r#"{"v":1,"type":"ready"}"#);
+        assert!(matches!(
+            ready,
+            Some(PluginMessage::Ready { ref needs, ref options, .. })
+                if needs.is_empty() && options.is_empty()
+        ));
+        let odd = PluginMessage::parse(r#"{"v":1,"type":"ready","options":"x","needs":3}"#);
+        assert!(matches!(
+            odd,
+            Some(PluginMessage::Ready { ref needs, ref options, .. })
+                if needs.is_empty() && options.is_empty()
+        ));
+    }
+
+    #[test]
+    fn options_and_presence_fixtures_match() {
+        let options = HostMessage::Options {
+            values: [
+                ("brightness".to_owned(), serde_json::json!("high")),
+                ("flash".to_owned(), serde_json::json!(true)),
+                ("ip".to_owned(), serde_json::json!("192.168.1.20")),
+                ("token".to_owned(), serde_json::json!("s3cret")),
+            ]
+            .into(),
+        };
+        assert_eq!(value(&options.to_line()), value(&fixture("options")));
+        let presence = HostMessage::Presence {
+            availability: "Busy".into(),
+            activity: Some("InACall".into()),
+        };
+        assert_eq!(value(&presence.to_line()), value(&fixture("presence")));
+        let none = HostMessage::Presence {
+            availability: "Away".into(),
+            activity: None,
+        };
+        assert!(value(&none.to_line()).get("activity").is_none());
+    }
+
+    #[test]
+    fn the_ready_options_fixture_parses_and_cleans() {
+        let Some(PluginMessage::Ready { needs, options, .. }) =
+            PluginMessage::parse(&fixture("ready_options"))
+        else {
+            panic!("ready_options is a ready");
+        };
+        assert_eq!(needs, vec!["presence".to_owned()]);
+        let specs = clean_options(options);
+        let kinds: Vec<_> = specs.iter().map(|s| s.kind).collect();
+        assert_eq!(
+            kinds,
+            [
+                OptionKind::Text,
+                OptionKind::Toggle,
+                OptionKind::Choice,
+                OptionKind::Secret
+            ]
+        );
+        assert_eq!(specs[2].choices.len(), 2);
+        assert_eq!(specs[2].default, Some(serde_json::json!("high")));
     }
 }

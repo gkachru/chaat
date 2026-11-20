@@ -6,5 +6,5 @@ call-alerts repo (`tests/fixtures/plugin-protocol/`). Each side's tests
 parse the messages it receives and check that the messages it sends equal
 these (as JSON values; key order doesn't matter). Change both copies together.
 
-Chaat to plugin: hello, accounts, forget, sign_in, shutdown.
-Plugin to Chaat: ready, sign_in_required, signed_in, listening, incoming_call, error.
+Chaat to plugin: hello, accounts, forget, sign_in, options, presence, shutdown.
+Plugin to Chaat: ready, ready_options (a ready with needs and options), sign_in_required, signed_in, listening, incoming_call, error.
