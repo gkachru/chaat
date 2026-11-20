@@ -4,5 +4,8 @@
 //! `protocol` defines the messages; what a plugin is for (today, call alerts)
 //! lives with that feature, in `calling::alerts`.
 
+pub mod event;
 pub mod host;
+pub mod presence;
 pub mod protocol;
+pub mod registry;
