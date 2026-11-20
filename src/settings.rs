@@ -84,6 +84,9 @@ pub struct CallSettings {
     pub call_alerts_plugin: Option<std::path::PathBuf>,
     /// Whether the call-alerts plugin is active. Off unless a path is set.
     pub call_alerts: bool,
+    /// Accounts (`oid.tid`) signed out of Chaat while the call-alerts plugin
+    /// wasn't running: it forgets their sign-ins when it next starts.
+    pub call_alerts_forget: Vec<String>,
 }
 
 impl Default for CallSettings {
@@ -98,6 +101,7 @@ impl Default for CallSettings {
             links_in_browser: false,
             call_alerts_plugin: None,
             call_alerts: false,
+            call_alerts_forget: Vec::new(),
         }
     }
 }

@@ -154,7 +154,7 @@ struct Worker {
     /// cleanup.
     stop_push: Option<(watch::Sender<bool>, tokio::task::JoinHandle<()>)>,
     /// The external call-alerts plugin process reader, and its stop signal.
-    call_alerts: Option<CallAlerts>,
+    call_alerts: Option<crate::plugin::host::Plugin>,
     /// Whether Chaat keeps a presence session (setting), and when it last
     /// refreshed it.
     session_enabled: bool,
@@ -420,28 +420,40 @@ impl Worker {
             Command::UserName(user) => self.user_name(user),
             Command::Media(url) => self.media(url),
             Command::Search(query) => self.search(query),
-            Command::StartCallAlerts { path, accounts } => {
-                self.restart_call_alerts(path, accounts);
-            }
+            Command::StartCallAlerts {
+                path,
+                accounts,
+                forget,
+            } => self.restart_call_alerts(path, accounts, forget),
             Command::CallAlertsAccounts(accounts) => {
                 if let Some(plugin) = &self.call_alerts {
-                    plugin.accounts.send_replace(accounts);
+                    // A later restart says hello with these accounts; pending
+                    // forgets were delivered once the plugin was ready.
+                    let update = accounts.clone();
+                    plugin.set_hello(move |hello| {
+                        if let crate::plugin::protocol::HostMessage::Hello {
+                            accounts,
+                            forget,
+                            ..
+                        } = hello
+                        {
+                            *accounts = update;
+                            forget.clear();
+                        }
+                    });
+                    plugin.send(crate::plugin::protocol::HostMessage::Accounts { accounts });
                 }
             }
-            Command::CallAlertsForget { account, plugin } => {
-                if self.call_alerts.is_some() {
-                    self.call_alerts_request(serde_json::json!({
-                        "type": "forget",
-                        "account": account,
-                    }));
-                } else if let Some(plugin) = plugin {
-                    tokio::spawn(forget_with_plugin(plugin, account));
+            Command::CallAlertsForget(account) => {
+                if let Some(plugin) = &self.call_alerts {
+                    plugin.send(crate::plugin::protocol::HostMessage::Forget { account });
                 }
             }
-            Command::CallAlertsSignIn(account) => self.call_alerts_request(serde_json::json!({
-                "type": "sign_in",
-                "account": account,
-            })),
+            Command::CallAlertsSignIn(account) => {
+                if let Some(plugin) = &self.call_alerts {
+                    plugin.send(crate::plugin::protocol::HostMessage::SignIn { account });
+                }
+            }
             Command::StopCallAlerts => {
                 self.stop_call_alerts().await;
                 self.out.send(Event::CallAlertsStatus {
@@ -795,56 +807,36 @@ impl Worker {
         }
     }
 
-    /// Launches (or relaunches) the external call-alerts plugin and reads its
-    /// ring alerts. The plugin is a separate process; Chaat speaks a small JSON
-    /// protocol to it over stdio, telling it only its accounts' ids and sign-in
-    /// names, never a token (docs/calling.md).
+    /// Launches (or relaunches) the call-alerts plugin. `plugin::host` runs the
+    /// process; `calling::alerts` turns its messages into events. The plugin is
+    /// told only its accounts' ids and sign-in names, never a token.
     fn restart_call_alerts(
         &mut self,
         path: std::path::PathBuf,
         accounts: Vec<crate::calling::PluginAccount>,
+        forget: Vec<String>,
     ) {
-        let (stop, stopped) = watch::channel(false);
-        let (accounts, accounts_rx) = watch::channel(accounts);
-        let (requests, requests_rx) = tokio::sync::mpsc::unbounded_channel();
+        use crate::calling::alerts;
         let out = self.out.clone();
-        let task = tokio::spawn(call_alerts_loop(
+        let plugin = crate::plugin::host::Plugin::start(
             path,
-            out,
-            stopped,
-            accounts_rx,
-            requests_rx,
-        ));
-        let plugin = CallAlerts {
-            stop,
-            accounts,
-            requests,
-            task,
-        };
+            alerts::hello(accounts, forget),
+            alerts::CAPABILITY,
+            move |reported| {
+                if let Some(event) = alerts::event(reported) {
+                    out.send(event);
+                }
+            },
+        );
         if let Some(old) = self.call_alerts.replace(plugin) {
-            let _ = old.stop.send(true);
-            old.task.abort();
+            old.abort();
         }
     }
 
-    /// Sends the running plugin one host message; dropped if none runs.
-    fn call_alerts_request(&self, message: serde_json::Value) {
-        if let Some(plugin) = &self.call_alerts {
-            let _ = plugin.requests.send(host_line(message));
-        }
-    }
-
-    /// Stops the call-alerts plugin, if one is running, and waits briefly for it
-    /// to exit.
+    /// Stops the call-alerts plugin, if one is running.
     async fn stop_call_alerts(&mut self) {
         if let Some(plugin) = self.call_alerts.take() {
-            let _ = plugin.stop.send(true);
-            if tokio::time::timeout(Duration::from_secs(3), plugin.task)
-                .await
-                .is_err()
-            {
-                log::info!("call-alerts: plugin did not stop in time; abandoning it");
-            }
+            plugin.stop().await;
         }
     }
 
@@ -1745,254 +1737,6 @@ impl Worker {
                 Err(error) => log::info!("Microsoft Search unavailable: {error}"),
             }
         });
-    }
-}
-
-/// The running call-alerts plugin, and the ways to reach it.
-struct CallAlerts {
-    stop: watch::Sender<bool>,
-    /// Chaat's accounts, for the plugin to listen for. Sent in `hello`, and as
-    /// an `accounts` message whenever it changes.
-    accounts: watch::Sender<Vec<crate::calling::PluginAccount>>,
-    /// Other host messages (`forget`, `sign_in`), as JSON lines.
-    requests: tokio::sync::mpsc::UnboundedSender<String>,
-    task: tokio::task::JoinHandle<()>,
-}
-
-/// One host message as a JSON line.
-fn host_line(mut message: serde_json::Value) -> String {
-    message["v"] = 1.into();
-    let mut line = message.to_string();
-    line.push('\n');
-    line
-}
-
-fn hello_line(accounts: &[crate::calling::PluginAccount]) -> String {
-    host_line(serde_json::json!({
-        "type": "hello",
-        "host": "chaat",
-        "capabilities": ["call_alerts"],
-        "accounts": accounts,
-    }))
-}
-
-fn accounts_line(accounts: &[crate::calling::PluginAccount]) -> String {
-    host_line(serde_json::json!({ "type": "accounts", "accounts": accounts }))
-}
-
-/// Runs the external call-alerts plugin, restarting it with backoff if it exits,
-/// until `stop` is set. The plugin is a separate process; it learns only the
-/// ids and sign-in names of Chaat's accounts, never a token.
-async fn call_alerts_loop(
-    path: std::path::PathBuf,
-    out: Outbox,
-    mut stop: watch::Receiver<bool>,
-    mut accounts: watch::Receiver<Vec<crate::calling::PluginAccount>>,
-    mut requests: tokio::sync::mpsc::UnboundedReceiver<String>,
-) {
-    let mut backoff = Duration::from_secs(1);
-    // Only the first failure in a row is worth a notice; a plugin that is
-    // missing or crashes at once would otherwise repeat it every restart.
-    let mut failing = false;
-    while !*stop.borrow() {
-        let started = std::time::Instant::now();
-        match run_call_alerts_once(&path, &out, &mut stop, &mut accounts, &mut requests).await {
-            Ok(()) => return, // asked to stop
-            Err(error) => {
-                // A run that lasted a while was healthy: start over.
-                if started.elapsed() > Duration::from_secs(60) {
-                    backoff = Duration::from_secs(1);
-                    failing = false;
-                }
-                out.send(Event::CallAlertsStatus {
-                    running: false,
-                    message: (!failing)
-                        .then(|| format!("Call alerts: the plugin stopped ({error}).")),
-                });
-                failing = true;
-                tokio::select! {
-                    _ = tokio::time::sleep(backoff) => {}
-                    _ = stop.changed() => {}
-                }
-                backoff = (backoff * 2).min(Duration::from_secs(30));
-            }
-        }
-    }
-}
-
-/// One run of the plugin process. Returns `Ok(())` when `stop` asked us to quit,
-/// or an error when the process exited or could not be read.
-async fn run_call_alerts_once(
-    path: &std::path::Path,
-    out: &Outbox,
-    stop: &mut watch::Receiver<bool>,
-    accounts: &mut watch::Receiver<Vec<crate::calling::PluginAccount>>,
-    requests: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
-) -> std::io::Result<()> {
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
-
-    let mut command = tokio::process::Command::new(path);
-    command
-        .arg("serve")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .kill_on_drop(true);
-    // Chaat is a windowed app; without this a console plugin opens a console.
-    #[cfg(target_os = "windows")]
-    {
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
-    let mut child = command.spawn()?;
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| std::io::Error::other("plugin stdin unavailable"))?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| std::io::Error::other("plugin stdout unavailable"))?;
-    let hello = hello_line(&accounts.borrow_and_update());
-    let _ = stdin.write_all(hello.as_bytes()).await;
-    let _ = stdin.flush().await;
-
-    let mut lines = tokio::io::BufReader::new(stdout).lines();
-    loop {
-        tokio::select! {
-            _ = stop.changed() => {
-                if *stop.borrow() {
-                    let shutdown = host_line(serde_json::json!({ "type": "shutdown" }));
-                    let _ = stdin.write_all(shutdown.as_bytes()).await;
-                    let _ = stdin.flush().await;
-                    let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
-                    let _ = child.start_kill();
-                    return Ok(());
-                }
-            }
-            Ok(()) = accounts.changed() => {
-                let line = accounts_line(&accounts.borrow_and_update());
-                let _ = stdin.write_all(line.as_bytes()).await;
-                let _ = stdin.flush().await;
-            }
-            Some(line) = requests.recv() => {
-                let _ = stdin.write_all(line.as_bytes()).await;
-                let _ = stdin.flush().await;
-            }
-            line = lines.next_line() => match line {
-                Ok(Some(line)) => decode_call_alert(line.trim(), out),
-                Ok(None) => return Err(std::io::Error::other("plugin closed its output")),
-                Err(error) => return Err(error),
-            },
-        }
-    }
-}
-
-/// Runs `<plugin> logout <account>` once, for a sign-out while the plugin is
-/// off, so its stored sign-in for that account goes too.
-async fn forget_with_plugin(plugin: std::path::PathBuf, account: String) {
-    let mut command = tokio::process::Command::new(plugin);
-    command
-        .arg("logout")
-        .arg(account)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .kill_on_drop(true);
-    #[cfg(target_os = "windows")]
-    {
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
-    match command.spawn() {
-        Ok(mut child) => {
-            if tokio::time::timeout(Duration::from_secs(10), child.wait())
-                .await
-                .is_err()
-            {
-                log::info!("call-alerts: plugin logout did not finish in time");
-            }
-        }
-        Err(error) => log::info!("call-alerts: could not run plugin logout: {error}"),
-    }
-}
-
-/// Whether a sign-in page the plugin names is an HTTPS page on Microsoft's
-/// own sign-in hosts. Plugin lines are untrusted; Chaat offers to open only
-/// these.
-fn is_microsoft_sign_in_page(uri: &str) -> bool {
-    let Some(rest) = uri.strip_prefix("https://") else {
-        return false;
-    };
-    let host = rest
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    matches!(
-        host.as_str(),
-        "microsoft.com" | "www.microsoft.com" | "login.microsoftonline.com" | "login.microsoft.com"
-    )
-}
-/// Turns one JSON line from the plugin into a backend event. Unknown or
-/// unparseable lines are ignored, so a newer plugin cannot break an older Chaat.
-fn decode_call_alert(line: &str, out: &Outbox) {
-    if line.is_empty() {
-        return;
-    }
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
-        return;
-    };
-    let text = |key: &str| value[key].as_str().map(str::to_owned);
-    match value["type"].as_str() {
-        Some("incoming_call") => {
-            let Some(id) = text("id") else {
-                return;
-            };
-            out.send(Event::IncomingCall(crate::calling::RingAlert {
-                id,
-                caller: text("caller").unwrap_or_else(|| "Unknown caller".to_owned()),
-                caller_mri: text("caller_mri").unwrap_or_default(),
-                video: value["video"].as_bool().unwrap_or(false),
-                group: value["group"].as_bool().unwrap_or(false),
-                thread_id: text("thread_id"),
-                account: text("account"),
-                username: text("username"),
-            }));
-        }
-        Some("sign_in_required") => {
-            if let (Some(uri), Some(code)) = (
-                text("verification_uri").filter(|uri| is_microsoft_sign_in_page(uri)),
-                text("user_code"),
-            ) {
-                out.send(Event::CallAlertsSignIn {
-                    account: text("account"),
-                    username: text("username"),
-                    verification_uri: uri,
-                    user_code: code,
-                });
-            }
-        }
-        Some("signed_in") => out.send(Event::CallAlertsSignedIn {
-            account: text("account"),
-        }),
-        Some("listening") => {
-            if let Some(account) = text("account") {
-                out.send(Event::CallAlertsListening { account });
-            }
-        }
-        Some("ready") => out.send(Event::CallAlertsStatus {
-            running: true,
-            message: None,
-        }),
-        Some("error") => match (text("account"), text("message")) {
-            (Some(account), Some(message)) => out.send(Event::CallAlertsError { account, message }),
-            (_, message) => out.send(Event::CallAlertsStatus {
-                running: true,
-                message,
-            }),
-        },
-        _ => {}
     }
 }
 
@@ -3070,52 +2814,6 @@ async fn device_code_sign_in(
 mod tests {
     use super::*;
     use crate::model::{Chat, ChatKind, Member};
-
-    #[test]
-    fn only_microsoft_sign_in_pages_are_offered() {
-        assert!(is_microsoft_sign_in_page(
-            "https://microsoft.com/devicelogin"
-        ));
-        assert!(is_microsoft_sign_in_page(
-            "https://login.microsoftonline.com/common/oauth2/deviceauth"
-        ));
-        assert!(!is_microsoft_sign_in_page(
-            "http://microsoft.com/devicelogin"
-        ));
-        assert!(!is_microsoft_sign_in_page(
-            "https://microsoft.com.evil.example/x"
-        ));
-        assert!(!is_microsoft_sign_in_page(
-            "https://evil.example/?microsoft.com"
-        ));
-        assert!(!is_microsoft_sign_in_page("https://user@evil.example/"));
-    }
-    #[test]
-    fn plugin_lines_become_events_and_unknown_ones_are_ignored() {
-        let (events, received) = std::sync::mpsc::channel();
-        let out = Outbox {
-            events,
-            waker: Waker::default(),
-        };
-        for line in [
-            r#"{"v":1,"type":"sign_in_required","verification_uri":"https://microsoft.com/devicelogin","user_code":"AB12"}"#,
-            r#"{"v":1,"type":"signed_in"}"#,
-            r#"{"v":1,"type":"incoming_call","id":"c1","caller":"Ada","caller_mri":"8:orgid:u-ada","video":true,"group":false}"#,
-            r#"{"v":1,"type":"something_newer"}"#,
-            "not json",
-            "",
-        ] {
-            decode_call_alert(line, &out);
-        }
-        let got: Vec<Event> = received.try_iter().collect();
-        assert_eq!(got.len(), 3);
-        assert!(
-            matches!(&got[0], Event::CallAlertsSignIn { user_code, .. } if user_code == "AB12")
-        );
-        assert!(matches!(got[1], Event::CallAlertsSignedIn { .. }));
-        assert!(matches!(&got[2], Event::IncomingCall(ring)
-            if ring.caller_object_id() == Some("u-ada") && ring.video && ring.thread_id.is_none()));
-    }
 
     /// A chat whose members are `id` (in the person's organisation, "t-1"),
     /// `id@t-2` (another organisation) or `id@` (organisation not given).

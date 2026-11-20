@@ -9,6 +9,7 @@
 //! Chaat follows it as the companion: the call bar, the meeting chat and the
 //! person's presence ([`session`]). See docs/calling.md.
 
+pub mod alerts;
 pub mod browser;
 pub mod dock;
 pub mod session;
@@ -26,9 +27,9 @@ pub struct RingAlert {
     pub id: String,
     /// The caller's display name, as the push gave it.
     pub caller: String,
-    /// The caller's MRI, `8:orgid:<aad-object-id>`. The object id is how Chaat
-    /// resolves the caller to a known person for the toast's actions.
-    pub caller_mri: String,
+    /// The caller's Entra object id, how Chaat resolves the caller to a known
+    /// person (chat members' user id). `None` when the plugin didn't say.
+    pub caller_object_id: Option<String>,
     pub video: bool,
     pub group: bool,
     /// The chat thread, when the push carried one (usually only group calls).
@@ -38,24 +39,11 @@ pub struct RingAlert {
     pub account: Option<String>,
     /// That account's sign-in name, as the plugin reported it.
     pub username: Option<String>,
+    /// How long it rings, as the plugin said; the card closes then.
+    pub ring_timeout: Option<std::time::Duration>,
 }
 
-/// One of Chaat's accounts, as the call-alerts plugin is told about it so it
-/// can listen for that account's calls. Never carries a token.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct PluginAccount {
-    /// `oid.tid`.
-    pub id: String,
-    /// The sign-in name, possibly empty while Chaat doesn't know it yet.
-    pub username: String,
-}
-
-impl RingAlert {
-    /// The caller's Entra object id, parsed from `8:orgid:<object-id>`.
-    pub fn caller_object_id(&self) -> Option<&str> {
-        self.caller_mri.strip_prefix("8:orgid:")
-    }
-}
+pub use crate::plugin::protocol::PluginAccount;
 
 /// Where calls and meetings open (a setting).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

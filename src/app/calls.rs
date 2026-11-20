@@ -632,6 +632,9 @@ impl App {
             member,
             account,
             account_name,
+            shown_for: alert
+                .ring_timeout
+                .unwrap_or(crate::calling::alerts::DEFAULT_RING),
             arrived: std::time::Instant::now(),
         });
         // Several at once is rare; keep the newest few.
@@ -716,7 +719,7 @@ fn resolve_caller(
     alert: &crate::calling::RingAlert,
 ) -> (Option<ConversationId>, Option<Member>) {
     let me = account.me();
-    let member = alert.caller_object_id().and_then(|object_id| {
+    let member = alert.caller_object_id.as_deref().and_then(|object_id| {
         let matches = |m: &&Member| m.user_id.eq_ignore_ascii_case(object_id);
         // Prefer a member record with an address, for the call back.
         let mut known = account

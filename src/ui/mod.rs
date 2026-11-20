@@ -438,10 +438,10 @@ fn rings(app: &mut App, ctx: &egui::Context) {
     let palette = app.palette;
     for ring in &app.rings {
         let age = ring.arrived.elapsed();
-        if age >= crate::model::Ring::SHOWN_FOR {
+        if age >= ring.shown_for {
             app.actions.push(Action::DismissRing(ring.id.clone()));
         } else {
-            ctx.request_repaint_after(crate::model::Ring::SHOWN_FOR - age);
+            ctx.request_repaint_after(ring.shown_for - age);
         }
     }
     let width = (ctx.content_rect().width() - 32.0).clamp(200.0, 340.0);
@@ -468,9 +468,10 @@ fn rings(app: &mut App, ctx: &egui::Context) {
         .order(egui::Order::Foreground)
         .interactable(true)
         .show(ctx, |ui| {
+            let plugin = app.call_alerts_info.name.clone();
             for sign_in in app.call_alerts_sign_in.clone() {
                 card(ui, &mut |ui| {
-                    sign_in_card(ui, &palette, &sign_in, &mut app.actions)
+                    sign_in_card(ui, &palette, plugin.as_deref(), &sign_in, &mut app.actions)
                 });
             }
             for ring in app.rings.clone().iter().rev() {
@@ -486,6 +487,7 @@ fn rings(app: &mut App, ctx: &egui::Context) {
 fn sign_in_card(
     ui: &mut egui::Ui,
     palette: &crate::theme::Palette,
+    plugin: Option<&str>,
     sign_in: &crate::model::PluginSignIn,
     actions: &mut Vec<Action>,
 ) {
@@ -516,12 +518,9 @@ fn sign_in_card(
     ui.add_space(4.0);
     ui.add(
         egui::Label::new(
-            egui::RichText::new(
-                "The call-alerts plugin signs in to Teams separately from Chaat. \
-                 Open the page and enter this code:",
-            )
-            .size(12.0)
-            .color(palette.secondary),
+            egui::RichText::new(sign_in_text(plugin, sign_in.username.as_deref()))
+                .size(12.0)
+                .color(palette.secondary),
         )
         .wrap(),
     );
@@ -682,4 +681,17 @@ pub fn install(ctx: &egui::Context, reproducible: bool) {
             .spawn(fastframe_emoji::warm_up);
     }
     ctx.options_mut(|options| options.zoom_with_keyboard = false);
+}
+
+/// What the sign-in card says: who signs in (the plugin, by its own name when
+/// it gave one) and as whom. Chaat's own words, not the plugin's.
+fn sign_in_text(plugin: Option<&str>, username: Option<&str>) -> String {
+    let who = plugin.unwrap_or("The call-alerts plugin");
+    match username.filter(|name| !name.is_empty()) {
+        Some(name) => format!(
+            "{who} signs in separately from Chaat. Open the page, enter this code, \
+             and sign in as {name}:"
+        ),
+        None => format!("{who} signs in separately from Chaat. Open the page and enter this code:"),
+    }
 }

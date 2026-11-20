@@ -3197,7 +3197,8 @@ fn a_ring_toast_offers_place_call_and_open_chat_in_both_themes_and_widths() {
                 chaat::backend::Event::IncomingCall(chaat::calling::RingAlert {
                     id: "call-1".into(),
                     caller: "Ada Lovelace".into(),
-                    caller_mri: "8:orgid:u-ada".into(),
+                    caller_object_id: Some("u-ada".into()),
+                    ring_timeout: None,
                     video: true,
                     group: false,
                     thread_id: None,
@@ -3333,5 +3334,60 @@ fn call_alerts_settings_list_each_account_and_whether_it_listens() {
                 "{text:?} shows at {width}"
             );
         }
+    }
+}
+
+#[test]
+fn the_plugins_own_description_shows_in_settings_and_names_the_sign_in() {
+    for width in [480.0, 1280.0] {
+        let mut h = Harness::new();
+        h.size = egui::vec2(width, 1800.0);
+        let mut calls = h.app.settings.calls.clone();
+        calls.call_alerts_plugin = Some("C:/plugins/call-alerts.exe".into());
+        calls.call_alerts = true;
+        h.act(Action::SetCallSettings(calls));
+        let ctx = h.ctx.clone();
+        h.app.handle(
+            chaat::backend::Event::CallAlertsReady(
+                chaat::plugin::protocol::PluginInfo::from_ready(
+                    Some("Ring alerts".into()),
+                    Some("Tells Chaat who is calling you in Teams.".into()),
+                    Some("https://github.com/gkachru/call-alerts".into()),
+                ),
+            ),
+            &ctx,
+        );
+        h.act(Action::ShowSettingsPage(SettingsPage::Calls));
+        let painted = painted_texts(&h);
+        for text in [
+            "Ring alerts",
+            "Tells Chaat who is calling you in Teams.",
+            "About this plugin",
+        ] {
+            assert!(
+                painted.iter().any(|t| t == text),
+                "{text:?} shows at {width}"
+            );
+        }
+        // Chaat's own line stays, whatever the plugin says.
+        assert!(painted.iter().any(|t| t.contains("not part of Chaat")));
+
+        h.act(Action::CloseSettings);
+        h.app.handle(
+            chaat::backend::Event::CallAlertsSignIn {
+                account: None,
+                username: Some("ada@contoso.com".into()),
+                verification_uri: "https://microsoft.com/devicelogin".into(),
+                user_code: "AB12CD34".into(),
+            },
+            &ctx,
+        );
+        h.frames(2);
+        assert!(
+            painted_texts(&h).iter().any(|t| t
+                .starts_with("Ring alerts signs in separately from Chaat.")
+                && t.contains("ada@contoso.com")),
+            "the sign-in card names the plugin and the account at {width}"
+        );
     }
 }

@@ -186,16 +186,14 @@ pub enum Command {
     StartCallAlerts {
         path: std::path::PathBuf,
         accounts: Vec<crate::calling::PluginAccount>,
+        /// Accounts signed out while the plugin wasn't running.
+        forget: Vec<String>,
     },
     /// Tells the running plugin which of Chaat's accounts to listen for.
     CallAlertsAccounts(Vec<crate::calling::PluginAccount>),
     /// The person signed this account (`oid.tid`) out of Chaat: the plugin
     /// forgets its own sign-in for it too.
-    /// With no plugin running, Chaat runs `<plugin> logout <account>` once.
-    CallAlertsForget {
-        account: String,
-        plugin: Option<std::path::PathBuf>,
-    },
+    CallAlertsForget(String),
     /// Asks the plugin for a fresh sign-in code for this account now.
     CallAlertsSignIn(String),
     /// Stop the call-alerts plugin, if one is running.
@@ -344,9 +342,10 @@ pub enum Event {
     /// Something the person should hear about, in plain words.
     Error(String),
     /// A call is ringing now, reported by the call-alerts plugin. Chaat shows a
-    /// ring toast. `caller_mri` is `8:orgid:<aad-object-id>`; `thread_id` is
-    /// usually absent for 1:1 calls, so the caller is resolved from the MRI.
+    /// ring toast, resolving the caller by their Entra object id.
     IncomingCall(crate::calling::RingAlert),
+    /// The call-alerts plugin is ready, and how it describes itself.
+    CallAlertsReady(crate::plugin::protocol::PluginInfo),
     /// The call-alerts plugin needs a one-time sign-in: show the person the URL
     /// and code. The plugin stores the token and continues on its own.
     /// `account` is the Chaat account (`oid.tid`) it is for, when the plugin says.

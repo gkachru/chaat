@@ -18,6 +18,7 @@ pub mod notify;
 pub mod pacing;
 pub mod paths;
 pub mod platform;
+pub mod plugin;
 pub mod realtime;
 pub mod secrets;
 pub mod settings;

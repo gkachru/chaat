@@ -1001,14 +1001,13 @@ pub struct Ring {
     pub account: Option<String>,
     /// The account to name on the card, when that isn't obvious.
     pub account_name: Option<String>,
+    /// How long the card stays: as long as the plugin said the call rings.
+    pub shown_for: std::time::Duration,
     /// When the ring arrived, for the toast's expiry.
     pub arrived: std::time::Instant,
 }
 
 impl Ring {
-    /// How long a ring toast stays up: about as long as Teams rings.
-    pub const SHOWN_FOR: std::time::Duration = std::time::Duration::from_secs(40);
-
     /// The address a call back dials, if Chaat knows it.
     pub fn email(&self) -> Option<&str> {
         self.member.as_ref().and_then(|m| m.email.as_deref())

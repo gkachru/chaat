@@ -757,11 +757,40 @@ fn call_alerts(
 ) {
     let palette = app.palette;
     group(ui, &palette, "Call alerts");
+    // Chaat's own words, whatever the plugin says about itself.
     note(
         ui,
         &palette,
-        "Microsoft Graph can't tell Chaat that a call is ringing. An optional plugin you install can: it signs in to Teams separately, outside Microsoft's documented APIs, and tells Chaat who is calling so you can call back or open the chat. Chaat never shares its own sign-in with it.",
+        "Microsoft Graph can't tell Chaat that a call is ringing. A call-alerts plugin can: a separate program you install, not part of Chaat. It signs in on its own; Chaat never shares its sign-in with it. Check what a plugin does before you use it.",
     );
+    // How the running plugin describes itself (plain, shortened text).
+    let info = &app.call_alerts_info;
+    if app.call_alerts_running && (info.name.is_some() || info.description.is_some()) {
+        if let Some(name) = &info.name {
+            ui.label(
+                egui::RichText::new(name)
+                    .font(theme::medium(13.0))
+                    .color(palette.text),
+            );
+        }
+        if let Some(description) = &info.description {
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(description)
+                        .font(theme::regular(13.0))
+                        .color(palette.secondary),
+                )
+                .wrap(),
+            );
+        }
+        if let Some(url) = &info.docs_url
+            && widgets::text_button(ui, &palette, "About this plugin", theme::regular(13.0))
+                .on_hover_text(url)
+                .clicked()
+        {
+            actions.push(Action::OpenUrl(url.clone()));
+        }
+    }
     let path = calls
         .call_alerts_plugin
         .as_ref()
