@@ -69,6 +69,11 @@ pub enum HostMessage {
     Action {
         id: String,
     },
+    /// The channels Chaat accepts pushes on, one per account; replaces the
+    /// previous list. Only sent to a plugin that needs `push`.
+    PushChannels {
+        channels: Vec<String>,
+    },
     Shutdown,
 }
 
@@ -175,6 +180,16 @@ pub enum PluginMessage {
         #[serde(default, deserialize_with = "lenient_array")]
         choices: Vec<serde_json::Value>,
     },
+    /// The plugin's receiver is reachable at this public address.
+    PushReady { url: String },
+    /// One notification body Graph posted to the receiver, on the channel
+    /// part of the path it arrived on. Untrusted until Chaat checks it.
+    Push { channel: String, body: String },
+    /// The receiver stopped or lost its address.
+    PushDown {
+        #[serde(default, deserialize_with = "lenient_text")]
+        reason: Option<String>,
+    },
     #[serde(other)]
     Other,
 }
@@ -241,6 +256,64 @@ pub(super) fn is_https_url(url: &str) -> bool {
             .chars()
             .any(|c| c.is_whitespace() || c.is_control() || is_invisible(c))
         && !has_userinfo(url)
+}
+
+/// The origin (`https://host[:port]`, no trailing slash) of a plugin's push
+/// address: an `is_https_url` address with no path beyond `/`, no query, no
+/// fragment. Anything else is `None`.
+pub fn push_origin(url: &str) -> Option<String> {
+    if !is_https_url(url) {
+        return None;
+    }
+    let rest = url.strip_prefix("https://")?;
+    let (authority, tail) = match rest.find(['/', '?', '#']) {
+        Some(at) => rest.split_at(at),
+        None => (rest, ""),
+    };
+    (tail.is_empty() || tail == "/")
+        .then(|| authority_ok(authority))?
+        .then(|| format!("https://{authority}"))
+}
+
+/// A plain host (letters, digits, dots, hyphens) or bracketed IPv6 literal,
+/// then an optional `:port` of 1 to 5 digits, 1 to 65535.
+fn authority_ok(authority: &str) -> bool {
+    let (host_ok, port) = if let Some(rest) = authority.strip_prefix('[') {
+        let Some((v6, after)) = rest.split_once(']') else {
+            return false;
+        };
+        let v6_ok = !v6.is_empty()
+            && v6
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() || b == b':' || b == b'.');
+        match after {
+            "" => (v6_ok, None),
+            _ => (v6_ok, after.strip_prefix(':').or(Some("!"))),
+        }
+    } else {
+        let (host, port) = match authority.split_once(':') {
+            Some((host, port)) => (host, Some(port)),
+            None => (authority, None),
+        };
+        let ok = host
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-');
+        (ok, port)
+    };
+    let port_ok = port.is_none_or(|port| {
+        (1..=5).contains(&port.len())
+            && port.bytes().all(|b| b.is_ascii_digit())
+            && port.parse::<u32>().is_ok_and(|p| (1..=65535).contains(&p))
+    });
+    host_ok && port_ok
+}
+
+/// A push channel: 16 to 64 characters of `A-Za-z0-9-_`.
+pub fn is_push_channel(text: &str) -> bool {
+    (16..=64).contains(&text.len())
+        && text
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 /// Whether an `https://` address has user info: an `@` in its authority,
@@ -694,7 +767,75 @@ mod tests {
     }
 
     #[test]
+    fn push_origin_accepts_only_bare_https_origins() {
+        assert_eq!(
+            push_origin("https://a-b.trycloudflare.com/").as_deref(),
+            Some("https://a-b.trycloudflare.com")
+        );
+        assert_eq!(
+            push_origin("https://relay.example.com:8443").as_deref(),
+            Some("https://relay.example.com:8443")
+        );
+        assert_eq!(
+            push_origin("https://[::1]:8443/").as_deref(),
+            Some("https://[::1]:8443")
+        );
+        assert_eq!(
+            push_origin("https://[2001:db8::1]").as_deref(),
+            Some("https://[2001:db8::1]")
+        );
+        let long = format!("https://{}.example", "a".repeat(300));
+        for bad in [
+            "https://u@h.example",
+            "https://h.example/x",
+            "https://h.example//",
+            "https://h.example/?q=1",
+            "https://h.example?q=1",
+            "https://h.example/#f",
+            "https://h.example#f",
+            "https://h.exam\u{200b}ple",
+            "https://h.example ",
+            "https://h.example\n",
+            "http://h.example",
+            "",
+            long.as_str(),
+        ] {
+            assert_eq!(push_origin(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn push_channels_are_16_to_64_url_safe_characters() {
+        assert!(is_push_channel(&"a".repeat(16)));
+        assert!(is_push_channel(&"A-_9".repeat(16)));
+        assert!(!is_push_channel(&"a".repeat(15)));
+        assert!(!is_push_channel(&"a".repeat(65)));
+        assert!(!is_push_channel(&format!("{}/b", "a".repeat(20))));
+        assert!(!is_push_channel(&format!("{}\u{e9}", "a".repeat(20))));
+        assert!(!is_push_channel(&format!("{}\n", "a".repeat(20))));
+    }
+
+    #[test]
+    fn mistyped_push_fields_drop_the_message() {
+        for line in [
+            r#"{"v":1,"type":"push_ready","url":5}"#,
+            r#"{"v":1,"type":"push_ready"}"#,
+            r#"{"v":1,"type":"push","channel":"c"}"#,
+            r#"{"v":1,"type":"push","channel":"c","body":{}}"#,
+        ] {
+            assert_eq!(PluginMessage::parse(line), None, "{line}");
+        }
+        assert_eq!(
+            PluginMessage::parse(r#"{"v":1,"type":"push_down","reason":7}"#),
+            Some(PluginMessage::PushDown { reason: None })
+        );
+    }
+
+    #[test]
     fn what_chaat_sends_matches_the_fixtures() {
+        // hello.json is an example, not the capability list: the real list
+        // is `registry::KNOWN`, which offers `push`.
+        assert!(crate::plugin::registry::KNOWN.contains(&"push"));
         let sent = [
             (
                 "hello",
@@ -730,6 +871,12 @@ mod tests {
                 },
             ),
             ("action", HostMessage::Action { id: "find".into() }),
+            (
+                "push_channels",
+                HostMessage::PushChannels {
+                    channels: vec!["abcdefghijklmnopqrstuvwxyzABCDEFGHIJ0123456".into()],
+                },
+            ),
             ("shutdown", HostMessage::Shutdown),
         ];
         for (name, message) in sent {

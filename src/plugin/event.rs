@@ -7,7 +7,7 @@ use crate::calling::alerts::{is_microsoft_sign_in_page, is_user_code, ring_timeo
 use crate::plugin::host::HostEvent;
 use crate::plugin::protocol::{
     OptionChoice, OptionSpec, PluginInfo, PluginMessage, StatusState, account_id, clean_choices,
-    clean_options, option_id, plain_text,
+    clean_options, is_push_channel, option_id, plain_text, push_origin,
 };
 use crate::plugin::registry;
 
@@ -64,6 +64,36 @@ pub enum PluginEvent {
         id: String,
         choices: Vec<OptionChoice>,
     },
+    /// A push receiver message; see `push_event`.
+    Push(PushEvent),
+}
+
+/// What a plugin's receiver reported, checked.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PushEvent {
+    /// The receiver is reachable at this origin (`https://host[:port]`).
+    Ready { url: String },
+    /// A notification body on a channel (16 to 64 of `A-Za-z0-9-_`). The body
+    /// is untrusted and not yet checked.
+    Body { channel: String, body: String },
+    /// The receiver stopped; the reason is plain text, at most 200 characters.
+    Down { reason: Option<String> },
+}
+
+/// The push event for a plugin message, if it is a well-formed one.
+pub fn push_event(message: PluginMessage) -> Option<PushEvent> {
+    match message {
+        PluginMessage::PushReady { url } => Some(PushEvent::Ready {
+            url: push_origin(&url)?,
+        }),
+        PluginMessage::Push { channel, body } => {
+            is_push_channel(&channel).then_some(PushEvent::Body { channel, body })
+        }
+        PluginMessage::PushDown { reason } => Some(PushEvent::Down {
+            reason: reason.and_then(|text| plain_text(&text, 200)),
+        }),
+        _ => None,
+    }
 }
 
 /// The event for something the plugin host reported, if any.
@@ -172,6 +202,9 @@ fn message_event(message: PluginMessage) -> Option<PluginEvent> {
             id: option_id(&id)?,
             choices: clean_choices(&choices)?,
         }),
+        message @ (PluginMessage::PushReady { .. }
+        | PluginMessage::Push { .. }
+        | PluginMessage::PushDown { .. }) => push_event(message).map(PluginEvent::Push),
         PluginMessage::Other => None,
     }
 }
@@ -391,6 +424,89 @@ mod tests {
             Some(PluginEvent::Listening {
                 account: "o1.t1".into()
             })
+        );
+    }
+
+    #[test]
+    fn push_fixtures_parse_and_serialize() {
+        let fixture = |name: &str| {
+            std::fs::read_to_string(format!("tests/fixtures/plugin-protocol/{name}.json"))
+                .expect("fixture exists")
+        };
+        let channel = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJ0123456";
+        assert_eq!(
+            push_event(PluginMessage::parse(&fixture("push_ready")).unwrap()),
+            Some(PushEvent::Ready {
+                url: "https://example-words.trycloudflare.com".into()
+            })
+        );
+        let line: serde_json::Value = serde_json::from_str(&fixture("push")).unwrap();
+        assert_eq!(
+            push_event(PluginMessage::parse(&fixture("push")).unwrap()),
+            Some(PushEvent::Body {
+                channel: channel.into(),
+                body: line["body"].as_str().unwrap().into()
+            })
+        );
+        assert_eq!(
+            push_event(PluginMessage::parse(&fixture("push_down")).unwrap()),
+            Some(PushEvent::Down {
+                reason: Some("cloudflared stopped".into())
+            })
+        );
+        assert!(matches!(
+            event(HostEvent::Message(
+                PluginMessage::parse(&fixture("push")).unwrap()
+            )),
+            Some(PluginEvent::Push(PushEvent::Body { .. }))
+        ));
+    }
+
+    #[test]
+    fn push_ready_with_bad_urls_is_dropped() {
+        let long = format!("https://{}.example", "a".repeat(301));
+        for url in [
+            "https://h.example/x?q=1",
+            "https://h.example?q=1",
+            "https://h.example#f",
+            "https://h.example/path",
+            "https://u@h.example",
+            "https://h.exam\u{200b}ple",
+            "http://h.example",
+            long.as_str(),
+        ] {
+            let message = parsed(serde_json::json!({"v":1,"type":"push_ready","url":url}));
+            assert_eq!(event(HostEvent::Message(message)), None, "{url:?}");
+        }
+    }
+
+    #[test]
+    fn push_with_bad_channel_is_dropped() {
+        let long = "a".repeat(65);
+        for channel in ["short", long.as_str(), "a/b/cccccccccccccccccccc", ""] {
+            let message =
+                parsed(serde_json::json!({"v":1,"type":"push","channel":channel,"body":"{}"}));
+            assert_eq!(event(HostEvent::Message(message)), None, "{channel:?}");
+        }
+    }
+
+    #[test]
+    fn push_down_reason_is_cleaned() {
+        let message = parsed(serde_json::json!({
+            "v":1,"type":"push_down","reason":format!("a\u{1b}[31m\nb{}", "x".repeat(300))
+        }));
+        let Some(PluginEvent::Push(PushEvent::Down {
+            reason: Some(reason),
+        })) = event(HostEvent::Message(message))
+        else {
+            panic!("down event");
+        };
+        assert!(reason.chars().count() <= 200);
+        assert!(!reason.chars().any(char::is_control));
+        let none = parsed(serde_json::json!({"v":1,"type":"push_down","reason":"\u{1b}"}));
+        assert_eq!(
+            event(HostEvent::Message(none)),
+            Some(PluginEvent::Push(PushEvent::Down { reason: None }))
         );
     }
 

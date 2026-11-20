@@ -31,9 +31,11 @@ use crate::theme::Palette;
 mod calls;
 mod history;
 mod plugins;
+mod push;
 pub use calls::Docked;
 pub use history::HistoryLayout;
 pub use plugins::PluginState;
+pub use push::{PushPluginState, PushPluginView};
 
 /// Messages and view state of one conversation.
 #[derive(Debug, Default)]
@@ -299,6 +301,9 @@ pub struct Account {
     pub backend: Backend,
     /// `oid.tid`, once signed in or restored.
     pub id: Option<String>,
+    /// The path part of the address the push plugin forwards this account's
+    /// notifications on. Random per run, never stored.
+    pub(crate) push_channel: String,
     pub auth: AuthStatus,
     pub profile: Option<Profile>,
     pub granted: String,
@@ -370,6 +375,7 @@ impl Account {
         Self {
             backend,
             id: None,
+            push_channel: crate::auth::random_token(32),
             auth: AuthStatus::Restoring,
             profile: None,
             granted: String::new(),
@@ -621,6 +627,8 @@ pub struct App {
     /// produced them; a stopped plugin's entry names a generation no host has.
     plugin_generations: std::collections::BTreeMap<String, u64>,
     plugin_generation: u64,
+    /// The push plugin's route; see `app/push.rs`.
+    push_plugin: push::PushRouting,
     /// When each plugin last raised a toast, so a chatty one is limited.
     plugin_toasts: std::collections::BTreeMap<String, std::time::Instant>,
     /// What is wrong with the value last entered for a plugin option, by
@@ -771,6 +779,7 @@ impl App {
             plugins: Default::default(),
             plugins_started: Default::default(),
             plugin_generations: Default::default(),
+            push_plugin: Default::default(),
             plugin_generation: 0,
             plugin_toasts: Default::default(),
             plugin_option_errors: Default::default(),
@@ -812,6 +821,8 @@ impl App {
         account.id = id;
         self.accounts.push(account);
         let index = self.accounts.len() - 1;
+        // The plugin learns the new channel before the new backend uses it.
+        self.sync_push_route(false);
         self.start_account(index);
         self.sync_call_browser();
         index
@@ -839,6 +850,7 @@ impl App {
         };
         let relay = Command::Relay(self.settings.relay_url.clone());
         let session = Command::PresenceSession(self.settings.presence_session);
+        let route = self.push_route_for(index);
         let account = &mut self.accounts[index];
         account.auth = if configured {
             AuthStatus::Restoring
@@ -847,6 +859,9 @@ impl App {
         };
         account.backend.send(start);
         account.backend.send(relay);
+        if let Some(route) = route {
+            account.backend.send(route);
+        }
         account.backend.send(session);
     }
 
@@ -860,6 +875,8 @@ impl App {
         let _ = std::thread::Builder::new()
             .name("chaat-retire".into())
             .spawn(move || drop(account));
+        // The plugin stops listening on the removed account's channel.
+        self.sync_push_route(false);
         if self.active >= self.accounts.len() {
             self.active = self.accounts.len().saturating_sub(1);
         } else if self.active > index {
@@ -2480,6 +2497,8 @@ impl App {
                 self.settings.relay_url = (!url.is_empty()).then_some(url);
                 self.mark_settings_dirty();
                 self.send_relay();
+                // A manual relay wins; clearing it brings the plugin back.
+                self.sync_push_route(false);
             }
             Action::SetRelayKey(key) => {
                 let key = key.map(|key| key.trim().to_owned());

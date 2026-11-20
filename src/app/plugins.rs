@@ -144,7 +144,7 @@ fn stored_map(entry: &PluginEntry) -> serde_json::Map<String, serde_json::Value>
 
 impl App {
     /// Sends to the service backend, except in the demo.
-    fn send_service(&self, command: Command) {
+    pub(super) fn send_service(&self, command: Command) {
         if !self.demo {
             self.service.send(command);
         }
@@ -200,7 +200,7 @@ impl App {
 
     /// Whether the plugin declared `need` in its last `ready` and the person
     /// allowed it. Only such a need decides what Chaat sends.
-    fn plugin_need_effective(entry: &PluginEntry, need: &str) -> bool {
+    pub(super) fn plugin_need_effective(entry: &PluginEntry, need: &str) -> bool {
         entry.needs.iter().any(|n| n == need) && entry.approved_needs.iter().any(|n| n == need)
     }
 
@@ -210,14 +210,15 @@ impl App {
 
     /// What a plugin receives from Chaat now, for Settings › Plugins:
     /// `accounts` (account IDs and sign-in names), `presence` (availability
-    /// and activity) and `options` (its own option values).
+    /// and activity), `push` (update channels, no account ids) and `options`
+    /// (its own option values).
     pub fn plugin_receives(&self, id: &str) -> Vec<&'static str> {
         let Some(entry) = self.settings.plugins.iter().find(|e| e.id == id) else {
             return Vec::new();
         };
         let state = self.plugins.get(id);
         let mut receives = Vec::new();
-        for need in ["accounts", "presence"] {
+        for need in ["accounts", "presence", registry::PUSH] {
             if Self::plugin_need_effective(entry, need) {
                 receives.push(need);
             }
@@ -274,6 +275,7 @@ impl App {
             if let Some(state) = self.plugins.get_mut(&id) {
                 state.stopped();
             }
+            self.push_plugin_stopped(&id);
         }
         for (id, path) in wanted {
             if self.plugins_started.get(&id) == Some(&path) {
@@ -286,6 +288,7 @@ impl App {
             let accounts = Self::plugin_needs_accounts(entry).then(|| self.plugin_accounts());
             let expected_sha256 = entry.sha256.clone();
             self.plugins_started.insert(id.clone(), path.clone());
+            self.push_plugin_stopped(&id);
             let state = self.plugins.entry(id.clone()).or_default();
             state.stopped();
             state.sent_accounts = accounts;
@@ -300,6 +303,7 @@ impl App {
                 generation,
             });
         }
+        self.sync_push_route(false);
     }
 
     /// A generation no earlier start of any plugin had, now the current one
@@ -610,7 +614,10 @@ impl App {
                 state.running = running;
                 if !running {
                     state.stopped();
+                    self.push_plugin_stopped(&id);
                 }
+                self.sync_push_route(false);
+                let state = self.plugins.entry(id.clone()).or_default();
                 state.message = message.clone();
                 if let Some(message) = message {
                     self.plugin_toast(&id, ToastKind::Error, None, message);
@@ -738,6 +745,7 @@ impl App {
                     spec.choices = choices;
                 }
             }
+            PluginEvent::Push(event) => self.on_push_event(&id, generation, event),
         }
     }
 
@@ -880,6 +888,7 @@ impl App {
         // Only what the plugin says it cleared leaves the queue.
         self.plugin_forget_done(id, forgotten);
         self.sync_plugin_presence();
+        self.sync_push_route(false);
     }
 
     /// The ids of the required options of a plugin that have no value yet
@@ -970,6 +979,8 @@ impl App {
         }
         self.settings.plugins.retain(|e| e.id != id);
         self.plugins.remove(id);
+        self.push_plugin_stopped(id);
+        self.sync_push_route(false);
         self.mark_settings_dirty();
     }
 
@@ -1194,6 +1205,7 @@ impl App {
             }
         }
         self.mark_settings_dirty();
+        self.sync_push_route(false);
         if !allow {
             return;
         }
