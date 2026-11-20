@@ -154,7 +154,7 @@ side can be newer.
 | plugin → Chaat | `sign_in_required` | `verification_uri`, `user_code`, `account` and `username` (optional) |
 | plugin → Chaat | `signed_in` | `account`, `username` |
 | plugin → Chaat | `listening` | `account`, `username`; sent each time an account's connection comes up |
-| plugin → Chaat | `incoming_call` | `id`, `caller`, `caller_mri`, `video`, `group`, `account`, `username`, `thread_id` (optional, usually absent for one-on-one calls) | A call ringing two accounts shows a card for each.
+| plugin → Chaat | `incoming_call` | `id`, `caller`, `caller_mri`, `video`, `group`, `account`, `username`, `thread_id` (optional, usually absent for one-on-one calls). A call ringing two accounts shows a card for each |
 | plugin → Chaat | `error` | `message`, shown as an error notice; with `account`, the notice names it and the account is no longer shown as listening |
 
 `call_ended` is reserved for when a plugin can report it. Chaat passes the
