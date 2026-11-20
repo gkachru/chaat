@@ -339,6 +339,8 @@ pub enum Event {
         verification_uri: String,
         user_code: String,
     },
+    /// The sign-in the plugin asked for finished.
+    CallAlertsSignedIn,
     /// The call-alerts plugin reported a problem (e.g. not signed in) or its
     /// status changed. `running` says whether it is currently active.
     CallAlertsStatus {

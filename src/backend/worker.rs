@@ -1815,6 +1815,7 @@ fn decode_call_alert(line: &str, out: &Outbox) {
                 });
             }
         }
+        Some("signed_in") => out.send(Event::CallAlertsSignedIn),
         Some("ready") => out.send(Event::CallAlertsStatus {
             running: true,
             message: None,
@@ -2901,6 +2902,33 @@ async fn device_code_sign_in(
 mod tests {
     use super::*;
     use crate::model::{Chat, ChatKind, Member};
+
+    #[test]
+    fn plugin_lines_become_events_and_unknown_ones_are_ignored() {
+        let (events, received) = std::sync::mpsc::channel();
+        let out = Outbox {
+            events,
+            waker: Waker::default(),
+        };
+        for line in [
+            r#"{"v":1,"type":"sign_in_required","verification_uri":"https://microsoft.com/devicelogin","user_code":"AB12"}"#,
+            r#"{"v":1,"type":"signed_in"}"#,
+            r#"{"v":1,"type":"incoming_call","id":"c1","caller":"Ada","caller_mri":"8:orgid:u-ada","video":true,"group":false}"#,
+            r#"{"v":1,"type":"something_newer"}"#,
+            "not json",
+            "",
+        ] {
+            decode_call_alert(line, &out);
+        }
+        let got: Vec<Event> = received.try_iter().collect();
+        assert_eq!(got.len(), 3);
+        assert!(
+            matches!(&got[0], Event::CallAlertsSignIn { user_code, .. } if user_code == "AB12")
+        );
+        assert!(matches!(got[1], Event::CallAlertsSignedIn));
+        assert!(matches!(&got[2], Event::IncomingCall(ring)
+            if ring.caller_object_id() == Some("u-ada") && ring.video && ring.thread_id.is_none()));
+    }
 
     /// A chat whose members are `id` (in the person's organisation, "t-1"),
     /// `id@t-2` (another organisation) or `id@` (organisation not given).

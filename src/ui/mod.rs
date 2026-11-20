@@ -427,11 +427,12 @@ fn toasts(app: &mut App, ctx: &egui::Context) {
         });
 }
 
-/// The ring toasts: a call the call-alerts plugin reported, with "Place call"
-/// and "Open chat". Each stays until used, dismissed, or about as long as
-/// Teams rings (the plugin cannot tell when the call stops).
+/// The call-alerts cards at the top right: the plugin's sign-in panel while it
+/// waits for one, then the ring toasts, a call the plugin reported with "Place
+/// call" and "Open chat". A ring stays until used, dismissed, or about as long
+/// as Teams rings (the plugin cannot tell when the call stops).
 fn rings(app: &mut App, ctx: &egui::Context) {
-    if app.rings.is_empty() {
+    if app.rings.is_empty() && app.call_alerts_sign_in.is_none() {
         return;
     }
     let palette = app.palette;
@@ -444,30 +445,107 @@ fn rings(app: &mut App, ctx: &egui::Context) {
         }
     }
     let width = (ctx.content_rect().width() - 32.0).clamp(200.0, 340.0);
+    let card = |ui: &mut egui::Ui, add: &mut dyn FnMut(&mut egui::Ui)| {
+        Frame::new()
+            .fill(palette.surface)
+            .stroke(Stroke::new(1.0, palette.accent.gamma_multiply(0.6)))
+            .corner_radius(CornerRadius::same(10))
+            .shadow(egui::Shadow {
+                offset: [0, 4],
+                blur: 16,
+                spread: 0,
+                color: palette.shadow,
+            })
+            .inner_margin(Margin::same(12))
+            .show(ui, |ui| {
+                ui.set_width(width - 24.0);
+                add(ui);
+            });
+        ui.add_space(6.0);
+    };
     egui::Area::new(egui::Id::new("chaat-rings"))
         .anchor(Align2::RIGHT_TOP, vec2(-16.0, theme::HEADER_HEIGHT + 8.0))
         .order(egui::Order::Foreground)
         .interactable(true)
         .show(ctx, |ui| {
+            if let Some(sign_in) = app.call_alerts_sign_in.clone() {
+                card(ui, &mut |ui| {
+                    sign_in_card(ui, &palette, &sign_in, &mut app.actions)
+                });
+            }
             for ring in app.rings.clone().iter().rev() {
-                Frame::new()
-                    .fill(palette.surface)
-                    .stroke(Stroke::new(1.0, palette.accent.gamma_multiply(0.6)))
-                    .corner_radius(CornerRadius::same(10))
-                    .shadow(egui::Shadow {
-                        offset: [0, 4],
-                        blur: 16,
-                        spread: 0,
-                        color: palette.shadow,
-                    })
-                    .inner_margin(Margin::same(12))
-                    .show(ui, |ui| {
-                        ui.set_width(width - 24.0);
-                        ring_card(ui, &palette, ring, &mut app.actions);
-                    });
-                ui.add_space(6.0);
+                card(ui, &mut |ui| {
+                    ring_card(ui, &palette, ring, &mut app.actions)
+                });
             }
         });
+}
+
+/// The call-alerts plugin's sign-in: the code to enter and where. The plugin
+/// signs in to Teams on its own; Chaat never shares its own sign-in with it.
+fn sign_in_card(
+    ui: &mut egui::Ui,
+    palette: &crate::theme::Palette,
+    sign_in: &crate::model::PluginSignIn,
+    actions: &mut Vec<Action>,
+) {
+    ui.horizontal(|ui| {
+        theme::icon(ui, Icon::Phone, 20.0, palette.accent);
+        ui.label(
+            egui::RichText::new("Sign in for call alerts")
+                .font(theme::semibold(15.0))
+                .color(palette.text),
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+            let close = widgets::icon_button_sized(
+                ui,
+                palette,
+                Icon::Close,
+                "Hide",
+                22.0,
+                14.0,
+                palette.dim,
+            );
+            widgets::on_click(&close, actions, Action::HideCallAlertsSignIn);
+        });
+    });
+    ui.add_space(4.0);
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new(
+                "The call-alerts plugin signs in to Teams separately from Chaat. \
+                 Open the page and enter this code:",
+            )
+            .size(12.0)
+            .color(palette.secondary),
+        )
+        .wrap(),
+    );
+    ui.add_space(6.0);
+    ui.label(
+        egui::RichText::new(&sign_in.user_code)
+            .font(theme::semibold(24.0))
+            .color(palette.text),
+    );
+    ui.add_space(8.0);
+    ui.horizontal(|ui| {
+        let open = widgets::accent_button(
+            ui,
+            palette,
+            true,
+            "Open sign-in page",
+            theme::semibold(13.0),
+            30.0,
+        )
+        .on_hover_text(&sign_in.verification_uri);
+        widgets::on_click(
+            &open,
+            actions,
+            Action::OpenUrl(sign_in.verification_uri.clone()),
+        );
+        let copy = widgets::secondary_button(ui, palette, "Copy code");
+        widgets::on_click(&copy, actions, Action::CopyText(sign_in.user_code.clone()));
+    });
 }
 
 fn ring_card(

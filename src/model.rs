@@ -945,6 +945,8 @@ pub enum Action {
     RingOpenChat(String),
     /// Closes a ring toast (by its call id).
     DismissRing(String),
+    /// Hides the call-alerts sign-in panel; the plugin keeps waiting.
+    HideCallAlertsSignIn,
     Quit,
 }
 
@@ -962,6 +964,13 @@ pub struct Toast {
     pub text: String,
 }
 
+/// A sign-in the call-alerts plugin is waiting for: the person enters the
+/// code at the page. The plugin signs in on its own; Chaat only shows this.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PluginSignIn {
+    pub verification_uri: String,
+    pub user_code: String,
+}
 /// A ringing call the call-alerts plugin reported, as the ring toast shows it.
 /// Chaat cannot answer it (calls run in Teams); the toast offers to call back
 /// or open the chat. The plugin cannot tell when the call stops ringing, so the

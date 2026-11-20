@@ -3226,3 +3226,39 @@ fn a_ring_toast_offers_place_call_and_open_chat_in_both_themes_and_widths() {
         }
     }
 }
+
+#[test]
+fn the_call_alerts_sign_in_panel_shows_the_code_in_both_themes_and_widths() {
+    for width in [480.0, 1280.0] {
+        for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+            let mut h = Harness::new();
+            h.size.x = width;
+            h.app.settings.theme = theme.clone();
+            h.frames(2);
+            let ctx = h.ctx.clone();
+            h.app.handle(
+                chaat::backend::Event::CallAlertsSignIn {
+                    verification_uri: "https://microsoft.com/devicelogin".into(),
+                    user_code: "AB12CD34".into(),
+                },
+                &ctx,
+            );
+            h.frames(2);
+            let painted = painted_texts(&h);
+            for text in [
+                "Sign in for call alerts",
+                "AB12CD34",
+                "Open sign-in page",
+                "Copy code",
+            ] {
+                assert!(
+                    painted.iter().any(|t| t == text),
+                    "{text:?} shows at {width} in {theme:?}"
+                );
+            }
+            assert!(h.app.call_alerts_sign_in.is_some());
+            h.act(Action::HideCallAlertsSignIn);
+            assert!(!painted_texts(&h).iter().any(|t| t == "AB12CD34"));
+        }
+    }
+}

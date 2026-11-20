@@ -606,6 +606,8 @@ pub struct App {
     pub toasts: Vec<Toast>,
     /// Ringing calls the call-alerts plugin reported, newest last.
     pub rings: Vec<Ring>,
+    /// A sign-in the call-alerts plugin is waiting for, shown as a panel.
+    pub call_alerts_sign_in: Option<crate::model::PluginSignIn>,
     next_toast: u64,
     pub actions: Vec<Action>,
 
@@ -742,6 +744,7 @@ impl App {
             jump_to: None,
             toasts: Vec::new(),
             rings: Vec::new(),
+            call_alerts_sign_in: None,
             next_toast: 0,
             actions: Vec::new(),
             palette,
@@ -1474,17 +1477,21 @@ impl App {
                 verification_uri,
                 user_code,
             } => {
-                self.toast(
-                    ToastKind::Error,
-                    format!(
-                        "Call alerts: to sign in, open {verification_uri} and enter code {user_code}"
-                    ),
-                );
+                self.call_alerts_sign_in = Some(crate::model::PluginSignIn {
+                    verification_uri,
+                    user_code,
+                });
+                self.wants_show = true;
             }
-            Event::CallAlertsStatus {
-                running: _,
-                message,
-            } => {
+            Event::CallAlertsSignedIn => {
+                self.call_alerts_sign_in = None;
+                self.toast(ToastKind::Info, "Call alerts are on.");
+            }
+            Event::CallAlertsStatus { running, message } => {
+                // A stopped plugin no longer waits for its sign-in.
+                if !running {
+                    self.call_alerts_sign_in = None;
+                }
                 if let Some(message) = message {
                     self.toast(ToastKind::Error, message);
                 }
@@ -2519,6 +2526,7 @@ impl App {
             }
             Action::DismissToast(id) => self.toasts.retain(|t| t.id != id),
             Action::DismissRing(id) => self.rings.retain(|r| r.id != id),
+            Action::HideCallAlertsSignIn => self.call_alerts_sign_in = None,
             Action::RingPlaceCall(id) => self.ring_place_call(&id, ctx),
             Action::RingOpenChat(id) => self.ring_open_chat(&id),
             Action::Quit => {
@@ -3336,6 +3344,31 @@ mod tests {
         assert!(app.toasts.iter().any(|t| t.text.contains("opened Teams")));
     }
 
+    #[test]
+    fn the_plugin_sign_in_panel_shows_until_signed_in_or_stopped() {
+        let (mut app, _dir) = demo_app();
+        let ctx = egui::Context::default();
+        let ask = || Event::CallAlertsSignIn {
+            verification_uri: "https://microsoft.com/devicelogin".into(),
+            user_code: "AB12".into(),
+        };
+        app.handle(ask(), &ctx);
+        assert_eq!(app.call_alerts_sign_in.as_ref().unwrap().user_code, "AB12");
+        app.handle(Event::CallAlertsSignedIn, &ctx);
+        assert!(app.call_alerts_sign_in.is_none());
+        app.handle(ask(), &ctx);
+        app.handle(
+            Event::CallAlertsStatus {
+                running: false,
+                message: None,
+            },
+            &ctx,
+        );
+        assert!(app.call_alerts_sign_in.is_none());
+        app.handle(ask(), &ctx);
+        app.apply(Action::HideCallAlertsSignIn, &ctx);
+        assert!(app.call_alerts_sign_in.is_none());
+    }
     #[test]
     fn dismissing_a_ring_removes_only_that_one() {
         let (mut app, _dir) = demo_app();
