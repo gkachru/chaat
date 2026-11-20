@@ -211,10 +211,20 @@ fn start_command(id: &str, path: PathBuf) -> Command {
     }
 }
 
+thread_local! {
+    /// Events polled but not yet picked by a wait: a wait takes the first
+    /// match and keeps the rest for the next one.
+    static PENDING: std::cell::RefCell<std::collections::VecDeque<Event>> = Default::default();
+}
+
 fn wait_for<T>(backend: &Backend, mut pick: impl FnMut(Event) -> Option<T>) -> T {
     let deadline = std::time::Instant::now() + Duration::from_secs(20);
     loop {
-        for event in backend.poll() {
+        PENDING.with(|pending| pending.borrow_mut().extend(backend.poll()));
+        loop {
+            let Some(event) = PENDING.with(|pending| pending.borrow_mut().pop_front()) else {
+                break;
+            };
             if let Some(found) = pick(event) {
                 return found;
             }
