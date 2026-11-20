@@ -1465,7 +1465,6 @@ impl App {
                 // Reconnect every account with the new key.
                 self.send_relay();
             }
-            Event::IncomingCall(alert) => self.on_incoming_call(alert),
             Event::Plugin { id, event } => self.on_plugin_event(id, event),
             Event::PluginSecretSaved {
                 plugin,
@@ -1473,14 +1472,6 @@ impl App {
                 set,
                 ok,
             } => self.on_plugin_secret_saved(&plugin, option, set, ok),
-            // The call-alerts commands are no longer sent; the plugin list
-            // replaced them.
-            Event::CallAlertsSignIn { .. }
-            | Event::CallAlertsSignedIn { .. }
-            | Event::CallAlertsError { .. }
-            | Event::CallAlertsReady { .. }
-            | Event::CallAlertsListening { .. }
-            | Event::CallAlertsStatus { .. } => {}
         }
     }
 
@@ -3764,6 +3755,48 @@ mod tests {
     }
 
     #[test]
+    fn a_non_owner_call_alerts_plugin_shows_no_sign_in_notices() {
+        use crate::plugin::event::PluginEvent;
+        let (mut app, _dir) = demo_app();
+        let ctx = egui::Context::default();
+        call_alerts_plugin(&mut app, "first");
+        call_alerts_plugin(&mut app, "second");
+        let toasts = app.toasts.len();
+        let account = || Some("u-me.demo".to_owned());
+        app.handle(
+            plugin_event("second", PluginEvent::SignedIn { account: account() }),
+            &ctx,
+        );
+        app.handle(
+            plugin_event(
+                "second",
+                PluginEvent::Listening {
+                    account: "u-me.demo".into(),
+                },
+            ),
+            &ctx,
+        );
+        app.handle(
+            plugin_event(
+                "second",
+                PluginEvent::Error {
+                    account: account(),
+                    message: "nope".into(),
+                },
+            ),
+            &ctx,
+        );
+        assert_eq!(app.toasts.len(), toasts);
+        assert!(app.plugins["second"].listening.is_empty());
+        // The owner still gets its notices.
+        app.handle(
+            plugin_event("first", PluginEvent::SignedIn { account: account() }),
+            &ctx,
+        );
+        assert_eq!(app.toasts.len(), toasts + 1);
+    }
+
+    #[test]
     fn sign_in_cards_key_on_plugin_and_account() {
         let (mut app, _dir) = demo_app();
         let ctx = egui::Context::default();
@@ -4205,12 +4238,15 @@ mod tests {
 
     fn demo_app() -> (App, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
-        let app = App::new(
+        let mut app = App::new(
             AppDirs::under(dir.path()),
             Settings::default(),
             Waker::default(),
             true,
         );
+        // The demo's own plugins would own call alerts; tests set up theirs.
+        app.settings.plugins.clear();
+        app.plugins.clear();
         (app, dir)
     }
 

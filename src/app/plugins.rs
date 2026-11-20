@@ -435,6 +435,9 @@ impl App {
                 }
             }
             PluginEvent::SignedIn { account } => {
+                if !self.plugin_counts(&id) {
+                    return;
+                }
                 let state = self.plugins.entry(id.clone()).or_default();
                 state.sign_in.retain(|s| s.account != account);
                 state.asked.retain(|asked| *asked != account);
@@ -448,12 +451,18 @@ impl App {
                 self.toast(ToastKind::Info, text);
             }
             PluginEvent::Listening { account } => {
+                if !self.plugin_counts(&id) {
+                    return;
+                }
                 let state = self.plugins.entry(id).or_default();
                 if !state.listening.contains(&account) {
                     state.listening.push(account);
                 }
             }
             PluginEvent::Error { account, message } => {
+                if !self.plugin_counts(&id) {
+                    return;
+                }
                 if let Some(account) = &account {
                     let state = self.plugins.entry(id.clone()).or_default();
                     state.listening.retain(|a| a != account);

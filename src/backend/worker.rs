@@ -170,8 +170,6 @@ struct Worker {
     /// Stops the running push loop, and the loop itself, to wait for its
     /// cleanup.
     stop_push: Option<(watch::Sender<bool>, tokio::task::JoinHandle<()>)>,
-    /// The external call-alerts plugin process reader, and its stop signal.
-    call_alerts: Option<crate::plugin::host::Plugin>,
     /// The plugins of the plugin list, by id.
     plugins: HashMap<String, crate::plugin::host::Plugin>,
     /// Credential store work for plugins, run one job at a time in the order
@@ -209,7 +207,6 @@ pub(super) async fn run(
         options,
         relay: None,
         stop_push: None,
-        call_alerts: None,
         plugins: HashMap::new(),
         secret_jobs: secret_runner(),
         session_enabled: true,
@@ -244,7 +241,6 @@ pub(super) async fn run(
         let _ = cancel.send(true);
     }
     worker.stop_push().await;
-    worker.stop_call_alerts().await;
     worker.stop_plugins().await;
     worker.end_presence_session().await;
 }
@@ -446,59 +442,6 @@ impl Worker {
             Command::UserName(user) => self.user_name(user),
             Command::Media(url) => self.media(url),
             Command::Search(query) => self.search(query),
-            Command::StartCallAlerts {
-                path,
-                accounts,
-                forget,
-            } => self.restart_call_alerts(path, accounts, forget),
-            Command::CallAlertsAccounts(accounts) => {
-                if let Some(plugin) = &self.call_alerts {
-                    // A later restart says hello with these accounts.
-                    let update = accounts.clone();
-                    plugin.set_hello(move |hello| {
-                        if let crate::plugin::protocol::HostMessage::Hello { accounts, .. } = hello
-                        {
-                            *accounts = update;
-                        }
-                    });
-                    plugin.send(crate::plugin::protocol::HostMessage::Accounts { accounts });
-                }
-            }
-            Command::CallAlertsForget(account) => {
-                if let Some(plugin) = &self.call_alerts {
-                    // Now, and in every hello until the plugin confirms it.
-                    let queued = account.clone();
-                    plugin.set_hello(move |hello| {
-                        if let crate::plugin::protocol::HostMessage::Hello { forget, .. } = hello
-                            && !forget.contains(&queued)
-                        {
-                            forget.push(queued);
-                        }
-                    });
-                    plugin.send(crate::plugin::protocol::HostMessage::Forget { account });
-                }
-            }
-            Command::CallAlertsForgetDone(done) => {
-                if let Some(plugin) = &self.call_alerts {
-                    plugin.set_hello(move |hello| {
-                        if let crate::plugin::protocol::HostMessage::Hello { forget, .. } = hello {
-                            forget.retain(|id| !done.contains(id));
-                        }
-                    });
-                }
-            }
-            Command::CallAlertsSignIn(account) => {
-                if let Some(plugin) = &self.call_alerts {
-                    plugin.send(crate::plugin::protocol::HostMessage::SignIn { account });
-                }
-            }
-            Command::StopCallAlerts => {
-                self.stop_call_alerts().await;
-                self.out.send(Event::CallAlertsStatus {
-                    running: false,
-                    message: None,
-                });
-            }
             Command::StartPlugin { id, path, hello } => self.start_plugin(id, path, hello),
             Command::PluginSend { id, message } => {
                 if let Some(plugin) = self.plugins.get(&id) {
@@ -909,32 +852,6 @@ impl Worker {
         }
     }
 
-    /// Launches (or relaunches) the call-alerts plugin. `plugin::host` runs the
-    /// process; `calling::alerts` turns its messages into events. The plugin is
-    /// told only its accounts' ids and sign-in names, never a token.
-    fn restart_call_alerts(
-        &mut self,
-        path: std::path::PathBuf,
-        accounts: Vec<crate::calling::PluginAccount>,
-        forget: Vec<String>,
-    ) {
-        use crate::calling::alerts;
-        let out = self.out.clone();
-        let plugin = crate::plugin::host::Plugin::start(
-            path,
-            alerts::hello(accounts, forget),
-            &[crate::plugin::registry::CALL_ALERTS],
-            move |reported| {
-                if let Some(event) = alerts::event(reported) {
-                    out.send(event);
-                }
-            },
-        );
-        if let Some(old) = self.call_alerts.replace(plugin) {
-            old.abort();
-        }
-    }
-
     /// Launches (or relaunches) one plugin of the plugin list. Only that id's
     /// host is replaced.
     fn start_plugin(
@@ -993,13 +910,6 @@ impl Worker {
             stops.spawn(plugin.stop());
         }
         while stops.join_next().await.is_some() {}
-    }
-
-    /// Stops the call-alerts plugin, if one is running.
-    async fn stop_call_alerts(&mut self) {
-        if let Some(plugin) = self.call_alerts.take() {
-            plugin.stop().await;
-        }
     }
 
     async fn sign_out(&mut self) {

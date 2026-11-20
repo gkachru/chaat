@@ -180,26 +180,6 @@ pub enum Command {
     UserName(String),
     Media(String),
     Search(String),
-    /// Launch (or relaunch) the external call-alerts plugin at this path and
-    /// listen for ring alerts. Sent to the service backend. An empty path or a
-    /// disabled setting is sent as `StopCallAlerts` instead.
-    StartCallAlerts {
-        path: std::path::PathBuf,
-        accounts: Vec<crate::calling::PluginAccount>,
-        /// Accounts signed out while the plugin wasn't running.
-        forget: Vec<String>,
-    },
-    /// Tells the running plugin which of Chaat's accounts to listen for.
-    CallAlertsAccounts(Vec<crate::calling::PluginAccount>),
-    /// The person signed this account (`oid.tid`) out of Chaat: the plugin
-    /// forgets its own sign-in for it too.
-    CallAlertsForget(String),
-    /// These queued sign-outs reached the plugin: stop resending them.
-    CallAlertsForgetDone(Vec<String>),
-    /// Asks the plugin for a fresh sign-in code for this account now.
-    CallAlertsSignIn(String),
-    /// Stop the call-alerts plugin, if one is running.
-    StopCallAlerts,
     /// Launch (or relaunch) one plugin of the plugin list. Replaces only the
     /// host with this id.
     StartPlugin {
@@ -392,43 +372,6 @@ pub enum Event {
     Reachable(bool),
     /// Something the person should hear about, in plain words.
     Error(String),
-    /// A call is ringing now, reported by the call-alerts plugin. Chaat shows a
-    /// ring toast, resolving the caller by their Entra object id.
-    IncomingCall(crate::calling::RingAlert),
-    /// The call-alerts plugin is ready, and how it describes itself.
-    CallAlertsReady {
-        info: crate::plugin::protocol::PluginInfo,
-        /// Queued sign-out accounts whose plugin sign-ins are now gone.
-        forgotten: Vec<String>,
-    },
-    /// The call-alerts plugin needs a one-time sign-in: show the person the URL
-    /// and code. The plugin stores the token and continues on its own.
-    /// `account` is the Chaat account (`oid.tid`) it is for, when the plugin says.
-    CallAlertsSignIn {
-        account: Option<String>,
-        username: Option<String>,
-        verification_uri: String,
-        user_code: String,
-    },
-    /// The sign-in the plugin asked for finished.
-    CallAlertsSignedIn {
-        account: Option<String>,
-    },
-    /// The plugin is listening for this account's calls.
-    CallAlertsListening {
-        account: String,
-    },
-    /// The plugin hit a problem with one account (it still runs).
-    CallAlertsError {
-        account: String,
-        message: String,
-    },
-    /// The call-alerts plugin reported a problem (e.g. not signed in) or its
-    /// status changed. `running` says whether it is currently active.
-    CallAlertsStatus {
-        running: bool,
-        message: Option<String>,
-    },
 }
 
 /// Where the backend signs in and fetches from, and where it keeps secrets.
