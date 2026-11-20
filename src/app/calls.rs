@@ -563,6 +563,39 @@ impl App {
     }
 }
 
+/// Which rings already raised the window: each call id once, and the window
+/// at most once every `MIN_GAP` overall, so a plugin cannot keep stealing focus.
+#[derive(Debug, Default)]
+pub(super) struct RingRaises {
+    seen: std::collections::VecDeque<String>,
+    last: Option<std::time::Instant>,
+}
+
+impl RingRaises {
+    const REMEMBER: usize = 16;
+    const MIN_GAP: std::time::Duration = std::time::Duration::from_secs(10);
+
+    /// Whether the ring of this call may raise the window now. Remembers the
+    /// call either way, so it never raises later.
+    fn allow(&mut self, call_id: &str, now: std::time::Instant) -> bool {
+        if self.seen.iter().any(|seen| seen == call_id) {
+            return false;
+        }
+        if self.seen.len() >= Self::REMEMBER {
+            self.seen.pop_front();
+        }
+        self.seen.push_back(call_id.to_owned());
+        if self
+            .last
+            .is_some_and(|last| now.saturating_duration_since(last) < Self::MIN_GAP)
+        {
+            return false;
+        }
+        self.last = Some(now);
+        true
+    }
+}
+
 /// Ring alerts from the call-alerts plugin (docs/calling.md).
 impl App {
     /// A call is ringing, as the call-alerts plugin reported. Shows the ring
@@ -603,9 +636,17 @@ impl App {
             None => alert.id.clone(),
         };
         self.rings.retain(|ring| ring.id != key);
+        let call_id = alert.id.clone();
+        // A resolved caller shows under Chaat's own name for them; an
+        // unresolved one under the plugin's, which the card marks.
+        let caller = member
+            .as_ref()
+            .map(|m| m.display_name.clone())
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or(alert.caller);
         self.rings.push(Ring {
             id: key,
-            caller: alert.caller,
+            caller,
             video: alert.video,
             group: alert.group,
             chat,
@@ -621,7 +662,9 @@ impl App {
         if self.rings.len() > 3 {
             self.rings.remove(0);
         }
-        self.wants_show = true;
+        if self.ring_raises.allow(&call_id, std::time::Instant::now()) {
+            self.wants_show = true;
+        }
     }
 
     /// Takes a ring off the screen and shows the account it rang on, so its
@@ -710,10 +753,19 @@ fn resolve_caller(
         let first = known.clone().next().cloned();
         known.find(|m| m.email.is_some()).cloned().or(first)
     });
+    // The plugin's thread counts only when the resolved caller is in it.
     let thread = alert
         .thread_id
         .as_deref()
-        .filter(|id| account.chat(id).is_some())
+        .filter(|id| {
+            member.as_ref().is_some_and(|member| {
+                account.chat(id).is_some_and(|chat| {
+                    chat.members
+                        .iter()
+                        .any(|m| m.user_id.eq_ignore_ascii_case(&member.user_id))
+                })
+            })
+        })
         .map(|id| ConversationId::Chat(id.to_owned()));
     let one_on_one = member.as_ref().and_then(|member| {
         account
@@ -742,6 +794,107 @@ mod tests {
             true,
         );
         (app, dir)
+    }
+
+    fn alert(id: &str, caller: &str, object_id: &str) -> crate::calling::RingAlert {
+        crate::calling::RingAlert {
+            id: id.into(),
+            caller: caller.into(),
+            caller_object_id: Some(object_id.into()),
+            video: false,
+            group: false,
+            thread_id: None,
+            account: None,
+            username: None,
+            ring_timeout: None,
+        }
+    }
+
+    #[test]
+    fn a_ring_raises_the_window_once_per_call_and_at_most_every_ten_seconds() {
+        let (mut app, _dir) = demo();
+        app.wants_show = false;
+        app.on_incoming_call(alert("c1", "A", "u-ada"));
+        assert!(app.wants_show);
+        // The same call again: no second raise.
+        app.wants_show = false;
+        app.on_incoming_call(alert("c1", "A", "u-ada"));
+        assert!(!app.wants_show);
+        // Another call right after: the card shows, the window stays put.
+        app.on_incoming_call(alert("c2", "B", "u-ada"));
+        assert!(!app.wants_show);
+        assert_eq!(app.rings.len(), 2);
+
+        // The gap and the memory, directly.
+        let mut raises = RingRaises::default();
+        let t0 = std::time::Instant::now();
+        assert!(raises.allow("a", t0));
+        assert!(!raises.allow("b", t0 + std::time::Duration::from_secs(9)));
+        assert!(raises.allow("c", t0 + std::time::Duration::from_secs(10)));
+        assert!(!raises.allow("c", t0 + std::time::Duration::from_secs(60)));
+        // "b" never raised, and it never will.
+        assert!(!raises.allow("b", t0 + std::time::Duration::from_secs(60)));
+        // Only the last 16 calls are remembered.
+        for n in 0..16 {
+            raises.allow(&format!("x{n}"), t0);
+        }
+        assert!(raises.seen.len() <= 16);
+        assert!(raises.allow("a", t0 + std::time::Duration::from_secs(600)));
+    }
+
+    #[test]
+    fn the_card_names_the_resolved_member_not_the_plugin() {
+        let (mut app, _dir) = demo();
+        app.on_incoming_call(alert("c1", "Totally Not Ada", "u-ada"));
+        let shown = &app.rings[0];
+        assert!(shown.member.is_some());
+        assert_eq!(shown.caller, "Ada Lovelace");
+    }
+
+    #[test]
+    fn an_unresolved_caller_is_marked_as_from_the_plugin() {
+        let (mut app, _dir) = demo();
+        app.on_incoming_call(alert("c1", "Someone New", "u-nobody"));
+        let shown = &app.rings[0];
+        assert_eq!(shown.caller, "Someone New");
+        // The card marks a name without a member as the plugin's.
+        assert!(shown.member.is_none());
+    }
+
+    #[test]
+    fn a_thread_without_the_caller_is_not_opened() {
+        let (mut app, _dir) = demo();
+        let without = app
+            .chats
+            .iter()
+            .find(|c| c.members.iter().all(|m| m.user_id != "u-ada"))
+            .map(|c| c.id.clone())
+            .expect("a demo chat without Ada");
+        let with = app
+            .chats
+            .iter()
+            .find(|c| {
+                c.kind != ChatKind::OneOnOne && c.members.iter().any(|m| m.user_id == "u-ada")
+            })
+            .map(|c| c.id.clone())
+            .expect("a demo group chat with Ada");
+        let mut ring = alert("c1", "Ada", "u-ada");
+        ring.thread_id = Some(without.clone());
+        app.on_incoming_call(ring);
+        assert_ne!(
+            app.rings[0].chat,
+            Some(ConversationId::Chat(without.clone()))
+        );
+        // Nobody resolved: no thread at all.
+        let mut ring = alert("c2", "Ada", "u-nobody");
+        ring.thread_id = Some(with.clone());
+        app.on_incoming_call(ring);
+        assert_eq!(app.rings[1].chat, None);
+        // The caller is in it: kept.
+        let mut ring = alert("c3", "Ada", "u-ada");
+        ring.thread_id = Some(with.clone());
+        app.on_incoming_call(ring);
+        assert_eq!(app.rings[2].chat, Some(ConversationId::Chat(with)));
     }
 
     const UNKNOWN: &str =

@@ -627,6 +627,17 @@ fn ring_card(
                 )
                 .truncate(),
             );
+            // Chaat knows no one by this name: it is only what the plugin said.
+            if ring.member.is_none() {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new("Name from the plugin")
+                            .size(11.0)
+                            .color(palette.dim),
+                    )
+                    .truncate(),
+                );
+            }
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
             let close = widgets::icon_button_sized(

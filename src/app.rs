@@ -608,6 +608,8 @@ pub struct App {
     pub toasts: Vec<Toast>,
     /// Ringing calls the call-alerts plugin reported, newest last.
     pub rings: Vec<Ring>,
+    /// Which rings already raised the window, and when it last was.
+    ring_raises: calls::RingRaises,
     /// The plugins of the plugin list at run time, by id. Process-wide, like
     /// the plugins themselves.
     pub plugins: std::collections::BTreeMap<String, PluginState>,
@@ -750,6 +752,7 @@ impl App {
             jump_to: None,
             toasts: Vec::new(),
             rings: Vec::new(),
+            ring_raises: calls::RingRaises::default(),
             plugins: Default::default(),
             plugins_started: Default::default(),
             next_toast: 0,
