@@ -79,6 +79,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     drop_files(app, &ctx);
     overlays::show(app, &ctx);
     toasts(app, &ctx);
+    rings(app, &ctx);
     if app.settings.perf_overlay {
         perf(app, &ctx);
     }
@@ -426,6 +427,110 @@ fn toasts(app: &mut App, ctx: &egui::Context) {
         });
 }
 
+/// The ring toasts: a call the call-alerts plugin reported, with "Place call"
+/// and "Open chat". Each stays until used, dismissed, or about as long as
+/// Teams rings (the plugin cannot tell when the call stops).
+fn rings(app: &mut App, ctx: &egui::Context) {
+    if app.rings.is_empty() {
+        return;
+    }
+    let palette = app.palette;
+    for ring in &app.rings {
+        let age = ring.arrived.elapsed();
+        if age >= crate::model::Ring::SHOWN_FOR {
+            app.actions.push(Action::DismissRing(ring.id.clone()));
+        } else {
+            ctx.request_repaint_after(crate::model::Ring::SHOWN_FOR - age);
+        }
+    }
+    let width = (ctx.content_rect().width() - 32.0).clamp(200.0, 340.0);
+    egui::Area::new(egui::Id::new("chaat-rings"))
+        .anchor(Align2::RIGHT_TOP, vec2(-16.0, theme::HEADER_HEIGHT + 8.0))
+        .order(egui::Order::Foreground)
+        .interactable(true)
+        .show(ctx, |ui| {
+            for ring in app.rings.clone().iter().rev() {
+                Frame::new()
+                    .fill(palette.surface)
+                    .stroke(Stroke::new(1.0, palette.accent.gamma_multiply(0.6)))
+                    .corner_radius(CornerRadius::same(10))
+                    .shadow(egui::Shadow {
+                        offset: [0, 4],
+                        blur: 16,
+                        spread: 0,
+                        color: palette.shadow,
+                    })
+                    .inner_margin(Margin::same(12))
+                    .show(ui, |ui| {
+                        ui.set_width(width - 24.0);
+                        ring_card(ui, &palette, ring, &mut app.actions);
+                    });
+                ui.add_space(6.0);
+            }
+        });
+}
+
+fn ring_card(
+    ui: &mut egui::Ui,
+    palette: &crate::theme::Palette,
+    ring: &crate::model::Ring,
+    actions: &mut Vec<Action>,
+) {
+    ui.horizontal(|ui| {
+        let icon = if ring.video { Icon::Video } else { Icon::Phone };
+        theme::icon(ui, icon, 20.0, palette.accent);
+        ui.vertical(|ui| {
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(&ring.caller)
+                        .font(theme::semibold(15.0))
+                        .color(palette.text),
+                )
+                .truncate(),
+            );
+            let what = match (ring.group, ring.video) {
+                (true, _) => "Group call",
+                (false, true) => "Incoming video call",
+                (false, false) => "Incoming call",
+            };
+            ui.label(
+                egui::RichText::new(what)
+                    .size(12.0)
+                    .color(palette.secondary),
+            );
+        });
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+            let close = widgets::icon_button_sized(
+                ui,
+                palette,
+                Icon::Close,
+                "Dismiss",
+                22.0,
+                14.0,
+                palette.dim,
+            );
+            widgets::on_click(&close, actions, Action::DismissRing(ring.id.clone()));
+        });
+    });
+    ui.add_space(8.0);
+    ui.horizontal(|ui| {
+        let place =
+            widgets::accent_button(ui, palette, true, "Place call", theme::semibold(13.0), 30.0)
+                .on_hover_text(if ring.email().is_some() {
+                    "Call back in Teams"
+                } else {
+                    "Open Teams to call back"
+                });
+        widgets::on_click(&place, actions, Action::RingPlaceCall(ring.id.clone()));
+        let open = ui
+            .add_enabled_ui(ring.can_open_chat(), |ui| {
+                widgets::secondary_button(ui, palette, "Open chat")
+            })
+            .inner
+            .on_disabled_hover_text("Chaat has no chat with this caller yet");
+        widgets::on_click(&open, actions, Action::RingOpenChat(ring.id.clone()));
+    });
+}
 fn perf(app: &App, ctx: &egui::Context) {
     let palette = app.palette;
     let max = app.perf.cpu.iter().copied().fold(0.0f32, f32::max) * 1000.0;

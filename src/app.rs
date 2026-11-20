@@ -20,8 +20,8 @@ use crate::backend::{AuthStatus, Backend, Command, Event, Merge, Waker};
 use crate::html;
 use crate::model::{
     Access, Action, Availability, Channel, Chat, ChatKind, ConversationId, Delivery, Meeting,
-    Member, MentionRef, Message, Presence, Profile, Reaction, SearchHit, Section, SettingsPage,
-    Team, Toast, ToastKind,
+    Member, MentionRef, Message, Presence, Profile, Reaction, Ring, SearchHit, Section,
+    SettingsPage, Team, Toast, ToastKind,
 };
 use crate::paths::AppDirs;
 use crate::settings::Settings;
@@ -604,6 +604,8 @@ pub struct App {
     /// A message to scroll to once its conversation is drawn.
     pub jump_to: Option<String>,
     pub toasts: Vec<Toast>,
+    /// Ringing calls the call-alerts plugin reported, newest last.
+    pub rings: Vec<Ring>,
     next_toast: u64,
     pub actions: Vec<Action>,
 
@@ -739,6 +741,7 @@ impl App {
             people: People::default(),
             jump_to: None,
             toasts: Vec::new(),
+            rings: Vec::new(),
             next_toast: 0,
             actions: Vec::new(),
             palette,
@@ -1487,16 +1490,6 @@ impl App {
                 }
             }
         }
-    }
-
-    /// A call is ringing, as reported by the call-alerts plugin. Show it and
-    /// bring Chaat forward so the person sees it. The richer two-button ring
-    /// toast (Place call / Open chat) is still to come; for now this surfaces
-    /// the caller and raises the window.
-    fn on_incoming_call(&mut self, alert: crate::calling::RingAlert) {
-        let what = if alert.group { "Group call" } else { "Call" };
-        self.toast(ToastKind::Error, format!("{what} from {}", alert.caller));
-        self.wants_show = true;
     }
 
     fn on_auth(&mut self, status: AuthStatus) {
@@ -2525,6 +2518,9 @@ impl App {
                 }
             }
             Action::DismissToast(id) => self.toasts.retain(|t| t.id != id),
+            Action::DismissRing(id) => self.rings.retain(|r| r.id != id),
+            Action::RingPlaceCall(id) => self.ring_place_call(&id, ctx),
+            Action::RingOpenChat(id) => self.ring_open_chat(&id),
             Action::Quit => {
                 self.quit_requested = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -3277,6 +3273,79 @@ mod tests {
         (app, commands)
     }
 
+    fn ring(id: &str, mri: &str) -> crate::calling::RingAlert {
+        crate::calling::RingAlert {
+            id: id.into(),
+            caller: "Caller".into(),
+            caller_mri: mri.into(),
+            video: false,
+            group: false,
+            thread_id: None,
+        }
+    }
+
+    fn ada_chat(app: &App) -> ConversationId {
+        let me = app.me().to_owned();
+        let chat = app
+            .chats
+            .iter()
+            .find(|c| {
+                c.kind == ChatKind::OneOnOne && c.peer(&me).is_some_and(|p| p.user_id == "u-ada")
+            })
+            .expect("the demo has a chat with Ada");
+        ConversationId::Chat(chat.id.clone())
+    }
+
+    #[test]
+    fn a_ring_resolves_the_caller_from_their_object_id_and_raises_the_window() {
+        let (mut app, _dir) = demo_app();
+        app.wants_show = false;
+        app.on_incoming_call(ring("call-1", "8:orgid:u-ada"));
+        let shown = &app.rings[0];
+        assert_eq!(shown.chat, Some(ada_chat(&app)));
+        assert!(shown.email().is_some_and(|e| e.contains('@')));
+        assert!(app.wants_show);
+        // The same call again replaces the toast rather than stacking it.
+        app.on_incoming_call(ring("call-1", "8:orgid:u-ada"));
+        assert_eq!(app.rings.len(), 1);
+    }
+
+    #[test]
+    fn open_chat_from_a_ring_opens_the_callers_chat_and_closes_the_toast() {
+        let (mut app, _dir) = demo_app();
+        let ctx = egui::Context::default();
+        app.section = Section::Calls;
+        app.on_incoming_call(ring("call-1", "8:orgid:u-ada"));
+        app.apply(Action::RingOpenChat("call-1".into()), &ctx);
+        assert_eq!(app.open, Some(ada_chat(&app)));
+        assert_eq!(app.section, Section::Chats);
+        assert!(app.rings.is_empty());
+    }
+
+    #[test]
+    fn an_unknown_caller_cannot_open_a_chat_and_a_call_back_falls_back_to_teams() {
+        let (mut app, _dir) = demo_app();
+        let ctx = egui::Context::default();
+        app.on_incoming_call(ring("call-2", "8:orgid:someone-new"));
+        let shown = &app.rings[0];
+        assert!(shown.member.is_none() && shown.chat.is_none());
+        assert!(!shown.can_open_chat());
+        app.apply(Action::RingPlaceCall("call-2".into()), &ctx);
+        assert!(app.rings.is_empty());
+        assert!(app.call.is_none());
+        assert!(app.toasts.iter().any(|t| t.text.contains("opened Teams")));
+    }
+
+    #[test]
+    fn dismissing_a_ring_removes_only_that_one() {
+        let (mut app, _dir) = demo_app();
+        let ctx = egui::Context::default();
+        app.on_incoming_call(ring("a", "8:orgid:u-ada"));
+        app.on_incoming_call(ring("b", "8:orgid:u-grace"));
+        app.apply(Action::DismissRing("a".into()), &ctx);
+        assert_eq!(app.rings.len(), 1);
+        assert_eq!(app.rings[0].id, "b");
+    }
     const LAUNCH: &str = "19:demo-launch@thread.v2";
 
     fn demo_app() -> (App, tempfile::TempDir) {

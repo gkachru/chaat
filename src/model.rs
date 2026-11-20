@@ -939,6 +939,12 @@ pub enum Action {
     TogglePerfOverlay,
     Refresh,
     DismissToast(u64),
+    /// The ring toast's "Place call": call the caller back in Teams.
+    RingPlaceCall(String),
+    /// The ring toast's "Open chat": the chat with the caller, in Chaat.
+    RingOpenChat(String),
+    /// Closes a ring toast (by its call id).
+    DismissRing(String),
     Quit,
 }
 
@@ -954,6 +960,43 @@ pub struct Toast {
     pub id: u64,
     pub kind: ToastKind,
     pub text: String,
+}
+
+/// A ringing call the call-alerts plugin reported, as the ring toast shows it.
+/// Chaat cannot answer it (calls run in Teams); the toast offers to call back
+/// or open the chat. The plugin cannot tell when the call stops ringing, so the
+/// toast expires on a timer.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Ring {
+    /// The plugin's call id.
+    pub id: String,
+    pub caller: String,
+    pub video: bool,
+    pub group: bool,
+    /// The chat to open: the group call's thread, or the one-on-one chat with
+    /// the caller, when Chaat has it.
+    pub chat: Option<ConversationId>,
+    /// The caller, when Chaat knows them from a chat's members. Their email
+    /// address is what a call back dials.
+    pub member: Option<Member>,
+    /// When the ring arrived, for the toast's expiry.
+    pub arrived: std::time::Instant,
+}
+
+impl Ring {
+    /// How long a ring toast stays up: about as long as Teams rings.
+    pub const SHOWN_FOR: std::time::Duration = std::time::Duration::from_secs(40);
+
+    /// The address a call back dials, if Chaat knows it.
+    pub fn email(&self) -> Option<&str> {
+        self.member.as_ref().and_then(|m| m.email.as_deref())
+    }
+
+    /// Whether "Open chat" can do anything: Chaat has the chat, or knows the
+    /// caller well enough to start one.
+    pub fn can_open_chat(&self) -> bool {
+        self.chat.is_some() || self.member.is_some()
+    }
 }
 
 /// Turns Graph's legacy reaction names into emoji. Newer reactions already

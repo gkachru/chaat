@@ -3172,3 +3172,57 @@ fn dialog_buttons_change_fill_and_cursor_on_hover() {
         }
     }
 }
+
+/// Where a painted text is, to click it.
+fn ring_text_pos(h: &Harness, wanted: &str) -> Option<egui::Pos2> {
+    painted_shapes(h).into_iter().find_map(|shape| match shape {
+        egui::epaint::Shape::Text(text) if text.galley.job.text == wanted => {
+            Some(text.pos + text.galley.rect.center().to_vec2())
+        }
+        _ => None,
+    })
+}
+
+#[test]
+fn a_ring_toast_offers_place_call_and_open_chat_in_both_themes_and_widths() {
+    for width in [480.0, 1280.0] {
+        for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+            let mut h = Harness::new();
+            h.size.x = width;
+            h.app.settings.theme = theme.clone();
+            h.app.section = Section::Calls;
+            h.frames(2);
+            let ctx = h.ctx.clone();
+            h.app.handle(
+                chaat::backend::Event::IncomingCall(chaat::calling::RingAlert {
+                    id: "call-1".into(),
+                    caller: "Ada Lovelace".into(),
+                    caller_mri: "8:orgid:u-ada".into(),
+                    video: true,
+                    group: false,
+                    thread_id: None,
+                }),
+                &ctx,
+            );
+            h.frames(2);
+            let painted = painted_texts(&h);
+            for text in [
+                "Ada Lovelace",
+                "Incoming video call",
+                "Place call",
+                "Open chat",
+            ] {
+                assert!(
+                    painted.iter().any(|t| t == text),
+                    "{text:?} shows at {width} in {theme:?}"
+                );
+            }
+            let open = ring_text_pos(&h, "Open chat").expect("Open chat is painted");
+            h.click(open);
+            h.frames(2);
+            assert!(h.app.rings.is_empty(), "the toast closes at {width}");
+            assert_eq!(h.app.section, Section::Chats);
+            assert!(h.app.open.is_some(), "the caller's chat opens at {width}");
+        }
+    }
+}

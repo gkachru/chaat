@@ -9,7 +9,7 @@ use crate::calling::browser::{self, Browser, BrowserProfile, Placement};
 use crate::calling::dock;
 use crate::calling::session::{CallSession, CallState, CallTarget, ChatLookup, in_call};
 use crate::calling::{Opener, TEAMS_WEB, same_meeting};
-use crate::model::{Action, Chat, ChatKind, ConversationId, Section, ToastKind};
+use crate::model::{Action, Chat, ChatKind, ConversationId, Member, Ring, Section, ToastKind};
 
 /// Chaat's window before it docked, to restore afterwards.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -107,19 +107,30 @@ impl App {
     }
 
     pub(super) fn start_call(&mut self, users: Vec<String>, video: bool, ctx: &egui::Context) {
-        let Some(link) = crate::calling::call_link(&users, video) else {
-            self.toast(
-                ToastKind::Error,
-                "No one to call: the chat's members have no email address.",
-            );
-            return;
-        };
         // Started from a conversation: that is the call's chat. From the
         // Calls page: the one-on-one chat with that person, if any.
         let chat = if matches!(self.section, Section::Chats | Section::Teams) {
             self.open.clone()
         } else {
             self.one_on_one_with(&users)
+        };
+        self.call_people(users, video, chat, ctx);
+    }
+
+    /// Calls `users` in Teams, following `chat` as the call's chat.
+    fn call_people(
+        &mut self,
+        users: Vec<String>,
+        video: bool,
+        chat: Option<ConversationId>,
+        ctx: &egui::Context,
+    ) {
+        let Some(link) = crate::calling::call_link(&users, video) else {
+            self.toast(
+                ToastKind::Error,
+                "No one to call: the chat's members have no email address.",
+            );
+            return;
         };
         let names = self.names_for(&users);
         self.open_call(CallTarget::People { names, video }, link, chat, ctx);
@@ -549,6 +560,108 @@ impl App {
         self.settings.calls = calls;
         self.mark_settings_dirty();
         self.sync_call_browser();
+    }
+}
+
+/// Ring alerts from the call-alerts plugin (docs/calling.md).
+impl App {
+    /// A call is ringing, as the call-alerts plugin reported. Shows the ring
+    /// toast, with the caller resolved against the chats Chaat has, and brings
+    /// Chaat forward so the person sees it.
+    pub(super) fn on_incoming_call(&mut self, alert: crate::calling::RingAlert) {
+        let (chat, member) = self.resolve_caller(&alert);
+        self.rings.retain(|ring| ring.id != alert.id);
+        self.rings.push(Ring {
+            id: alert.id,
+            caller: alert.caller,
+            video: alert.video,
+            group: alert.group,
+            chat,
+            member,
+            arrived: std::time::Instant::now(),
+        });
+        // Several at once is rare; keep the newest few.
+        if self.rings.len() > 3 {
+            self.rings.remove(0);
+        }
+        self.wants_show = true;
+    }
+
+    /// The chat and the person behind a ring, from what Chaat already has: the
+    /// call's thread when the push carried one, and the chat member whose user
+    /// id (the Entra object id) matches the caller's MRI.
+    fn resolve_caller(
+        &self,
+        alert: &crate::calling::RingAlert,
+    ) -> (Option<ConversationId>, Option<Member>) {
+        let me = self.me();
+        let member = alert.caller_object_id().and_then(|object_id| {
+            let matches = |m: &&Member| m.user_id.eq_ignore_ascii_case(object_id);
+            // Prefer a member record with an address, for the call back.
+            let mut known = self.chats.iter().flat_map(|c| &c.members).filter(matches);
+            let first = known.clone().next().cloned();
+            known.find(|m| m.email.is_some()).cloned().or(first)
+        });
+        let thread = alert
+            .thread_id
+            .as_deref()
+            .filter(|id| self.chat(id).is_some())
+            .map(|id| ConversationId::Chat(id.to_owned()));
+        let one_on_one = member.as_ref().and_then(|member| {
+            self.chats
+                .iter()
+                .find(|c| {
+                    c.kind == ChatKind::OneOnOne
+                        && c.peer(me).is_some_and(|p| p.user_id == member.user_id)
+                })
+                .map(|c| ConversationId::Chat(c.id.clone()))
+        });
+        (thread.or(one_on_one), member)
+    }
+
+    /// "Place call": call the caller back in Teams. Without their address,
+    /// opens Teams on the web so the person can call from there.
+    pub(super) fn ring_place_call(&mut self, id: &str, ctx: &egui::Context) {
+        let Some(ring) = self.take_ring(id) else {
+            return;
+        };
+        match ring.email() {
+            Some(email) => {
+                let users = vec![email.to_owned()];
+                let chat = ring.chat.clone().or_else(|| self.one_on_one_with(&users));
+                self.call_people(users, ring.video, chat, ctx);
+            }
+            None => {
+                if !self.demo {
+                    self.prepare_teams_web();
+                }
+                self.toast(
+                    ToastKind::Info,
+                    format!(
+                        "Chaat doesn't know {}'s address; opened Teams to call back.",
+                        ring.caller
+                    ),
+                );
+            }
+        }
+    }
+
+    /// "Open chat": the chat with the caller, in Chaat. Starts the one-on-one
+    /// chat if Chaat knows the caller but has no chat with them yet.
+    pub(super) fn ring_open_chat(&mut self, id: &str) {
+        let Some(ring) = self.take_ring(id) else {
+            return;
+        };
+        if let Some(chat) = ring.chat {
+            self.open_conversation(chat);
+        } else if let Some(member) = ring.member {
+            self.create_chat(vec![member], None);
+        }
+    }
+
+    fn take_ring(&mut self, id: &str) -> Option<Ring> {
+        let index = self.rings.iter().position(|ring| ring.id == id)?;
+        Some(self.rings.remove(index))
     }
 }
 
