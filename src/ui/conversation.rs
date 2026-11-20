@@ -17,6 +17,8 @@ use crate::theme::{self, Icon};
 /// Room for the avatar left of other people's messages.
 const GUTTER: f32 = 44.0;
 const AVATAR: f32 = 32.0;
+/// Between a missed call's words and its Call back button.
+const CALL_BACK_GAP: f32 = 10.0;
 /// How long the pointer rests on a message before its hover bar shows.
 const HOVER_DELAY: f64 = 0.3;
 /// Height of the name and time line above a message group.
@@ -874,7 +876,14 @@ fn message_row(
         } else {
             Vec::new()
         };
-        let text_width = (width - GUTTER - 8.0).max(80.0);
+        // Leave room for Call back, so a long date (older than yesterday)
+        // wraps instead of pushing the button out of the view.
+        let button_width = if call_back.is_empty() {
+            0.0
+        } else {
+            CALL_BACK_GAP + widgets::pill_width(ui, "Call back")
+        };
+        let text_width = (width - GUTTER - 8.0 - button_width).max(80.0);
         let (icon, job) = system_line(app, message, text_width, actions);
         let response = ui.allocate_ui(vec2(width, 0.0), |ui| {
             ui.set_width(width);
@@ -897,7 +906,7 @@ fn message_row(
                 ui.add(egui::Label::new(galley))
                     .on_hover_text(crate::time::day_label(message.created, crate::time::now()));
                 if !call_back.is_empty() {
-                    ui.add_space(10.0);
+                    ui.add_space(CALL_BACK_GAP);
                     let response = widgets::pill(ui, palette, Icon::Phone, "Call back", false)
                         .on_hover_text("Call back in Microsoft Teams");
                     widgets::on_click(
