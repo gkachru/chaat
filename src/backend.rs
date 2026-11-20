@@ -171,6 +171,11 @@ pub enum Command {
     MarkRead(String),
     /// The push relay to use, or none (docs/realtime.md).
     Relay(Option<String>),
+    /// Where a push plugin receives Graph's posts (docs/realtime.md), or none.
+    /// A relay set with `Relay` wins.
+    PushPlugin(Option<PushRoute>),
+    /// A body the push plugin forwarded; dropped when no plugin loop runs.
+    PushBody(String),
     /// Stores the relay's access key in the credential store, or removes it
     /// (`None`). Sent to the service backend; answered with `RelayKeySaved`.
     SaveRelayKey(Option<crate::realtime::RelayKey>),
@@ -385,6 +390,21 @@ pub enum Event {
     Reachable(bool),
     /// Something the person should hear about, in plain words.
     Error(String),
+}
+
+/// Where Graph posts notifications for a push plugin, and the channel that
+/// tells the plugin which account a post is for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PushRoute {
+    /// An https origin without a trailing slash.
+    pub url: String,
+    pub channel: String,
+}
+
+impl PushRoute {
+    pub fn new(url: String, channel: String) -> PushRoute {
+        PushRoute { url, channel }
+    }
 }
 
 /// Where the backend signs in and fetches from, and where it keeps secrets.

@@ -119,6 +119,9 @@ fn account_tag(account: &str) -> String {
 /// How long stopping push may wait for its subscriptions to be deleted.
 const PUSH_CLEANUP: Duration = Duration::from_secs(3);
 
+/// Bodies a push plugin may have waiting for the push loop; more are dropped.
+const PUSH_BODY_QUEUE: usize = 64;
+
 /// How long presence notices gather before one fetch for all of them.
 const PRESENCE_BATCH: Duration = Duration::from_millis(1500);
 
@@ -239,6 +242,12 @@ struct Worker {
     downloads: Arc<Semaphore>,
     options: super::BackendOptions,
     relay: Option<String>,
+    /// Where a push plugin receives Graph's posts, used when no relay is set.
+    push_route: Option<super::PushRoute>,
+    /// Feeds bodies a push plugin forwarded to the running plugin loop.
+    push_bodies: Option<mpsc::Sender<String>>,
+    /// Whether this loop session already logged dropped bodies.
+    push_dropped: bool,
     /// Stops the running push loop, and the loop itself, to wait for its
     /// cleanup.
     stop_push: Option<(watch::Sender<bool>, tokio::task::JoinHandle<()>)>,
@@ -286,6 +295,9 @@ pub(super) async fn run(
         secrets: Arc::clone(&options.secrets),
         options,
         relay: None,
+        push_route: None,
+        push_bodies: None,
+        push_dropped: false,
         stop_push: None,
         plugins: HashMap::new(),
         stopping: tokio::task::JoinSet::new(),
@@ -520,6 +532,28 @@ impl Worker {
                     )));
                 }
                 self.restart_push().await;
+            }
+            Command::PushPlugin(route) => {
+                self.push_route = route.and_then(|route| {
+                    let url = realtime::normalize_relay(&route.url)?;
+                    Some(super::PushRoute::new(url, route.channel))
+                });
+                // A relay set by hand wins: the route is kept for later, and
+                // the running relay session is left alone.
+                if self.relay.is_none() {
+                    self.restart_push().await;
+                }
+            }
+            Command::PushBody(body) => {
+                // Dropped when no plugin loop is running.
+                let full = self
+                    .push_bodies
+                    .as_ref()
+                    .is_some_and(|bodies| bodies.try_send(body).is_err());
+                if full && !self.push_dropped {
+                    self.push_dropped = true;
+                    log::debug!("push: plugin bodies dropped (queue full or closed)");
+                }
             }
             Command::Presence(users) => self.presence(users),
             Command::Photo(user) => self.photo(user),
@@ -876,7 +910,17 @@ impl Worker {
     /// signed in, starts a new one.
     async fn restart_push(&mut self) {
         self.stop_push().await;
-        let (Some(relay), Some(account)) = (self.relay.clone(), &self.account) else {
+        let Some(account) = &self.account else {
+            self.out.send(Event::Push(PushStatus::Off));
+            return;
+        };
+        // A relay set by hand wins over a push plugin's route.
+        let (mut source, bodies) = if let Some(relay) = self.relay.clone() {
+            (PushSource::Relay { relay, key: None }, None)
+        } else if let Some(route) = self.push_route.clone() {
+            let (tx, rx) = mpsc::channel(PUSH_BODY_QUEUE);
+            (PushSource::Plugin { route, bodies: rx }, Some(tx))
+        } else {
             self.out.send(Event::Push(PushStatus::Off));
             return;
         };
@@ -892,15 +936,16 @@ impl Worker {
         let out = self.out.clone();
         let internal = self.internal.clone();
         let secrets = Arc::clone(&self.secrets);
-        let key = tokio::task::spawn_blocking(move || secrets.read(crate::secrets::RELAY_KEY))
-            .await
-            .ok()
-            .and_then(Result::ok)
-            .flatten();
+        if let PushSource::Relay { key, .. } = &mut source {
+            *key = tokio::task::spawn_blocking(move || secrets.read(crate::secrets::RELAY_KEY))
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .flatten();
+        }
         let target = PushTarget {
             me,
-            relay,
-            key,
+            source,
             leftovers: self
                 .dirs
                 .account(&account.record.id)
@@ -917,6 +962,8 @@ impl Worker {
         let task =
             tokio::spawn(PUSH_ACCOUNT.scope(tag, push_loop(graph, target, out, internal, stopped)));
         self.stop_push = Some((stop, task));
+        self.push_bodies = bodies;
+        self.push_dropped = false;
     }
 
     /// Stops the push loop and waits for it to delete its subscriptions,
@@ -926,7 +973,10 @@ impl Worker {
     /// [`PUSH_CLEANUP`]; whatever is left is deleted at the next start.
     async fn stop_push(&mut self) {
         if let Some((stop, task)) = self.stop_push.take() {
+            // Stop first: closing the body queue before the stop flag is set
+            // would let the loop report "the push plugin stopped" as a failure.
             let _ = stop.send(true);
+            self.push_bodies = None;
             if tokio::time::timeout(PUSH_CLEANUP, task).await.is_err() {
                 log::info!(
                     "push[{}]: cleanup took too long; the next start finishes it",
@@ -2401,8 +2451,7 @@ async fn share_file(
 /// subscriptions it makes.
 struct PushTarget {
     me: String,
-    relay: String,
-    key: Option<String>,
+    source: PushSource,
     leftovers: std::path::PathBuf,
     /// The people of one-on-one chats, as the chat list last showed them.
     contacts: watch::Receiver<Vec<String>>,
@@ -2412,6 +2461,25 @@ struct PushTarget {
     renew_every: Duration,
     /// How long the WebSocket to the relay may take to open.
     connect_within: Duration,
+}
+
+/// How the push loop hears from Graph.
+enum PushSource {
+    /// A relay reached over a WebSocket, with its access key if it has one.
+    Relay { relay: String, key: Option<String> },
+    /// A push plugin: Graph posts to the plugin's tunnel and the plugin
+    /// forwards each body through the queue.
+    Plugin {
+        route: super::PushRoute,
+        bodies: mpsc::Receiver<String>,
+    },
+}
+
+/// One thing a push session received.
+enum Incoming {
+    Text(String),
+    Skip,
+    Closed(&'static str),
 }
 
 /// People Graph refused to follow in the last week (see
@@ -2756,44 +2824,57 @@ async fn push_loop(
     use futures_util::{SinkExt, StreamExt};
     let PushTarget {
         me,
-        relay,
-        key,
+        source,
         leftovers,
         mut contacts,
         refused,
         renew_every,
         connect_within,
     } = target;
+    let (relay_key, mut bodies, relay, fixed_channel) = match source {
+        PushSource::Relay { relay, key } => (Some(key), None, relay, None),
+        PushSource::Plugin { route, bodies } => {
+            (None, Some(bodies), route.url, Some(route.channel))
+        }
+    };
     let mut pause = Duration::from_secs(5);
     while !*stop.borrow() {
         out.send(Event::Push(PushStatus::Connecting));
-        let channel = auth::random_token(32);
+        let channel = fixed_channel
+            .clone()
+            .unwrap_or_else(|| auth::random_token(32));
         let client_state = auth::random_token(24);
         let failure = 'session: {
-            let Some(request) = realtime::websocket_request(&relay, &channel, key.as_deref())
-            else {
-                break 'session "the relay address or access key is not valid".to_owned();
-            };
-            let connecting =
-                tokio::time::timeout(connect_within, tokio_tungstenite::connect_async(request))
-                    .await;
-            let Ok(connected) = connecting else {
-                break 'session "the relay did not answer in time".to_owned();
-            };
-            let socket = match connected {
-                Ok((socket, _)) => socket,
-                Err(tokio_tungstenite::tungstenite::Error::Http(response))
-                    if response.status() == 401 =>
-                {
-                    break 'session if key.is_some() {
-                        "the relay did not accept the access key".to_owned()
-                    } else {
-                        "the relay needs an access key".to_owned()
-                    };
-                }
-                Err(_) => break 'session "the relay could not be reached".to_owned(),
-            };
-            let (mut sink, mut stream) = socket.split();
+            let mut sink = None;
+            let mut stream = None;
+            if let Some(key) = &relay_key {
+                let Some(request) = realtime::websocket_request(&relay, &channel, key.as_deref())
+                else {
+                    break 'session "the relay address or access key is not valid".to_owned();
+                };
+                let connecting =
+                    tokio::time::timeout(connect_within, tokio_tungstenite::connect_async(request))
+                        .await;
+                let Ok(connected) = connecting else {
+                    break 'session "the relay did not answer in time".to_owned();
+                };
+                let socket = match connected {
+                    Ok((socket, _)) => socket,
+                    Err(tokio_tungstenite::tungstenite::Error::Http(response))
+                        if response.status() == 401 =>
+                    {
+                        break 'session if key.is_some() {
+                            "the relay did not accept the access key".to_owned()
+                        } else {
+                            "the relay needs an access key".to_owned()
+                        };
+                    }
+                    Err(_) => break 'session "the relay could not be reached".to_owned(),
+                };
+                let (write, read) = socket.split();
+                sink = Some(write);
+                stream = Some(read);
+            }
             delete_leftovers(&graph, &leftovers).await;
             let subscription = match graph
                 .subscribe_chat_messages(
@@ -2886,15 +2967,32 @@ async fn push_loop(
                         }
                     }
                     _ = keepalive.tick() => {
-                        if sink.send(tokio_tungstenite::tungstenite::Message::Ping(Vec::new().into())).await.is_err() {
+                        if let Some(sink) = sink.as_mut()
+                            && sink.send(tokio_tungstenite::tungstenite::Message::Ping(Vec::new().into())).await.is_err()
+                        {
                             break Some("the relay connection dropped".to_owned());
                         }
                     }
-                    message = stream.next() => {
-                        let text = match message {
-                            Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) => text.to_string(),
-                            Some(Ok(_)) => continue,
-                            Some(Err(_)) | None => break Some("the relay connection dropped".to_owned()),
+                    incoming = async {
+                        if let Some(stream) = stream.as_mut() {
+                            match stream.next().await {
+                                Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) => Incoming::Text(text.to_string()),
+                                Some(Ok(_)) => Incoming::Skip,
+                                Some(Err(_)) | None => Incoming::Closed("the relay connection dropped"),
+                            }
+                        } else if let Some(bodies) = bodies.as_mut() {
+                            match bodies.recv().await {
+                                Some(text) => Incoming::Text(text),
+                                None => Incoming::Closed("the push plugin stopped"),
+                            }
+                        } else {
+                            std::future::pending().await
+                        }
+                    } => {
+                        let text = match incoming {
+                            Incoming::Text(text) => text,
+                            Incoming::Skip => continue,
+                            Incoming::Closed(reason) => break Some(reason.to_owned()),
                         };
                         let mut recreate = false;
                         for notice in realtime::parse(&text, &client_state) {
