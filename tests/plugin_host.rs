@@ -99,6 +99,17 @@ fn fake_plugin_serve() {
             note(&log, &format!("env-cwd:{}", cwd.display()));
             say(READY);
         }
+        // Ready, then reads its input and never obeys a shutdown, nor leaves
+        // when the input closes: only a kill ends it.
+        "stubborn" => {
+            say(READY);
+            for line in std::io::stdin().lock().lines() {
+                let Ok(line) = line else { break };
+                note(&log, &line);
+            }
+            std::thread::sleep(Duration::from_secs(120));
+            return;
+        }
         "unsupported" => say(r#"{"v":1,"type":"ready","capabilities":["presence"]}"#),
         "display" => say(r#"{"v":1,"type":"ready","capabilities":["presence_display","x"]}"#),
         _ => say(READY),
@@ -549,6 +560,10 @@ async fn chaat_variables_are_not_inherited() {
 // The worker: a backend with fake plugins and a memory credential store.
 
 fn backend(dir: &Path, store: Arc<MemoryStore>) -> Backend {
+    backend_with(dir, store)
+}
+
+fn backend_with(dir: &Path, store: Arc<dyn SecretStore>) -> Backend {
     Backend::spawn_with(
         AppDirs::under(dir),
         Waker::default(),
@@ -565,6 +580,8 @@ fn start_command(id: &str, path: PathBuf) -> Command {
         id: id.into(),
         path,
         hello: hello(),
+        expected_sha256: None,
+        generation: 1,
     }
 }
 
@@ -602,6 +619,7 @@ fn wait_ready(backend: &Backend, plugin: &str) {
         Event::Plugin {
             id,
             event: PluginEvent::Ready { .. },
+            ..
         } if id.as_str() == plugin => Some(()),
         _ => None,
     });
@@ -785,5 +803,138 @@ fn options_follow_the_secret_saved_before_them_in_order() {
         keys, expected,
         "each options message holds the secret saved just before it, in order"
     );
+    backend.shutdown();
+}
+
+#[test]
+fn stopping_a_stubborn_plugin_does_not_stall_other_commands() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut backend = backend(dir.path(), Arc::default());
+    backend.send(start_command("a", fake(dir.path(), "stubborn")));
+    backend.send(start_command("b", fake(dir.path(), "echo")));
+    wait_ready(&backend, "a");
+    wait_ready(&backend, "b");
+    let asked = std::time::Instant::now();
+    backend.send(Command::StopPlugin { id: "a".into() });
+    backend.send(Command::PluginSend {
+        id: "b".into(),
+        message: HostMessage::Forget {
+            account: "o3.t3".into(),
+        },
+    });
+    wait_log(dir.path(), "echo", &[r#""type":"forget""#, "o3.t3"]);
+    // The host waits up to three seconds for a plugin that ignores shutdown;
+    // another plugin's message must not wait for that.
+    assert!(
+        asked.elapsed() < Duration::from_millis(2500),
+        "b waited {:?} for a's stop",
+        asked.elapsed()
+    );
+    wait_log(dir.path(), "stubborn", &[r#""type":"shutdown""#]);
+    // Shutdown still waits for the stop under way, which ends in a kill.
+    backend.shutdown();
+}
+
+#[test]
+fn a_start_for_an_id_that_is_stopping_runs_after_the_old_run_ended() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut backend = backend(dir.path(), Arc::default());
+    let stubborn = fake(dir.path(), "stubborn");
+    backend.send(start_command("a", stubborn.clone()));
+    wait_ready(&backend, "a");
+    backend.send(Command::StopPlugin { id: "a".into() });
+    backend.send(Command::StartPlugin {
+        id: "a".into(),
+        path: stubborn,
+        hello: hello(),
+        expected_sha256: None,
+        generation: 2,
+    });
+    // The old run is killed after about three seconds; only then does the
+    // new one start, and its events carry its generation.
+    let generation = wait_for(&backend, |event| match event {
+        Event::Plugin {
+            id,
+            generation,
+            event: PluginEvent::Ready { .. },
+        } if id.as_str() == "a" => Some(*generation),
+        _ => None,
+    });
+    assert_eq!(generation, 2);
+    let starts = log_lines(dir.path(), "stubborn")
+        .iter()
+        .filter(|line| *line == "start")
+        .count();
+    assert_eq!(starts, 2);
+    backend.shutdown();
+}
+
+/// A credential store that holds writes for one plugin's keys until released.
+struct BlockingStore {
+    inner: MemoryStore,
+    prefix: &'static str,
+    released: std::sync::Mutex<bool>,
+    changed: std::sync::Condvar,
+}
+
+impl BlockingStore {
+    fn release(&self) {
+        *self.released.lock().unwrap() = true;
+        self.changed.notify_all();
+    }
+}
+
+impl SecretStore for BlockingStore {
+    fn read(&self, key: &str) -> Result<Option<String>, chaat::secrets::SecretError> {
+        self.inner.read(key)
+    }
+    fn write(&self, key: &str, secret: &str) -> Result<(), chaat::secrets::SecretError> {
+        if key.starts_with(self.prefix) {
+            let mut released = self.released.lock().unwrap();
+            while !*released {
+                released = self.changed.wait(released).unwrap();
+            }
+        }
+        self.inner.write(key, secret)
+    }
+    fn delete(&self, key: &str) -> Result<(), chaat::secrets::SecretError> {
+        self.inner.delete(key)
+    }
+}
+
+#[test]
+fn a_blocked_secret_store_for_one_plugin_does_not_hold_another() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(BlockingStore {
+        inner: MemoryStore::default(),
+        prefix: "plugin-option:a:",
+        released: Default::default(),
+        changed: Default::default(),
+    });
+    let mut backend = backend_with(dir.path(), store.clone());
+    let save = |plugin: &str| {
+        backend.send(Command::SavePluginSecret {
+            plugin: plugin.into(),
+            option: "key".into(),
+            value: Some("v".into()),
+        });
+    };
+    save("a");
+    save("b");
+    let first = wait_for(&backend, |event| match event {
+        Event::PluginSecretSaved { plugin, ok, .. } => Some((plugin.clone(), *ok)),
+        _ => None,
+    });
+    assert_eq!(
+        first,
+        ("b".to_owned(), true),
+        "b is saved while a is blocked"
+    );
+    store.release();
+    let second = wait_for(&backend, |event| match event {
+        Event::PluginSecretSaved { plugin, ok, .. } => Some((plugin.clone(), *ok)),
+        _ => None,
+    });
+    assert_eq!(second, ("a".to_owned(), true));
     backend.shutdown();
 }

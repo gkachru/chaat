@@ -3196,6 +3196,7 @@ fn a_ring_toast_offers_place_call_and_open_chat_in_both_themes_and_widths() {
             h.app.handle(
                 chaat::backend::Event::Plugin {
                     id: "demo-alerts".into(),
+                    generation: 0,
                     event: chaat::plugin::event::PluginEvent::IncomingCall(
                         chaat::calling::RingAlert {
                             id: "call-1".into(),
@@ -3263,6 +3264,7 @@ fn the_call_alerts_sign_in_panel_shows_the_code_in_both_themes_and_widths() {
             h.app.handle(
                 chaat::backend::Event::Plugin {
                     id: "ca".into(),
+                    generation: 0,
                     event: chaat::plugin::event::PluginEvent::SignIn {
                         account: None,
                         verification_uri: "https://microsoft.com/devicelogin".into(),
@@ -3509,6 +3511,7 @@ fn a_plugin_sign_in_card_names_chaats_account_not_the_plugins_claim() {
             h.app.handle(
                 chaat::backend::Event::Plugin {
                     id: "demo-alerts".into(),
+                    generation: 0,
                     event: chaat::plugin::event::PluginEvent::SignIn {
                         account: Some(me),
                         verification_uri: "https://microsoft.com/devicelogin".into(),

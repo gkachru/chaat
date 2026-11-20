@@ -42,6 +42,14 @@ pub enum PluginEvent {
         message: String,
     },
     IncomingCall(RingAlert),
+    /// The hash of the file about to run, for a plugin that has no pin yet.
+    Fingerprint {
+        sha256: String,
+    },
+    /// The file no longer matches its pin; it was not run.
+    FileChanged {
+        sha256: String,
+    },
 }
 
 /// The event for something the plugin host reported, if any.
@@ -56,8 +64,12 @@ pub fn event(reported: HostEvent) -> Option<PluginEvent> {
             message: Some("This plugin offers nothing Chaat can use.".into()),
         }),
         HostEvent::Message(message) => message_event(message),
-        // Mapped by the backend (pinning, flood notice).
-        HostEvent::Fingerprint { .. } | HostEvent::FileChanged { .. } | HostEvent::Flooding => None,
+        HostEvent::Fingerprint { sha256 } => Some(PluginEvent::Fingerprint { sha256 }),
+        HostEvent::FileChanged { sha256 } => Some(PluginEvent::FileChanged { sha256 }),
+        HostEvent::Flooding => Some(PluginEvent::Status {
+            running: true,
+            message: Some("The plugin sent too many messages; some were ignored.".into()),
+        }),
     }
 }
 
@@ -177,6 +189,33 @@ mod tests {
             Some(PluginEvent::Status {
                 running: false,
                 message: None,
+            })
+        );
+    }
+
+    #[test]
+    fn pinning_and_flood_reports_become_events() {
+        assert_eq!(
+            event(HostEvent::Fingerprint {
+                sha256: "ab".into()
+            }),
+            Some(PluginEvent::Fingerprint {
+                sha256: "ab".into()
+            })
+        );
+        assert_eq!(
+            event(HostEvent::FileChanged {
+                sha256: "cd".into()
+            }),
+            Some(PluginEvent::FileChanged {
+                sha256: "cd".into()
+            })
+        );
+        assert_eq!(
+            event(HostEvent::Flooding),
+            Some(PluginEvent::Status {
+                running: true,
+                message: Some("The plugin sent too many messages; some were ignored.".into()),
             })
         );
     }

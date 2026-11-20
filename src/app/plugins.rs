@@ -148,6 +148,7 @@ impl App {
             .collect();
         for id in stale {
             self.plugins_started.remove(&id);
+            self.retire_plugin_generation(&id);
             self.service.send(Command::StopPlugin { id: id.clone() });
             if let Some(state) = self.plugins.get_mut(&id) {
                 state.stopped();
@@ -166,8 +167,44 @@ impl App {
             let state = self.plugins.entry(id.clone()).or_default();
             state.stopped();
             state.sent_accounts = accounts;
-            self.service.send(Command::StartPlugin { id, path, hello });
+            let generation = self.next_plugin_generation(&id);
+            // F4: pass the entry's stored `sha256` once the field exists.
+            self.service.send(Command::StartPlugin {
+                id,
+                path,
+                hello,
+                expected_sha256: None,
+                generation,
+            });
         }
+    }
+
+    /// A generation no earlier start of any plugin had, now the current one
+    /// for `id`: events from older hosts of it are dropped.
+    fn next_plugin_generation(&mut self, id: &str) -> u64 {
+        self.plugin_generation += 1;
+        self.plugin_generations
+            .insert(id.to_owned(), self.plugin_generation);
+        self.plugin_generation
+    }
+
+    /// Makes the plugin's current generation one no host has, so whatever its
+    /// stopped host still reports is dropped.
+    pub(super) fn retire_plugin_generation(&mut self, id: &str) {
+        self.next_plugin_generation(id);
+    }
+
+    /// Whether an event from a plugin's host counts: it comes from the
+    /// current start, and the plugin is still in the list and turned on.
+    fn plugin_event_counts(&self, id: &str, generation: u64) -> bool {
+        self.plugin_generations
+            .get(id)
+            .is_none_or(|current| *current == generation)
+            && self
+                .settings
+                .plugins
+                .iter()
+                .any(|entry| entry.id == id && entry.enabled)
     }
 
     /// Tells running plugins about changes to Chaat's accounts, takes
@@ -379,7 +416,10 @@ impl App {
     }
 
     /// Applies what a plugin did.
-    pub(super) fn on_plugin_event(&mut self, id: String, event: PluginEvent) {
+    pub(super) fn on_plugin_event(&mut self, id: String, generation: u64, event: PluginEvent) {
+        if !self.plugin_event_counts(&id, generation) {
+            return;
+        }
         match event {
             PluginEvent::Ready {
                 info,
@@ -479,6 +519,10 @@ impl App {
                     self.on_incoming_call(alert);
                 }
             }
+            // F4: store the first hash as the entry's pin (trust on first use).
+            PluginEvent::Fingerprint { .. } => {}
+            // F4: ask whether to run the changed file; the host did not run it.
+            PluginEvent::FileChanged { .. } => {}
         }
     }
 
@@ -585,6 +629,7 @@ impl App {
             });
         }
         if self.plugins_started.remove(id).is_some() {
+            self.retire_plugin_generation(id);
             self.send_service(Command::StopPlugin { id: id.to_owned() });
         }
         self.settings.plugins.retain(|e| e.id != id);
@@ -703,5 +748,75 @@ mod tests {
             c,
             Command::PluginHello { id, accounts: Some(a), .. } if id == "p" && a.is_empty()
         )));
+    }
+
+    fn generation_of(command: Option<Command>) -> u64 {
+        match command {
+            Some(Command::StartPlugin { generation, .. }) => generation,
+            other => panic!("expected a start, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn events_from_an_old_generation_are_dropped() {
+        let (backend, _) = Backend::recording();
+        let dir = std::env::temp_dir().join("chaat-test-unused");
+        let mut app = App::with_backend(
+            AppDirs::under(&dir),
+            Settings::default(),
+            Waker::default(),
+            backend,
+            false,
+        );
+        let (service, mut commands) = Backend::recording();
+        app.service = service;
+        app.settings.plugins.push(PluginEntry {
+            id: "p".into(),
+            path: PathBuf::from("p.exe"),
+            enabled: true,
+            ..PluginEntry::default()
+        });
+        let running = |app: &mut App, generation: u64, running: bool| {
+            app.on_plugin_event(
+                "p".into(),
+                generation,
+                PluginEvent::Status {
+                    running,
+                    message: None,
+                },
+            );
+            app.plugins["p"].running
+        };
+        app.sync_plugins();
+        let first = generation_of(commands.try_recv().ok());
+        assert!(running(&mut app, first, true), "the current run counts");
+        // A new path restarts the plugin: the first run's last words are old.
+        app.settings.plugins[0].path = PathBuf::from("q.exe");
+        app.sync_plugins();
+        let second = generation_of(commands.try_recv().ok());
+        assert_ne!(first, second);
+        assert!(!app.plugins["p"].running, "a restart forgets the old run");
+        assert!(!running(&mut app, first, true), "the old run is ignored");
+        assert!(running(&mut app, second, true), "the new run counts");
+        // Turned off: nothing the stopped host still says counts, not even
+        // from the latest generation.
+        app.settings.plugins[0].enabled = false;
+        app.sync_plugins();
+        assert!(matches!(
+            commands.try_recv(),
+            Ok(Command::StopPlugin { id }) if id == "p"
+        ));
+        assert!(!running(&mut app, second, true));
+        // Turned on again: a newer generation, and only that one counts.
+        app.settings.plugins[0].enabled = true;
+        app.sync_plugins();
+        let third = generation_of(commands.try_recv().ok());
+        assert!(third > second);
+        assert!(!running(&mut app, second, true));
+        assert!(running(&mut app, third, true));
+        // Removed: events from the plugin are dropped.
+        app.remove_plugin("p");
+        app.plugins.entry("p".into()).or_default().running = false;
+        assert!(!running(&mut app, third, true));
     }
 }

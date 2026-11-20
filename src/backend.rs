@@ -186,6 +186,12 @@ pub enum Command {
         id: String,
         path: std::path::PathBuf,
         hello: crate::plugin::protocol::HostMessage,
+        /// The file's pin, if it has one (`PluginEntry::sha256`): a file that
+        /// does not match is not run.
+        expected_sha256: Option<String>,
+        /// Names this start. Events from it carry it back, so the interface
+        /// can drop what an older run of the same plugin said.
+        generation: u64,
     },
     /// Sends a message to one running plugin.
     PluginSend {
@@ -319,6 +325,8 @@ pub enum Event {
     /// Something a plugin did, by the plugin's id.
     Plugin {
         id: String,
+        /// The `generation` of the `StartPlugin` whose host reported this.
+        generation: u64,
         event: crate::plugin::event::PluginEvent,
     },
     /// Whether `SavePluginSecret` worked; `set` says whether a value is now

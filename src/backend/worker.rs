@@ -127,17 +127,89 @@ fn plugin_secret_key(plugin: &str, option: &str) -> String {
     format!("plugin-option:{plugin}:{option}")
 }
 
-/// Starts the task that runs credential store jobs in order, each on the
-/// blocking pool. It ends when the worker drops the sender.
-fn secret_runner() -> mpsc::UnboundedSender<Box<dyn FnOnce() + Send>> {
-    let (tx, mut rx) = mpsc::unbounded_channel::<Box<dyn FnOnce() + Send>>();
-    tokio::spawn(async move {
-        while let Some(job) = rx.recv().await {
-            let _ = tokio::task::spawn_blocking(job).await;
-        }
-    });
-    tx
+/// One plugin's credential store queue: its jobs run one at a time, in the
+/// order given, each on the blocking pool. A job that blocks (a locked or
+/// prompting credential store) holds only this plugin's queue.
+struct SecretQueue {
+    jobs: mpsc::UnboundedSender<Box<dyn FnOnce() + Send>>,
+    /// Jobs queued or running.
+    pending: Arc<std::sync::atomic::AtomicUsize>,
 }
+
+/// Counts a job as done when dropped: after it ran, panicked or was dropped
+/// unrun.
+struct JobDone(Arc<std::sync::atomic::AtomicUsize>);
+
+impl Drop for JobDone {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl SecretQueue {
+    /// Starts the task that runs the jobs. It ends when the queue is dropped
+    /// and its jobs have run.
+    fn start() -> Self {
+        let (jobs, mut rx) = mpsc::unbounded_channel::<Box<dyn FnOnce() + Send>>();
+        tokio::spawn(async move {
+            while let Some(job) = rx.recv().await {
+                let _ = tokio::task::spawn_blocking(job).await;
+            }
+        });
+        Self {
+            jobs,
+            pending: Arc::default(),
+        }
+    }
+
+    fn run(&self, job: impl FnOnce() + Send + 'static) {
+        self.pending
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let done = JobDone(Arc::clone(&self.pending));
+        let _ = self.jobs.send(Box::new(move || {
+            let _done = done;
+            job();
+        }));
+    }
+
+    fn idle(&self) -> bool {
+        self.pending.load(std::sync::atomic::Ordering::SeqCst) == 0
+    }
+}
+
+/// A plugin start held back until the previous run of the same id has
+/// stopped, so two processes of one plugin never overlap.
+struct PluginStart {
+    path: std::path::PathBuf,
+    hello: crate::plugin::protocol::HostMessage,
+    expected_sha256: Option<String>,
+    generation: u64,
+}
+
+/// Changes what a restart hello holds, for each part given.
+fn update_hello(
+    hello: &mut crate::plugin::protocol::HostMessage,
+    accounts: Option<Vec<crate::plugin::protocol::PluginAccount>>,
+    forget: Option<Vec<String>>,
+) {
+    if let crate::plugin::protocol::HostMessage::Hello {
+        accounts: current_accounts,
+        forget: current_forget,
+        ..
+    } = hello
+    {
+        if let Some(accounts) = accounts {
+            *current_accounts = accounts;
+        }
+        if let Some(forget) = forget {
+            *current_forget = forget;
+        }
+    }
+}
+
+/// How long shutdown waits for plugins to stop. Each stop is bounded on its
+/// own (`Plugin::stop`); this only guards the whole.
+const PLUGIN_STOP_WAIT: Duration = Duration::from_secs(10);
 
 struct Worker {
     dirs: AppDirs,
@@ -172,10 +244,18 @@ struct Worker {
     stop_push: Option<(watch::Sender<bool>, tokio::task::JoinHandle<()>)>,
     /// The plugins of the plugin list, by id.
     plugins: HashMap<String, crate::plugin::host::Plugin>,
-    /// Credential store work for plugins, run one job at a time in the order
-    /// given: a saved secret is seen by the options sent after it, and
-    /// options reach a plugin in the order they were asked for.
-    secret_jobs: mpsc::UnboundedSender<Box<dyn FnOnce() + Send>>,
+    /// Plugins being stopped off the command loop, by task, with the id each
+    /// one was running as.
+    stopping: tokio::task::JoinSet<()>,
+    stopping_ids: HashMap<tokio::task::Id, String>,
+    /// The latest start asked for an id that is still stopping.
+    deferred_starts: HashMap<String, PluginStart>,
+    /// Credential store work for plugins, one queue per plugin id, created on
+    /// first use. Within a plugin jobs run one at a time in the order given:
+    /// a saved secret is seen by the options sent after it, and options reach
+    /// a plugin in the order they were asked for. Plugins do not wait for
+    /// each other.
+    secret_jobs: HashMap<String, SecretQueue>,
     /// Whether Chaat keeps a presence session (setting), and when it last
     /// refreshed it.
     session_enabled: bool,
@@ -208,7 +288,10 @@ pub(super) async fn run(
         relay: None,
         stop_push: None,
         plugins: HashMap::new(),
-        secret_jobs: secret_runner(),
+        stopping: tokio::task::JoinSet::new(),
+        stopping_ids: HashMap::new(),
+        deferred_starts: HashMap::new(),
+        secret_jobs: HashMap::new(),
         session_enabled: true,
         session_refreshed: None,
         sign_in_browser: None,
@@ -235,6 +318,7 @@ pub(super) async fn run(
                 Some(command) => worker.handle(command).await,
             },
             Some(internal) = internal_rx.recv() => worker.internal(internal).await,
+            Some(stopped) = worker.stopping.join_next_with_id() => worker.plugin_stopped(stopped),
         }
     }
     if let Some(cancel) = worker.cancel_sign_in.take() {
@@ -442,7 +526,21 @@ impl Worker {
             Command::UserName(user) => self.user_name(user),
             Command::Media(url) => self.media(url),
             Command::Search(query) => self.search(query),
-            Command::StartPlugin { id, path, hello } => self.start_plugin(id, path, hello),
+            Command::StartPlugin {
+                id,
+                path,
+                hello,
+                expected_sha256,
+                generation,
+            } => self.start_plugin(
+                id,
+                PluginStart {
+                    path,
+                    hello,
+                    expected_sha256,
+                    generation,
+                },
+            ),
             Command::PluginSend { id, message } => {
                 if let Some(plugin) = self.plugins.get(&id) {
                     plugin.send(message);
@@ -454,21 +552,9 @@ impl Worker {
                 forget,
             } => {
                 if let Some(plugin) = self.plugins.get(&id) {
-                    plugin.set_hello(move |hello| {
-                        if let crate::plugin::protocol::HostMessage::Hello {
-                            accounts: current_accounts,
-                            forget: current_forget,
-                            ..
-                        } = hello
-                        {
-                            if let Some(accounts) = accounts {
-                                *current_accounts = accounts;
-                            }
-                            if let Some(forget) = forget {
-                                *current_forget = forget;
-                            }
-                        }
-                    });
+                    plugin.set_hello(move |hello| update_hello(hello, accounts, forget));
+                } else if let Some(start) = self.deferred_starts.get_mut(&id) {
+                    update_hello(&mut start.hello, accounts, forget);
                 }
             }
             Command::PluginOptions {
@@ -483,7 +569,7 @@ impl Worker {
             } => {
                 let store = Arc::clone(&self.secrets);
                 let out = self.out.clone();
-                let _ = self.secret_jobs.send(Box::new(move || {
+                self.secret_queue(&plugin).run(move || {
                     let key = plugin_secret_key(&plugin, &option);
                     let set = value.is_some();
                     let result = match value {
@@ -499,13 +585,9 @@ impl Worker {
                         set,
                         ok: result.is_ok(),
                     });
-                }));
+                });
             }
-            Command::StopPlugin { id } => {
-                if let Some(plugin) = self.plugins.remove(&id) {
-                    plugin.stop().await;
-                }
-            }
+            Command::StopPlugin { id } => self.stop_plugin(id),
             Command::Shutdown => {}
         }
     }
@@ -853,24 +935,30 @@ impl Worker {
     }
 
     /// Launches (or relaunches) one plugin of the plugin list. Only that id's
-    /// host is replaced.
-    fn start_plugin(
-        &mut self,
-        id: String,
-        path: std::path::PathBuf,
-        hello: crate::plugin::protocol::HostMessage,
-    ) {
+    /// host is replaced. An id whose previous run is still stopping starts
+    /// when that run has ended.
+    fn start_plugin(&mut self, id: String, start: PluginStart) {
+        if self.stopping_ids.values().any(|stopping| *stopping == id) {
+            self.deferred_starts.insert(id, start);
+            return;
+        }
+        self.launch_plugin(id, start);
+    }
+
+    fn launch_plugin(&mut self, id: String, start: PluginStart) {
         let out = self.out.clone();
         let tag = id.clone();
+        let generation = start.generation;
         let plugin = crate::plugin::host::Plugin::start(
-            path,
-            hello,
+            start.path,
+            start.hello,
             crate::plugin::registry::KNOWN,
-            None,
+            start.expected_sha256,
             move |reported| {
                 if let Some(event) = crate::plugin::event::event(reported) {
                     out.send(Event::Plugin {
                         id: tag.clone(),
+                        generation,
                         event,
                     });
                 }
@@ -881,10 +969,58 @@ impl Worker {
         }
     }
 
+    /// Stops one plugin without holding up the command loop: the stop runs in
+    /// a tracked task, which shutdown waits for.
+    fn stop_plugin(&mut self, id: String) {
+        self.deferred_starts.remove(&id);
+        if let Some(plugin) = self.plugins.remove(&id) {
+            let task = self.stopping.spawn(plugin.stop());
+            self.stopping_ids.insert(task.id(), id);
+        }
+        self.prune_secret_queues();
+    }
+
+    /// A stop task ended: starts what was waiting for it.
+    fn plugin_stopped(&mut self, stopped: Result<(tokio::task::Id, ()), tokio::task::JoinError>) {
+        let task = match stopped {
+            Ok((task, ())) => task,
+            Err(error) => {
+                log::warn!("plugin: a stop task failed");
+                error.id()
+            }
+        };
+        let Some(id) = self.stopping_ids.remove(&task) else {
+            return;
+        };
+        if !self.stopping_ids.values().any(|stopping| *stopping == id)
+            && let Some(start) = self.deferred_starts.remove(&id)
+        {
+            self.launch_plugin(id, start);
+        }
+        self.prune_secret_queues();
+    }
+
+    /// One plugin's credential store queue, started on first use.
+    fn secret_queue(&mut self, plugin: &str) -> &SecretQueue {
+        self.prune_secret_queues();
+        self.secret_jobs
+            .entry(plugin.to_owned())
+            .or_insert_with(SecretQueue::start)
+    }
+
+    /// Drops the queues of plugins that are not running and have nothing
+    /// queued. A queue with work left stays, so a later job for the same
+    /// plugin still runs after it.
+    fn prune_secret_queues(&mut self) {
+        let plugins = &self.plugins;
+        self.secret_jobs
+            .retain(|id, queue| !queue.idle() || plugins.contains_key(id));
+    }
+
     /// Sends a plugin its options, with the stored secret values merged in.
     /// Values are never logged.
     fn plugin_options(
-        &self,
+        &mut self,
         id: String,
         mut values: std::collections::BTreeMap<String, serde_json::Value>,
         secrets: Vec<String>,
@@ -894,23 +1030,31 @@ impl Worker {
         };
         let store = Arc::clone(&self.secrets);
         let outgoing = plugin.sender();
-        let _ = self.secret_jobs.send(Box::new(move || {
+        self.secret_queue(&id).run(move || {
             for option in secrets {
                 if let Ok(Some(value)) = store.read(&plugin_secret_key(&id, &option)) {
                     values.insert(option, serde_json::Value::String(value));
                 }
             }
             let _ = outgoing.send(crate::plugin::protocol::HostMessage::Options { values });
-        }));
+        });
     }
 
-    /// Stops every plugin of the plugin list, all at once.
+    /// Stops every plugin of the plugin list, all at once, and waits for
+    /// every stop, including ones already under way.
     async fn stop_plugins(&mut self) {
-        let mut stops = tokio::task::JoinSet::new();
-        for (_, plugin) in self.plugins.drain() {
-            stops.spawn(plugin.stop());
+        self.deferred_starts.clear();
+        for (id, plugin) in self.plugins.drain() {
+            let task = self.stopping.spawn(plugin.stop());
+            self.stopping_ids.insert(task.id(), id);
         }
-        while stops.join_next().await.is_some() {}
+        let stops = &mut self.stopping;
+        let all = async { while stops.join_next().await.is_some() {} };
+        if tokio::time::timeout(PLUGIN_STOP_WAIT, all).await.is_err() {
+            log::warn!("plugin: stopping took too long; giving up on the rest");
+            self.stopping.abort_all();
+        }
+        self.stopping_ids.clear();
     }
 
     async fn sign_out(&mut self) {

@@ -616,6 +616,11 @@ pub struct App {
     /// The plugins started, by id, and the path each was started from, so a
     /// changed path restarts that plugin only.
     plugins_started: std::collections::BTreeMap<String, std::path::PathBuf>,
+    /// The generation each plugin was last started (or stopped) with, and the
+    /// last one handed out. Events carry the generation of the start that
+    /// produced them; a stopped plugin's entry names a generation no host has.
+    plugin_generations: std::collections::BTreeMap<String, u64>,
+    plugin_generation: u64,
     next_toast: u64,
     pub actions: Vec<Action>,
 
@@ -755,6 +760,8 @@ impl App {
             ring_raises: calls::RingRaises::default(),
             plugins: Default::default(),
             plugins_started: Default::default(),
+            plugin_generations: Default::default(),
+            plugin_generation: 0,
             next_toast: 0,
             actions: Vec::new(),
             palette,
@@ -1468,7 +1475,11 @@ impl App {
                 // Reconnect every account with the new key.
                 self.send_relay();
             }
-            Event::Plugin { id, event } => self.on_plugin_event(id, event),
+            Event::Plugin {
+                id,
+                generation,
+                event,
+            } => self.on_plugin_event(id, generation, event),
             Event::PluginSecretSaved {
                 plugin,
                 option,
@@ -3341,9 +3352,10 @@ mod tests {
         assert!(app.toasts.iter().any(|t| t.text.contains("opened Teams")));
     }
 
-    fn plugin_event(id: &str, event: crate::plugin::event::PluginEvent) -> Event {
+    fn plugin_event(app: &App, id: &str, event: crate::plugin::event::PluginEvent) -> Event {
         Event::Plugin {
             id: id.into(),
+            generation: app.plugin_generations.get(id).copied().unwrap_or(0),
             event,
         }
     }
@@ -3426,13 +3438,14 @@ mod tests {
         let (mut app, _dir) = demo_app();
         let ctx = egui::Context::default();
         call_alerts_plugin(&mut app, "ca");
-        app.handle(plugin_event("ca", sign_in_event(None, "AB12")), &ctx);
+        app.handle(plugin_event(&app, "ca", sign_in_event(None, "AB12")), &ctx);
         assert_eq!(app.plugins["ca"].sign_in[0].user_code, "AB12");
-        app.handle(plugin_event("ca", signed_in_event(None)), &ctx);
+        app.handle(plugin_event(&app, "ca", signed_in_event(None)), &ctx);
         assert!(app.plugins["ca"].sign_in.is_empty());
-        app.handle(plugin_event("ca", sign_in_event(None, "AB12")), &ctx);
+        app.handle(plugin_event(&app, "ca", sign_in_event(None, "AB12")), &ctx);
         app.handle(
             plugin_event(
+                &app,
                 "ca",
                 crate::plugin::event::PluginEvent::Status {
                     running: false,
@@ -3442,7 +3455,7 @@ mod tests {
             &ctx,
         );
         assert!(app.plugins["ca"].sign_in.is_empty());
-        app.handle(plugin_event("ca", sign_in_event(None, "AB12")), &ctx);
+        app.handle(plugin_event(&app, "ca", sign_in_event(None, "AB12")), &ctx);
         app.apply(
             Action::HidePluginSignIn {
                 plugin: "ca".into(),
@@ -3473,7 +3486,7 @@ mod tests {
         };
         assert!(matches!(
             commands.try_recv(),
-            Ok(Command::StartPlugin { id, path, hello: crate::plugin::protocol::HostMessage::Hello { accounts, .. } })
+            Ok(Command::StartPlugin { id, path, hello: crate::plugin::protocol::HostMessage::Hello { accounts, .. }, .. })
                 if id == "ca" && path == std::path::Path::new("plugin.exe") && accounts == vec![me.clone()]
         ));
         // Syncing again with nothing changed starts nothing.
@@ -3499,7 +3512,7 @@ mod tests {
         let ctx = egui::Context::default();
         call_alerts_plugin(&mut app, "ca");
         app.wants_show = false;
-        app.handle(plugin_event("ca", sign_in_event(None, "FIRST")), &ctx);
+        app.handle(plugin_event(&app, "ca", sign_in_event(None, "FIRST")), &ctx);
         assert!(app.wants_show);
         app.wants_show = false;
         app.apply(
@@ -3509,12 +3522,15 @@ mod tests {
             },
             &ctx,
         );
-        app.handle(plugin_event("ca", sign_in_event(None, "SECOND")), &ctx);
+        app.handle(
+            plugin_event(&app, "ca", sign_in_event(None, "SECOND")),
+            &ctx,
+        );
         assert!(!app.wants_show, "a later code doesn't pull Chaat forward");
         assert_eq!(app.plugins["ca"].sign_in[0].user_code, "SECOND");
         // After signing in, a future expiry may raise it again.
-        app.handle(plugin_event("ca", signed_in_event(None)), &ctx);
-        app.handle(plugin_event("ca", sign_in_event(None, "THIRD")), &ctx);
+        app.handle(plugin_event(&app, "ca", signed_in_event(None)), &ctx);
+        app.handle(plugin_event(&app, "ca", sign_in_event(None, "THIRD")), &ctx);
         assert!(app.wants_show);
     }
 
@@ -3573,7 +3589,11 @@ mod tests {
         app.sync_plugins();
         sent(&mut commands);
         app.handle(
-            plugin_event("new", ready_event(&["accounts"], &[], Vec::new(), &[])),
+            plugin_event(
+                &app,
+                "new",
+                ready_event(&["accounts"], &[], Vec::new(), &[]),
+            ),
             &ctx,
         );
         let after = sent(&mut commands);
@@ -3586,7 +3606,11 @@ mod tests {
         )));
         assert_eq!(app.settings.plugins[0].needs, vec!["accounts".to_owned()]);
         app.handle(
-            plugin_event("new", ready_event(&["accounts"], &[], Vec::new(), &[])),
+            plugin_event(
+                &app,
+                "new",
+                ready_event(&["accounts"], &[], Vec::new(), &[]),
+            ),
             &ctx,
         );
         assert!(!sent(&mut commands).iter().any(|c| matches!(
@@ -3609,6 +3633,7 @@ mod tests {
         sent(&mut commands);
         app.handle(
             plugin_event(
+                &app,
                 "light",
                 ready_event(&["presence"], &["presence_display"], Vec::new(), &[]),
             ),
@@ -3616,6 +3641,7 @@ mod tests {
         );
         app.handle(
             plugin_event(
+                &app,
                 "other",
                 ready_event(&[], &["presence_display"], Vec::new(), &[]),
             ),
@@ -3649,7 +3675,11 @@ mod tests {
         plugin_entry(&mut app, "light", &[]);
         app.sync_plugins();
         app.handle(
-            plugin_event("light", ready_event(&["presence"], &[], Vec::new(), &[])),
+            plugin_event(
+                &app,
+                "light",
+                ready_event(&["presence"], &[], Vec::new(), &[]),
+            ),
             &ctx,
         );
         let count = |commands: &mut tokio::sync::mpsc::UnboundedReceiver<Command>| {
@@ -3688,7 +3718,11 @@ mod tests {
         plugin_entry(&mut app, "light", &[]);
         app.sync_plugins();
         app.handle(
-            plugin_event("light", ready_event(&["presence"], &[], Vec::new(), &[])),
+            plugin_event(
+                &app,
+                "light",
+                ready_event(&["presence"], &[], Vec::new(), &[]),
+            ),
             &ctx,
         );
         sent(&mut commands);
@@ -3709,13 +3743,13 @@ mod tests {
         plugin_entry(&mut app, "p", &["accounts"]);
         app.sync_plugins();
         app.handle(
-            plugin_event("p", ready_event(&[], &[], Vec::new(), &[])),
+            plugin_event(&app, "p", ready_event(&[], &[], Vec::new(), &[])),
             &ctx,
         );
         assert!(app.plugins["p"].sent_accounts.is_none());
         sent(&mut commands);
         app.handle(
-            plugin_event("p", ready_event(&["accounts"], &[], Vec::new(), &[])),
+            plugin_event(&app, "p", ready_event(&["accounts"], &[], Vec::new(), &[])),
             &ctx,
         );
         assert!(sent(&mut commands).iter().any(|c| matches!(
@@ -3736,16 +3770,21 @@ mod tests {
         assert_eq!(app.call_alerts_owner().as_deref(), Some("first"));
         app.handle(
             plugin_event(
+                &app,
                 "second",
                 crate::plugin::event::PluginEvent::IncomingCall(ring("c1", "u-ada")),
             ),
             &ctx,
         );
-        app.handle(plugin_event("second", sign_in_event(None, "NO")), &ctx);
+        app.handle(
+            plugin_event(&app, "second", sign_in_event(None, "NO")),
+            &ctx,
+        );
         assert!(app.rings.is_empty());
         assert!(app.plugins["second"].sign_in.is_empty());
         app.handle(
             plugin_event(
+                &app,
                 "first",
                 crate::plugin::event::PluginEvent::IncomingCall(ring("c1", "u-ada")),
             ),
@@ -3767,11 +3806,12 @@ mod tests {
         let toasts = app.toasts.len();
         let account = || Some("u-me.demo".to_owned());
         app.handle(
-            plugin_event("second", PluginEvent::SignedIn { account: account() }),
+            plugin_event(&app, "second", PluginEvent::SignedIn { account: account() }),
             &ctx,
         );
         app.handle(
             plugin_event(
+                &app,
                 "second",
                 PluginEvent::Listening {
                     account: "u-me.demo".into(),
@@ -3781,6 +3821,7 @@ mod tests {
         );
         app.handle(
             plugin_event(
+                &app,
                 "second",
                 PluginEvent::Error {
                     account: account(),
@@ -3793,7 +3834,7 @@ mod tests {
         assert!(app.plugins["second"].listening.is_empty());
         // The owner still gets its notices.
         app.handle(
-            plugin_event("first", PluginEvent::SignedIn { account: account() }),
+            plugin_event(&app, "first", PluginEvent::SignedIn { account: account() }),
             &ctx,
         );
         assert_eq!(app.toasts.len(), toasts + 1);
@@ -3808,15 +3849,15 @@ mod tests {
             app.plugins.insert(id.into(), PluginState::default());
         }
         app.handle(
-            plugin_event("a", sign_in_event(Some("u-me.demo"), "A1")),
+            plugin_event(&app, "a", sign_in_event(Some("u-me.demo"), "A1")),
             &ctx,
         );
         app.handle(
-            plugin_event("b", sign_in_event(Some("u-me.demo"), "B1")),
+            plugin_event(&app, "b", sign_in_event(Some("u-me.demo"), "B1")),
             &ctx,
         );
         app.handle(
-            plugin_event("b", sign_in_event(Some("u-me.demo"), "B2")),
+            plugin_event(&app, "b", sign_in_event(Some("u-me.demo"), "B2")),
             &ctx,
         );
         assert_eq!(app.plugins["a"].sign_in.len(), 1);
@@ -3909,7 +3950,7 @@ mod tests {
             spec("key", OptionKind::Secret, None),
         ];
         app.handle(
-            plugin_event("light", ready_event(&[], &[], options, &[])),
+            plugin_event(&app, "light", ready_event(&[], &[], options, &[])),
             &ctx,
         );
         let values = |commands: &mut tokio::sync::mpsc::UnboundedReceiver<Command>| {
@@ -4021,11 +4062,12 @@ mod tests {
         let (mut app, _dir) = demo_app();
         let ctx = egui::Context::default();
         call_alerts_plugin(&mut app, "ca");
-        let ask =
-            |account: &str, code: &str| plugin_event("ca", sign_in_event(Some(account), code));
-        app.handle(ask("u-me.demo", "ONE"), &ctx);
-        app.handle(ask(FABRIKAM, "TWO"), &ctx);
-        app.handle(ask(FABRIKAM, "THREE"), &ctx);
+        let ask = |app: &App, account: &str, code: &str| {
+            plugin_event(app, "ca", sign_in_event(Some(account), code))
+        };
+        app.handle(ask(&app, "u-me.demo", "ONE"), &ctx);
+        app.handle(ask(&app, FABRIKAM, "TWO"), &ctx);
+        app.handle(ask(&app, FABRIKAM, "THREE"), &ctx);
         assert_eq!(app.plugins["ca"].sign_in.len(), 2);
         let fabrikam = app.plugins["ca"]
             .sign_in
@@ -4034,10 +4076,14 @@ mod tests {
             .unwrap();
         assert_eq!(fabrikam.user_code, "THREE");
         assert_eq!(fabrikam.username.as_deref(), Some("alex@fabrikam.com"));
-        app.handle(plugin_event("ca", signed_in_event(Some(FABRIKAM))), &ctx);
+        app.handle(
+            plugin_event(&app, "ca", signed_in_event(Some(FABRIKAM))),
+            &ctx,
+        );
         assert_eq!(app.plugins["ca"].sign_in.len(), 1);
         app.handle(
             plugin_event(
+                &app,
                 "ca",
                 crate::plugin::event::PluginEvent::Listening {
                     account: FABRIKAM.into(),
@@ -4067,6 +4113,7 @@ mod tests {
         app.plugins.get_mut("ca").unwrap().info.name = Some("Call alerts".into());
         app.handle(
             plugin_event(
+                &app,
                 "ca",
                 crate::plugin::event::PluginEvent::Listening {
                     account: FABRIKAM.into(),
@@ -4076,6 +4123,7 @@ mod tests {
         );
         app.handle(
             plugin_event(
+                &app,
                 "ca",
                 crate::plugin::event::PluginEvent::Error {
                     account: Some(FABRIKAM.into()),
@@ -4112,6 +4160,7 @@ mod tests {
         // Once the plugin is ready, the queue is done.
         app.handle(
             plugin_event(
+                &app,
                 "ca",
                 ready_event(&["accounts"], &[], Vec::new(), &["u-me.t1"]),
             ),
@@ -4213,7 +4262,7 @@ mod tests {
         assert_eq!(app.settings.plugins[0].forget, vec!["u-me.t1".to_owned()]);
         // A ready that didn't clear it keeps it queued.
         app.handle(
-            plugin_event("ca", ready_event(&["accounts"], &[], Vec::new(), &[])),
+            plugin_event(&app, "ca", ready_event(&["accounts"], &[], Vec::new(), &[])),
             &ctx,
         );
         assert_eq!(app.settings.plugins[0].forget, vec!["u-me.t1".to_owned()]);
