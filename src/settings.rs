@@ -5,7 +5,8 @@
 //! temporary file and a rename. Secrets never go here: refresh tokens live in
 //! the OS credential store (`crate::secrets`).
 
-use std::path::Path;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -18,6 +19,30 @@ pub enum ThemeChoice {
     Dark,
     /// A shared fastframe palette by file name (`Nord.json`, ...).
     Palette(String),
+}
+
+/// One external plugin the person added (Settings › Plugins).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PluginEntry {
+    /// A stable name made by `plugin_id_for`; keys commands, events and the
+    /// plugin's secret option values.
+    pub id: String,
+    /// The plugin's executable.
+    pub path: PathBuf,
+    /// Whether Chaat launches it.
+    pub enabled: bool,
+    /// What its `ready` asked for (`accounts`, `presence`), remembered so the
+    /// next `hello` can answer before `ready` arrives.
+    pub needs: Vec<String>,
+    /// Accounts (`oid.tid`) signed out of Chaat while the plugin wasn't
+    /// running: it forgets their sign-ins when it next starts.
+    pub forget: Vec<String>,
+    /// Values of the options the plugin described, by option ID. Secret
+    /// options never appear here.
+    pub options: BTreeMap<String, serde_json::Value>,
+    /// IDs of the secret options that have a value in the credential store.
+    pub secrets: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -54,6 +79,11 @@ pub struct Settings {
     /// itself never goes in this file.
     pub relay_key_set: bool,
     pub calls: CallSettings,
+    /// External plugins, in the order they were added.
+    pub plugins: Vec<PluginEntry>,
+    /// Set once the call-alerts fields in `calls` were carried into `plugins`,
+    /// so removing every plugin later does not bring the old one back.
+    pub plugins_migrated: bool,
     /// Check GitHub once a day and download verified app updates.
     pub automatic_updates: bool,
     pub last_update_check: i64,
@@ -136,6 +166,8 @@ impl Default for Settings {
             relay_url: None,
             relay_key_set: false,
             calls: CallSettings::default(),
+            plugins: Vec::new(),
+            plugins_migrated: false,
             automatic_updates: true,
             last_update_check: 0,
         }
@@ -174,9 +206,30 @@ impl Settings {
         {
             settings.accounts.push(account.clone());
         }
+        settings.migrate_plugins();
         settings.zoom = settings.zoom.clamp(0.5, 3.0);
         settings.sidebar_width = settings.sidebar_width.clamp(220.0, 520.0);
         settings
+    }
+
+    /// Carries the old call-alerts fields into `plugins`, once. Returns whether
+    /// anything changed. The old fields stay as they are.
+    pub fn migrate_plugins(&mut self) -> bool {
+        if self.plugins_migrated {
+            return false;
+        }
+        self.plugins_migrated = true;
+        if let Some(path) = self.calls.call_alerts_plugin.clone() {
+            self.plugins.push(PluginEntry {
+                id: "call-alerts".into(),
+                path,
+                enabled: self.calls.call_alerts,
+                needs: vec!["accounts".into()],
+                forget: self.calls.call_alerts_forget.clone(),
+                ..PluginEntry::default()
+            });
+        }
+        true
     }
 
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
@@ -187,6 +240,32 @@ impl Settings {
     pub fn has_app_registration(&self) -> bool {
         is_guid(self.client_id.trim())
     }
+}
+
+/// An ID for a plugin from its file name: lowercase ASCII letters and digits
+/// joined by single dashes, made unique among `taken` with `-2`, `-3`, ...
+pub fn plugin_id_for(path: &Path, taken: &[String]) -> String {
+    let stem = path
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    let mut base = String::new();
+    for c in stem.chars() {
+        if c.is_ascii_alphanumeric() {
+            base.push(c);
+        } else if !base.is_empty() && !base.ends_with('-') {
+            base.push('-');
+        }
+    }
+    let base = base.trim_end_matches('-');
+    let base = if base.is_empty() { "plugin" } else { base };
+    let mut id = base.to_owned();
+    let mut n = 2;
+    while taken.contains(&id) {
+        id = format!("{base}-{n}");
+        n += 1;
+    }
+    id
 }
 
 /// Whether `value` looks like a GUID (Entra application and tenant IDs).
@@ -230,6 +309,7 @@ mod tests {
         let settings = Settings {
             client_id: "00000000-0000-0000-0000-000000000000".into(),
             theme: ThemeChoice::Palette("Nord.json".into()),
+            plugins_migrated: true,
             ..Default::default()
         };
         settings.save(&path).unwrap();
@@ -247,6 +327,93 @@ mod tests {
         let path = dir.path().join("settings.json");
         std::fs::write(&path, r#"{"account": "o.t"}"#).unwrap();
         assert_eq!(Settings::load(&path).accounts, ["o.t"]);
+    }
+
+    const OLD: &str = r#"{"calls":{"call_alerts_plugin":"C:/p/cca.exe","call_alerts":true,"call_alerts_forget":["o.t"]}}"#;
+
+    #[test]
+    fn old_call_alerts_fields_migrate_to_one_entry() {
+        let mut settings: Settings = serde_json::from_str(OLD).unwrap();
+        assert!(settings.migrate_plugins());
+        assert_eq!(
+            settings.plugins,
+            [PluginEntry {
+                id: "call-alerts".into(),
+                path: "C:/p/cca.exe".into(),
+                enabled: true,
+                needs: vec!["accounts".into()],
+                forget: vec!["o.t".into()],
+                ..PluginEntry::default()
+            }]
+        );
+        assert!(settings.calls.call_alerts_plugin.is_some());
+    }
+
+    #[test]
+    fn migration_runs_once_even_after_every_plugin_is_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, OLD).unwrap();
+        let mut settings = Settings::load(&path);
+        assert_eq!(settings.plugins.len(), 1);
+        assert!(!settings.migrate_plugins());
+        settings.plugins.clear();
+        settings.save(&path).unwrap();
+        let reloaded = Settings::load(&path);
+        assert!(reloaded.plugins.is_empty());
+        assert!(reloaded.plugins_migrated);
+    }
+
+    #[test]
+    fn no_old_plugin_means_no_entry_but_migrated() {
+        let mut settings = Settings::default();
+        assert!(settings.migrate_plugins());
+        assert!(settings.plugins.is_empty());
+        assert!(settings.plugins_migrated);
+        assert!(!settings.migrate_plugins());
+    }
+
+    #[test]
+    fn entries_round_trip_and_unknown_fields_are_ignored() {
+        let entry = PluginEntry {
+            id: "status-light".into(),
+            path: "/opt/busy".into(),
+            enabled: true,
+            needs: vec!["presence".into()],
+            forget: vec![],
+            options: BTreeMap::from([("brightness".into(), serde_json::json!(3))]),
+            secrets: vec!["token".into()],
+        };
+        let settings = Settings {
+            plugins: vec![entry.clone()],
+            plugins_migrated: true,
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&settings).unwrap();
+        let back: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.plugins, [entry]);
+        let partial: PluginEntry =
+            serde_json::from_str(r#"{"id":"x","path":"p","from_the_future":true}"#).unwrap();
+        assert_eq!(partial.id, "x");
+        assert!(!partial.enabled);
+        assert!(partial.options.is_empty());
+    }
+
+    #[test]
+    fn ids_are_lowercase_ascii_dashes() {
+        let id = |p: &str, taken: &[&str]| {
+            let taken: Vec<String> = taken.iter().map(|t| t.to_string()).collect();
+            plugin_id_for(Path::new(p), &taken)
+        };
+        assert_eq!(id("C:/x/Chaat Status-Light.exe", &[]), "chaat-status-light");
+        assert_eq!(
+            id("C:/x/Chaat Status-Light.exe", &["chaat-status-light"]),
+            "chaat-status-light-2"
+        );
+        assert_eq!(id("/x/a.exe", &["a", "a-2"]), "a-3");
+        assert_eq!(id("/x/__My  Plug_in__.sh", &[]), "my-plug-in");
+        assert_eq!(id("/x/\u{e9}\u{e9}.exe", &[]), "plugin");
+        assert_eq!(id("", &[]), "plugin");
     }
 
     #[test]
