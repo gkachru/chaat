@@ -10,6 +10,15 @@
   can be disabled in Settings. No Microsoft credentials or account data are
   sent to GitHub ([updates.md](updates.md)). Chaat opens Microsoft Teams
   links in your browser when you ask it to.
+- **Plugins** are separate programs you add and turn on in Settings ›
+  Plugins ([plugins.md](plugins.md)). A plugin never receives your tokens,
+  your settings or message content. Chaat sends it the ID and sign-in name of
+  each of your accounts, or your busiest presence (availability and activity
+  across accounts, never the status message), only when the plugin declares
+  that need, plus the values of the plugin's own options. Secret option
+  values are kept in the OS credential store, not in files, and are not
+  logged. What a plugin does with that data, and what network access it has,
+  is its own business: read its documentation before you turn it on.
 - **Calls** run in Teams on the web, in your own Edge or Chrome (or the
   browser you choose). Chaat starts the browser with the meeting or call link
   and nothing else, and opens its own Microsoft sign-in page there so Teams

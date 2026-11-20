@@ -14,15 +14,19 @@ Microsoft Graph. These rules are for coding agents and contributors. Follow
   device code as a fallback). Never call undocumented Teams endpoints
   (`*.teams.microsoft.com/api/...`, chatsvc, trouter), never reuse Microsoft's
   first-party client IDs, never present Chaat as Microsoft's client.
-- **Plugins stay outside Chaat.** Chaat may launch an external plugin the
-  person installs and turns on (Settings › Calls › Call alerts) and read its
-  versioned JSON lines (`docs/calling.md#call-alerts-plugin`). How a plugin
-  gets its data (the call-alerts plugin uses push service and Teams' own sign-in)
-  lives only in the plugin's repository, never in Chaat; the rule above
-  still binds Chaat itself. Chaat never ships, downloads or updates a plugin,
-  never passes it tokens, settings or messages: the call-alerts plugin is
-  told only each account's ID (`oid.tid`) and sign-in name, so it can sign
-  in to and listen for the same accounts. Chaat treats every plugin line as
+- **Plugins stay outside Chaat.** Chaat may launch external plugins the
+  person installs and turns on (Settings › Plugins) and read their versioned
+  JSON lines (`docs/plugins.md`). How a plugin gets its data (the call-alerts
+  plugin uses push service and Teams' own sign-in) lives only in the plugin's
+  repository, never in Chaat; the rule above still binds Chaat itself. Chaat
+  never ships, downloads or updates a plugin, and never passes it tokens,
+  settings or messages. Only when a plugin declares the need in `ready.needs`
+  may Chaat send it each account's ID (`oid.tid`) and sign-in name
+  (`accounts`), and the busiest presence across accounts, availability and
+  activity only, never the status message (`presence`). Beyond that, Chaat
+  sends a plugin only the values of that plugin's own options, with secret
+  ones read from the credential store by the backend worker, never from
+  settings files, and never logged. Chaat treats every plugin line as
   untrusted: unknown messages are ignored, and beyond showing it (and
   raising the window), nothing happens until the person clicks.
 - **Never poll Graph.** Microsoft's Teams API rules allow fetching when the

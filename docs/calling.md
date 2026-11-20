@@ -27,7 +27,7 @@ The **Calls and meetings** page in Settings controls:
 | A separate browser profile for each account | Optional, shown with multiple accounts; off by default |
 | Signing out of Chaat also signs the browser out of Microsoft | Optional; off by default |
 | Sign in to Teams on the web | Open Teams once to complete browser sign-in and choose whether to stay signed in |
-| Call alerts | The call-alerts plugin's executable (chosen with the system file picker, or removed), **Show incoming calls**, and whether it is running. Off by default; see [below](#call-alerts-plugin) |
+| Call alerts | A line and an **Open Plugins** button; call alerts come from a plugin you add in Settings › Plugins. None by default; see [below](#call-alerts-plugin) |
 
 Docking needs a window at least 960 × 400 points. It is unavailable on
 Wayland and beside the Teams desktop app. Browser window placement is a
@@ -78,19 +78,21 @@ For `call-alerts`, which uses Teams' own push service and sign-in
 outside Microsoft's documented APIs, see its
 [README](https://github.com/gkachru/call-alerts#readme).
 
-What Chaat knows about a plugin is the protocol below: it starts the program
-as `<plugin> serve` and exchanges JSON lines with it. Identities are Entra
-object and tenant IDs and sign-in names. Chaat's code holds no Teams formats
-and no assumptions about a plugin's command line beyond `serve`.
+What Chaat knows about a plugin is the protocol in [plugins.md](plugins.md):
+it starts the program as `<plugin> serve` and exchanges JSON lines with it.
+Identities are Entra object and tenant IDs and sign-in names. Chaat's code
+holds no Teams formats and no assumptions about a plugin's command line
+beyond `serve`. This section describes the call-alerts side of it.
 
 ### Turning it on
 
-Settings › Calls › Call alerts: **Choose plugin…** picks the executable and
-turns **Show incoming calls** on. Chaat runs it on its own background
-runtime, restarts it with backoff if it exits (one notice per run of
-failures), and stops it when the switch is turned off, the plugin is
-removed, or Chaat quits. A plugin whose `ready` doesn't offer
-`call_alerts` is stopped with a notice and not restarted.
+Settings › Plugins › **Add plugin…** picks the executable and turns it on
+(Settings › Calls › Call alerts points there). Chaat runs it on its own
+background runtime, restarts it with backoff if it exits (one notice per run
+of failures), and stops it when it is turned off, removed, or Chaat quits. A
+plugin whose `ready` offers no capability Chaat knows is stopped with a
+notice and not restarted. Only one plugin gets rings: the first enabled
+plugin in the list that offers `call_alerts`.
 
 Settings shows the plugin's name and description as it gives them in
 `ready`, as plain shortened text (control and invisible formatting
@@ -131,10 +133,10 @@ the same call replaces its card; at most three show.
 
 Chaat tells the plugin the ID (`oid.tid`) and sign-in name of each of its
 accounts, never a token, and the plugin signs in to each separately.
-Settings lists every account as **Listening for calls** (its connection came
-up, and the plugin has reported no problem with it since), **Waiting for
-sign-in** (with **New code**) or **Connecting…**. Errors about an account
-name it.
+Settings › Plugins lists every account under the plugin as **Listening**
+(its connection came up, and the plugin has reported no problem with it
+since), **Waiting for sign-in** (with a **Sign in** button for a new code) or
+**Not signed in**. Errors about an account name it.
 
 A ring says which account it came in on. When Chaat has several accounts,
 the card names it, and **Place call** and **Open chat** switch to that
@@ -153,8 +155,9 @@ stops listening but keeps its plugin sign-in.
 
 ### Protocol
 
-Newline-delimited JSON over the plugin's stdin and stdout, each message with
-`"v": 1` and a `type`. Chaat drops lines with another version, lines over
+The full protocol is in [plugins.md](plugins.md). In short: newline-delimited
+JSON over the plugin's stdin and stdout, each message with `"v": 1` and a
+`type`. Chaat drops lines with another version, lines over
 64 KB, and types it does not know, so either side can be newer. A ring
 field of the wrong type is read as absent rather than dropping the ring. Every
 message below has an example in `tests/fixtures/plugin-protocol/`, kept
@@ -174,9 +177,11 @@ identical in the plugin's repository; tests on both sides check against it.
 | plugin → Chaat | `incoming_call` | `id`, `caller`, `caller_object_id`, `video`, `group`, `account`, `username`, `ring_timeout_secs`, `thread_id` (optional). A call ringing two accounts shows a card for each |
 | plugin → Chaat | `error` | `message`, shown as an error notice; with `account`, the notice names it and the account is no longer shown as listening |
 
-`call_ended` is reserved for when a plugin can report it. Chaat passes the
-plugin its accounts' IDs and sign-in names only: no tokens, settings or
-messages. It discards the plugin's stderr.
+`call_ended` is reserved for when a plugin can report it. Chaat passes a
+plugin account IDs and sign-in names only when it declares the `accounts`
+need, never tokens, settings or messages. It discards the plugin's stderr.
+The fields beyond call alerts (`needs`, `options`, `presence`) are in
+[plugins.md](plugins.md).
 
 ## API limits
 

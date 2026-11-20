@@ -53,6 +53,7 @@ the rename, when the app still had a demo mode:
 | Multiple accounts, setting your availability and status message | ✅ Implemented |
 | Out of office (automatic replies) | ✅ In Settings and the account menu, for accounts with an Exchange Online mailbox |
 | Incoming-call alerts | ⚠️ Only with the optional, separately installed call-alerts plugin, which uses Teams' push service; Chaat shows who is calling with **Place call** and **Open chat** ([how](docs/calling.md#call-alerts-plugin)) |
+| Plugins | ⚠️ Optional external programs you add in Settings › Plugins, for incoming-call alerts and a presence display such as a status light. Chaat never ships one ([protocol](docs/plugins.md)) |
 | Audio and video inside Chaat's own window, answering calls | ❌ No free official way: Microsoft's licence covers call media only in its own clients ([why](docs/calling.md)) |
 
 The full matrix, including what was verified and how, is in
