@@ -629,6 +629,8 @@ impl App {
                 state.stopped();
                 state.file_changed = Some(sha256);
             }
+            // C2: record the status and the new choices.
+            PluginEvent::OptionStatus { .. } | PluginEvent::OptionsUpdate { .. } => {}
         }
     }
 
@@ -1062,6 +1064,7 @@ mod tests {
             label: id.into(),
             default: None,
             choices: Vec::new(),
+            ..OptionSpec::default()
         };
         app.on_plugin_ready(
             "p",

@@ -6,6 +6,7 @@
 
 pub mod event;
 pub mod host;
+pub mod options;
 pub mod presence;
 pub mod protocol;
 pub mod registry;

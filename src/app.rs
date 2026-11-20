@@ -3955,6 +3955,7 @@ mod tests {
             label: id.into(),
             default,
             choices: Vec::new(),
+            ..Default::default()
         };
         let options = vec![
             spec("ip", OptionKind::Text, Some(serde_json::json!(""))),
@@ -5410,6 +5411,7 @@ mod tests {
             label: id.into(),
             default,
             choices: Vec::new(),
+            ..Default::default()
         }
     }
 

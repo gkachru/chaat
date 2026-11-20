@@ -6,7 +6,8 @@ use crate::calling::RingAlert;
 use crate::calling::alerts::{is_microsoft_sign_in_page, is_user_code, ring_timeout};
 use crate::plugin::host::HostEvent;
 use crate::plugin::protocol::{
-    OptionSpec, PluginInfo, PluginMessage, account_id, clean_options, plain_text,
+    OptionChoice, OptionSpec, PluginInfo, PluginMessage, StatusState, account_id, clean_choices,
+    clean_options, option_id, plain_text,
 };
 use crate::plugin::registry;
 
@@ -49,6 +50,19 @@ pub enum PluginEvent {
     /// The file no longer matches its pin; it was not run.
     FileChanged {
         sha256: String,
+    },
+    /// How an option or action is doing, in the plugin's words (plain text,
+    /// at most 200 characters).
+    OptionStatus {
+        /// An option id (`[a-z0-9_]{1,32}`); it may name no option Chaat knows.
+        id: String,
+        state: StatusState,
+        message: Option<String>,
+    },
+    /// The new choices of one `choice` option; possibly none.
+    OptionsUpdate {
+        id: String,
+        choices: Vec<OptionChoice>,
     },
 }
 
@@ -149,6 +163,15 @@ fn message_event(message: PluginMessage) -> Option<PluginEvent> {
                 message,
             })
         }
+        PluginMessage::OptionStatus { id, state, message } => Some(PluginEvent::OptionStatus {
+            id: option_id(&id)?,
+            state,
+            message: message.and_then(|text| plain_text(&text, 200)),
+        }),
+        PluginMessage::OptionsUpdate { id, choices } => Some(PluginEvent::OptionsUpdate {
+            id: option_id(&id)?,
+            choices: clean_choices(&choices)?,
+        }),
         PluginMessage::Other => None,
     }
 }
@@ -368,6 +391,135 @@ mod tests {
             Some(PluginEvent::Listening {
                 account: "o1.t1".into()
             })
+        );
+    }
+
+    fn event_of(value: serde_json::Value) -> Option<PluginEvent> {
+        event(HostEvent::Message(parsed(value)))
+    }
+
+    #[test]
+    fn option_status_becomes_an_event_with_plain_text() {
+        assert_eq!(
+            event_of(
+                json!({"v":1,"type":"option_status","id":"find","state":"ok",
+                "message":" Found\n2\u{202E} bulbs "})
+            ),
+            Some(PluginEvent::OptionStatus {
+                id: "find".into(),
+                state: StatusState::Ok,
+                message: Some("Found 2 bulbs".into()),
+            })
+        );
+        for (state, expected) in [
+            ("error", StatusState::Error),
+            ("working", StatusState::Working),
+        ] {
+            let event = event_of(json!({"v":1,"type":"option_status","id":"a","state":state}));
+            assert_eq!(
+                event,
+                Some(PluginEvent::OptionStatus {
+                    id: "a".into(),
+                    state: expected,
+                    message: None,
+                })
+            );
+        }
+        // A message that cleans to nothing, or isn't text, is just absent.
+        let blank =
+            event_of(json!({"v":1,"type":"option_status","id":"a","state":"ok","message":" "}));
+        assert!(matches!(
+            blank,
+            Some(PluginEvent::OptionStatus { message: None, .. })
+        ));
+        let odd = event_of(json!({"v":1,"type":"option_status","id":"a","state":"ok","message":4}));
+        assert!(matches!(
+            odd,
+            Some(PluginEvent::OptionStatus { message: None, .. })
+        ));
+        let long = event_of(
+            json!({"v":1,"type":"option_status","id":"a","state":"ok","message":"x".repeat(300)}),
+        );
+        let Some(PluginEvent::OptionStatus {
+            message: Some(message),
+            ..
+        }) = long
+        else {
+            panic!("status");
+        };
+        assert_eq!(message.chars().count(), 200);
+    }
+
+    #[test]
+    fn option_status_with_an_unknown_state_or_bad_id_is_dropped() {
+        for bad in ["done", "OK", "", "busy"] {
+            let line = json!({"v":1,"type":"option_status","id":"a","state":bad}).to_string();
+            assert_eq!(PluginMessage::parse(&line), None, "{bad}");
+        }
+        let numeric = json!({"v":1,"type":"option_status","id":"a","state":3}).to_string();
+        assert_eq!(PluginMessage::parse(&numeric), None);
+        let no_state = json!({"v":1,"type":"option_status","id":"a"}).to_string();
+        assert_eq!(PluginMessage::parse(&no_state), None);
+        for id in ["Bad Id", "", &"a".repeat(33), "a-b"] {
+            let status = json!({"v":1,"type":"option_status","id":id,"state":"ok"});
+            assert_eq!(event_of(status), None, "{id:?}");
+        }
+        let update = json!({"v":1,"type":"options_update","id":"Bad Id","choices":[]});
+        assert_eq!(event_of(update), None);
+    }
+
+    #[test]
+    fn options_update_cleans_choices_like_ready() {
+        let update = event_of(json!({"v":1,"type":"options_update","id":"bulb","choices":[
+            {"value":"a","label":"Bulb\u{202E} A"},
+            {"value":"b","label":"Bulb B"}
+        ]}));
+        assert_eq!(
+            update,
+            Some(PluginEvent::OptionsUpdate {
+                id: "bulb".into(),
+                choices: vec![
+                    OptionChoice {
+                        value: "a".into(),
+                        label: "Bulb A".into()
+                    },
+                    OptionChoice {
+                        value: "b".into(),
+                        label: "Bulb B".into()
+                    },
+                ],
+            })
+        );
+        // No bulbs found is a real answer.
+        let none = event_of(json!({"v":1,"type":"options_update","id":"bulb","choices":[]}));
+        assert_eq!(
+            none,
+            Some(PluginEvent::OptionsUpdate {
+                id: "bulb".into(),
+                choices: vec![]
+            })
+        );
+        let not_a_list = event_of(json!({"v":1,"type":"options_update","id":"bulb","choices":"x"}));
+        assert!(matches!(
+            not_a_list,
+            Some(PluginEvent::OptionsUpdate { ref choices, .. }) if choices.is_empty()
+        ));
+        let many: Vec<_> = (0..13)
+            .map(|i| json!({"value":format!("v{i}"),"label":"L"}))
+            .collect();
+        assert_eq!(
+            event_of(json!({"v":1,"type":"options_update","id":"bulb","choices":many})),
+            None
+        );
+        let dup = json!([{"value":"a","label":"A"},{"value":"a","label":"B"}]);
+        assert_eq!(
+            event_of(json!({"v":1,"type":"options_update","id":"bulb","choices":dup})),
+            None
+        );
+        let hidden = json!([{"value":"a\u{200B}","label":"A"}]);
+        assert_eq!(
+            event_of(json!({"v":1,"type":"options_update","id":"bulb","choices":hidden})),
+            None
         );
     }
 }

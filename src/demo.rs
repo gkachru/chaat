@@ -804,6 +804,7 @@ fn populate_plugins(app: &mut App) {
             label: "Bulb address".into(),
             default: None,
             choices: vec![],
+            ..OptionSpec::default()
         },
         OptionSpec {
             id: "flash".into(),
@@ -811,6 +812,7 @@ fn populate_plugins(app: &mut App) {
             label: "Flash on calls".into(),
             default: Some(serde_json::json!(false)),
             choices: vec![],
+            ..OptionSpec::default()
         },
         OptionSpec {
             id: "brightness".into(),
@@ -827,6 +829,7 @@ fn populate_plugins(app: &mut App) {
                     label: "High".into(),
                 },
             ],
+            ..OptionSpec::default()
         },
         OptionSpec {
             id: "token".into(),
@@ -834,6 +837,7 @@ fn populate_plugins(app: &mut App) {
             label: "Access token".into(),
             default: None,
             choices: vec![],
+            ..OptionSpec::default()
         },
     ];
     let lamp = app.plugins.entry("demo-changed".into()).or_default();

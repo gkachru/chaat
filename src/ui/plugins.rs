@@ -513,6 +513,15 @@ fn option_row(
             });
             set_secret_buffer(ui, &entry.id, &option.id, buffer);
         }
+        // C3: draw number, color, multiline and action options.
+        _ => {
+            labelled(ui, &palette, &option.label);
+            ui.label(
+                egui::RichText::new("This setting needs a newer Chaat.")
+                    .font(theme::regular(13.0))
+                    .color(palette.dim),
+            );
+        }
     }
 }
 
