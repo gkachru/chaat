@@ -909,6 +909,24 @@ pub enum Action {
     DockWindow(bool),
     /// Looks up the meeting's chat, asking for OnlineMeetings.Read first.
     FindMeetingChat,
+    /// Choose a setup file with the file picker.
+    ChooseSetupFile,
+    /// A setup file was dropped on the window.
+    DroppedSetupFile(std::path::PathBuf),
+    /// Open the chosen setup file with the typed passphrase.
+    OpenSetupFile,
+    /// Apply the reviewed setup file.
+    ApplySetup,
+    /// Cancel the setup file flow.
+    CancelSetup,
+    /// Show or hide the manual sign-in fields.
+    ShowSetupManual(bool),
+    /// Open or close the export form.
+    OpenExportForm(bool),
+    /// Write a setup file from the export form.
+    ExportSetup,
+    /// Hide the passphrase shown after an export.
+    DismissSetupPassphrase,
     /// Shows the call's join link as a QR code, to join on a phone.
     JoinOnPhone,
     /// Opens Teams on the web once, to sign in there ahead of calls.

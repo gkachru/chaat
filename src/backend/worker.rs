@@ -216,6 +216,8 @@ const PLUGIN_STOP_WAIT: Duration = Duration::from_secs(10);
 
 struct Worker {
     dirs: AppDirs,
+    /// The setup file opened and waiting to be applied.
+    setup_slot: super::setup::SetupSlot,
     http: reqwest::Client,
     secrets: Arc<dyn SecretStore>,
     out: Outbox,
@@ -291,6 +293,7 @@ pub(super) async fn run(
         .unwrap_or_default();
     let mut worker = Worker {
         dirs,
+        setup_slot: Default::default(),
         http,
         secrets: Arc::clone(&options.secrets),
         options,
@@ -624,6 +627,49 @@ impl Worker {
                 });
             }
             Command::StopPlugin { id } => self.stop_plugin(id),
+            Command::OpenSetupFile {
+                path,
+                passphrase,
+                token,
+            } => {
+                let slot = Arc::clone(&self.setup_slot);
+                let out = self.out.clone();
+                tokio::task::spawn_blocking(move || {
+                    let today = jiff::Zoned::now().date();
+                    let result = super::setup::open(&path, &passphrase, token, today, &slot);
+                    out.send(Event::SetupOpened { token, result });
+                });
+            }
+            Command::ApplySetup { token } => {
+                let slot = Arc::clone(&self.setup_slot);
+                let store = Arc::clone(&self.secrets);
+                let out = self.out.clone();
+                tokio::task::spawn_blocking(move || {
+                    let ok = super::setup::apply(token, &slot, store.as_ref());
+                    out.send(Event::SetupApplied { token, ok });
+                });
+            }
+            Command::DiscardSetup { token } => {
+                let slot = Arc::clone(&self.setup_slot);
+                tokio::task::spawn_blocking(move || super::setup::discard(token, &slot));
+            }
+            Command::ExportSetup {
+                path,
+                payload,
+                include_relay_key,
+            } => {
+                let store = Arc::clone(&self.secrets);
+                let out = self.out.clone();
+                tokio::task::spawn_blocking(move || {
+                    let result = super::setup_export::export(
+                        &path,
+                        payload,
+                        include_relay_key,
+                        store.as_ref(),
+                    );
+                    out.send(Event::SetupExported(result));
+                });
+            }
             Command::Shutdown => {}
         }
     }

@@ -5,6 +5,8 @@
 //! [`Command`]s and drains [`Event`]s each frame; every event wakes the
 //! window through the shell's [`Waker`], so an idle window draws nothing.
 
+mod setup;
+mod setup_export;
 mod worker;
 
 use std::time::Duration;
@@ -230,6 +232,26 @@ pub enum Command {
     StopPlugin {
         id: String,
     },
+    /// Open a setup file with its passphrase; the answer is `Event::SetupOpened`.
+    OpenSetupFile {
+        path: std::path::PathBuf,
+        passphrase: String,
+        token: u64,
+    },
+    /// Apply the setup file opened under `token`; the answer is `Event::SetupApplied`.
+    ApplySetup {
+        token: u64,
+    },
+    /// Forget the setup file opened under `token`.
+    DiscardSetup {
+        token: u64,
+    },
+    /// Write a setup file; the answer is `Event::SetupExported`.
+    ExportSetup {
+        path: std::path::PathBuf,
+        payload: crate::setup_file::SetupPayload,
+        include_relay_key: bool,
+    },
     Shutdown,
 }
 
@@ -388,6 +410,18 @@ pub enum Event {
     /// Whether Microsoft could be reached on the last fetch. Sent only when it
     /// changes; a lost connection is shown quietly, not as an error.
     Reachable(bool),
+    /// A setup file was opened (the summary) or could not be (a fixed text).
+    SetupOpened {
+        token: u64,
+        result: Result<crate::setup_file::SetupSummary, String>,
+    },
+    /// Whether the setup file opened under `token` was applied.
+    SetupApplied {
+        token: u64,
+        ok: bool,
+    },
+    /// A setup file was written (the passphrase) or could not be (a fixed text).
+    SetupExported(Result<String, String>),
     /// Something the person should hear about, in plain words.
     Error(String),
 }

@@ -121,6 +121,12 @@ pub struct Settings {
     /// Check GitHub once a day and download verified app updates.
     pub automatic_updates: bool,
     pub last_update_check: i64,
+    /// The organization's name, from a setup file.
+    #[serde(default)]
+    pub org_label: Option<String>,
+    /// The tenant ID sign-in must land in, from a setup file.
+    #[serde(default)]
+    pub expected_tenant: Option<String>,
 }
 
 /// How calls and meetings open (docs/calling.md).
@@ -204,6 +210,8 @@ impl Default for Settings {
             plugins_migrated: false,
             automatic_updates: true,
             last_update_check: 0,
+            org_label: None,
+            expected_tenant: None,
         }
     }
 }
@@ -335,6 +343,13 @@ pub fn is_guid(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn old_settings_file_loads() {
+        let settings: super::Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(settings.org_label, None);
+        assert_eq!(settings.expected_tenant, None);
+    }
+
     use super::*;
 
     #[test]

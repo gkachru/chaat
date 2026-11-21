@@ -32,6 +32,9 @@ mod calls;
 mod history;
 mod plugins;
 mod push;
+mod setup;
+mod setup_events;
+mod setup_export;
 pub use calls::Docked;
 pub use history::HistoryLayout;
 pub use plugins::{ADD_START_LIMIT, PluginState, PluginSummary, PluginsView, SummaryLevel};
@@ -579,7 +582,14 @@ impl Account {
     }
 }
 
+pub use setup::{SetupFlow, SetupStage, is_setup_file};
+pub use setup_export::ExportForm;
+
 pub struct App {
+    /// The setup file flow (onboarding and settings).
+    pub setup: setup::SetupFlow,
+    /// The setup file export form.
+    pub export: setup_export::ExportForm,
     /// Process-wide work survives account switching and sign-out.
     pub service: Backend,
     pub update: crate::updates::Status,
@@ -753,6 +763,8 @@ impl App {
     fn empty(dirs: AppDirs, settings: Settings, waker: Waker, demo: bool) -> Self {
         let palette = crate::theme::resolve(&settings.theme, true);
         Self {
+            setup: Default::default(),
+            export: Default::default(),
             form_client_id: settings.client_id.clone(),
             service: Backend::detached().0,
             update: crate::updates::Status::default(),
@@ -1263,6 +1275,9 @@ impl App {
             }
             Event::Auth(status) => self.on_auth(status),
             Event::Profile(profile) => self.profile = Some(*profile),
+            event @ (Event::SetupOpened { .. }
+            | Event::SetupApplied { .. }
+            | Event::SetupExported(_)) => self.on_setup_event(event),
             Event::Granted(granted) => {
                 let had = self.has_scope(crate::auth::MAILBOX_SETTINGS_SCOPE);
                 self.granted = granted;
@@ -1534,6 +1549,10 @@ impl App {
         log::info!("account: {}", status.log_label());
         let became_signed_in = matches!(status, AuthStatus::SignedIn { .. })
             && !matches!(self.auth, AuthStatus::SignedIn { .. });
+        let signed_in_account = match &status {
+            AuthStatus::SignedIn { account, .. } if became_signed_in => Some(account.clone()),
+            _ => None,
+        };
         match &status {
             AuthStatus::SignedIn { account, .. } => {
                 // The same account signed in twice (through "Add account"):
@@ -1596,7 +1615,13 @@ impl App {
             _ => {}
         }
         self.auth = status;
+        if !self.hidden {
+            self.continue_to_sign_in();
+        }
         if became_signed_in {
+            if let Some(account) = &signed_in_account {
+                self.on_signed_in_setup(account);
+            }
             self.remember_accounts_for_slot();
             for resource in [
                 Resource::Profile,
@@ -2400,6 +2425,15 @@ impl App {
             }
             Action::DockWindow(false) => self.undock(ctx),
             Action::FindMeetingChat => self.find_meeting_chat(),
+            action @ (Action::ChooseSetupFile
+            | Action::DroppedSetupFile(_)
+            | Action::OpenSetupFile
+            | Action::ApplySetup
+            | Action::CancelSetup
+            | Action::ShowSetupManual(_)) => self.setup_action(action),
+            action @ (Action::OpenExportForm(_)
+            | Action::ExportSetup
+            | Action::DismissSetupPassphrase) => self.export_action(action),
             Action::JoinOnPhone => self.join_on_phone(),
             Action::PrepareTeamsWeb => self.prepare_teams_web(),
             Action::SetCallSettings(calls) => self.set_call_settings(calls),
