@@ -1047,21 +1047,8 @@ fn advanced(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
     super::setup_settings::group(app, ui, actions);
 
     group(ui, &palette, "Diagnostics");
-    let mut perf = app.settings.perf_overlay;
-    if ui
-        .checkbox_hand(
-            &mut perf,
-            super::keys::platform("Show the performance overlay (⌘⇧P)"),
-        )
-        .changed()
-    {
-        actions.push(Action::TogglePerfOverlay);
-    }
-    if ui.link("Log file folder").clicked() {
-        actions.push(Action::OpenUrl(format!(
-            "file://{}",
-            app.dirs.state.display()
-        )));
+    if ui.link("Open log folder").clicked() {
+        actions.push(Action::OpenLogFolder);
     }
 }
 

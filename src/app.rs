@@ -2597,6 +2597,14 @@ impl App {
                 self.settings.perf_overlay = !self.settings.perf_overlay;
                 self.mark_settings_dirty();
             }
+            Action::OpenLogFolder => {
+                // A path, not a file:// link: OpenUrl opens web links only.
+                // The error is logged by kind; its text can hold the path.
+                if let Err(error) = open::that_detached(&self.dirs.state) {
+                    log::warn!("could not open the log folder: {:?}", error.kind());
+                    self.toast(ToastKind::Error, "Chaat could not open the log folder.");
+                }
+            }
             Action::Refresh => {
                 self.fetch_view(Trigger::Refresh);
                 if self.demo {

@@ -958,6 +958,8 @@ pub enum Action {
     /// Look up the names Graph left out of a system event, by user id.
     LookUpNames(Vec<String>),
     TogglePerfOverlay,
+    /// Open the folder holding Chaat's log in the file manager.
+    OpenLogFolder,
     Refresh,
     DismissToast(u64),
     /// The ring toast's "Place call": call the caller back in Teams.

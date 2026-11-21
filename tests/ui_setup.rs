@@ -497,3 +497,16 @@ fn export_dialog_draws_in_both_themes_and_widths() {
         }
     }
 }
+
+#[test]
+fn diagnostics_offer_the_log_folder_without_the_perf_option() {
+    let mut h = Harness::advanced();
+    h.frames(2);
+    assert!(h.has_text("Open log folder"));
+    assert!(
+        !h.texts()
+            .iter()
+            .any(|text| text.contains("performance overlay")),
+        "the overlay stays on its shortcut only"
+    );
+}
