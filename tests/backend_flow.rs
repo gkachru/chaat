@@ -298,6 +298,16 @@ async fn sign_in_sync_send_restore_and_sign_out() {
     wait_for(&backend, 5, |e| {
         matches!(e, Event::Auth(AuthStatus::SignedIn { .. })).then_some(())
     });
+    // Saving the same registration starts the account again: the window
+    // shows it as restoring until the backend says it is still signed in.
+    backend.send(Command::Start {
+        client_id: CLIENT.into(),
+        tenant: "organizations".into(),
+        account: Some(account.clone()),
+    });
+    wait_for(&backend, 5, |e| {
+        matches!(e, Event::Auth(AuthStatus::SignedIn { .. })).then_some(())
+    });
     backend.send(Command::Fetch {
         resource: Resource::Messages(conversation.clone()),
         trigger: Trigger::Opened,

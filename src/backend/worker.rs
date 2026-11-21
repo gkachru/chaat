@@ -745,7 +745,16 @@ impl Worker {
         };
         let changed = self.config.as_ref() != Some(&config);
         self.config = Some(config.clone());
-        if !changed && self.account.is_some() {
+        if !changed && let Some(account) = &self.account {
+            // The window marks the account as restoring whenever it sends
+            // Start (saving an unchanged registration does), so say again
+            // that it is signed in.
+            let record = &account.record;
+            self.out.send(Event::Auth(AuthStatus::SignedIn {
+                account: record.id.clone(),
+                name: record.display_name.clone(),
+                username: record.username.clone(),
+            }));
             return;
         }
         self.account = None;
