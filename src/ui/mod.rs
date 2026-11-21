@@ -7,11 +7,13 @@ pub mod calls;
 pub mod chat_list;
 pub mod conversation;
 pub mod keys;
+pub mod onboarding;
 pub mod overlays;
 pub mod plugins;
 pub mod rail;
 pub mod rich;
 pub mod settings;
+pub mod setup_settings;
 pub mod signin;
 pub mod teams;
 pub mod widgets;
@@ -82,6 +84,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     fastframe_titlebar::resize(ui);
     drop_files(app, &ctx);
     overlays::show(app, &ctx);
+    if app.shows_workspace() && !app.demo {
+        setup_settings::import_overlay(app, &ctx);
+    }
     toasts(app, &ctx);
     rings(app, &ctx);
     if app.settings.perf_overlay {
@@ -159,8 +164,17 @@ fn drop_files(app: &mut App, ctx: &egui::Context) {
             .collect();
         (dropped, !input.raw.hovered_files.is_empty())
     });
-    if !dropped.is_empty() {
-        app.actions.push(Action::AddFiles(dropped));
+    // A setup file goes to the import (welcome screen or import overlay);
+    // everything else is a chat attachment.
+    let importing = !app.shows_workspace() || app.setup.stage != crate::app::SetupStage::Idle;
+    let (setups, files): (Vec<_>, Vec<_>) = dropped
+        .into_iter()
+        .partition(|path| importing && crate::app::is_setup_file(path));
+    if let Some(setup) = setups.into_iter().next() {
+        app.actions.push(Action::DroppedSetupFile(setup));
+    }
+    if !files.is_empty() {
+        app.actions.push(Action::AddFiles(files));
     }
     if hovering && app.open.is_some() && app.shows_workspace() {
         let palette = app.palette;

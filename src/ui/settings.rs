@@ -1044,6 +1044,8 @@ fn advanced(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         }
     }
 
+    super::setup_settings::group(app, ui, actions);
+
     group(ui, &palette, "Diagnostics");
     let mut perf = app.settings.perf_overlay;
     if ui
