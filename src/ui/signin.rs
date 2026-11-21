@@ -242,11 +242,8 @@ fn state_card(app: &mut App, ui: &mut egui::Ui) {
     }
 }
 
-const STEPS: [&str; 3] = [
-    "Connect to your organization",
-    "Sign in",
-    "Real-time updates",
-];
+/// The rail's step names: short enough for one line each.
+const STEPS: [&str; 3] = ["Connect organization", "Sign in", "Real-time updates"];
 const RAIL_WIDTH: f32 = 170.0;
 
 /// First run, before a registration exists: the connect step.
@@ -381,7 +378,7 @@ fn connect_step(app: &mut App, ui: &mut egui::Ui) {
     // The review has its own heading ("Set up for …").
     if !matches!(stage, SetupStage::Review(_)) {
         ui.label(
-            egui::RichText::new(STEPS[0])
+            egui::RichText::new("Connect to your organization")
                 .font(theme::semibold(18.0))
                 .color(palette.text),
         );
@@ -426,42 +423,16 @@ fn connect_step(app: &mut App, ui: &mut egui::Ui) {
         }
         SetupStage::Applying => onboarding::applying(app, ui),
     }
-    if app.onboarding_forced {
-        forced_note(app, ui);
-    } else if !matches!(app.auth, AuthStatus::NotConfigured)
+    // Here from the sign-in step: the way back without a new file. The
+    // forced welcome screen (CHAAT_ONBOARDING) looks exactly like a first
+    // run, so it gets no extra links.
+    if !app.onboarding_forced
+        && !matches!(app.auth, AuthStatus::NotConfigured)
         && matches!(app.setup.stage, SetupStage::Failed(_))
         && ui.link("Back to sign in").clicked()
     {
-        // Here from the sign-in step: the way back without a new file.
         app.actions.push(Action::CancelSetup);
     }
-}
-
-/// Why the welcome screen shows on a configured Chaat, and the way out.
-fn forced_note(app: &mut App, ui: &mut egui::Ui) {
-    let palette = app.palette;
-    ui.add_space(6.0);
-    ui.separator();
-    ui.horizontal_wrapped(|ui| {
-        ui.label(
-            egui::RichText::new(format!(
-                "Shown because {}=1 is set. A setup file overrides only the settings it carries.",
-                crate::app::ONBOARDING_ENV
-            ))
-            .font(theme::regular(12.0))
-            .color(palette.dim),
-        );
-        let working = matches!(
-            app.setup.stage,
-            SetupStage::Opening(_) | SetupStage::Applying
-        );
-        if !matches!(app.auth, AuthStatus::NotConfigured)
-            && !working
-            && ui.link("Skip to Chaat").clicked()
-        {
-            app.actions.push(Action::SkipOnboarding);
-        }
-    });
 }
 
 /// The application (client) ID and tenant Chaat signs in with.

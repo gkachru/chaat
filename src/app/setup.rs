@@ -128,13 +128,6 @@ impl App {
                 self.setup.error = None;
             }
             Action::ShowSetupManual(show) => self.setup.manual = show,
-            Action::SkipOnboarding => {
-                self.discard_setup();
-                self.setup.stage = SetupStage::Idle;
-                self.setup.passphrase.clear();
-                self.setup.error = None;
-                self.onboarding_forced = false;
-            }
             _ => {}
         }
     }
@@ -308,16 +301,11 @@ mod tests {
     }
 
     #[test]
-    fn forced_welcome_hides_the_workspace_until_skipped() {
+    fn forced_welcome_hides_the_workspace() {
         let (mut app, _) = app();
         assert!(app.shows_workspace());
         app.onboarding_forced = true;
         assert!(!app.shows_workspace());
-        app.setup.stage = SetupStage::Review(summary());
-        app.setup_action(Action::SkipOnboarding);
-        assert!(!app.onboarding_forced);
-        assert_eq!(app.setup.stage, SetupStage::Idle);
-        assert!(app.shows_workspace());
     }
 
     #[test]

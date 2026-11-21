@@ -28,16 +28,16 @@ Send the passphrase separately from the file, for example by phone or another ch
 
 The summary shows the organization, who can sign in, whether real-time updates are included and any "Accepted until" date; **Details** holds the client ID, tenant and creation date. Applying overrides only the settings the file carries (client ID, tenant, organization, expected tenant, and the relay address and access key when included) and keeps everything else. The access key goes into the OS credential store. Accounts sign in again only when the client ID or tenant changed.
 
+Error messages: "This isn't a Chaat setup file." "This file needs a newer version of Chaat." "This file can't be opened with that passphrase, or it was changed." "This file can't be read. Ask for a new one." "This setup file expired on {date}. Ask for a new one."
+
 ## Try the onboarding on a configured Chaat
 
 Start Chaat with `CHAAT_ONBOARDING=1` to see the welcome screen at launch even when it is configured and signed in. On Windows (PowerShell): `$env:CHAAT_ONBOARDING = "1"; chaat`. On macOS and Linux: `CHAAT_ONBOARDING=1 chaat`.
 
+- The screen is exactly what a new person sees; nothing on it mentions the variable.
 - A file applied there overrides only the settings it carries, as above. Your accounts, plugins and other settings stay.
-- **Skip to Chaat** leaves the welcome screen. Applying a file or saving the manual form also ends it.
+- Applying a file or saving the manual form ends it. To leave without either, quit Chaat and start it without the variable.
 - It applies to that launch only. Chaat runs one copy at a time, so quit a running Chaat (including from the tray) first.
-- The screen says why it is shown, so a forgotten variable is easy to spot.
-
-Error messages: "This isn't a Chaat setup file." "This file needs a newer version of Chaat." "This file can't be opened with that passphrase, or it was changed." "This file can't be read. Ask for a new one." "This setup file expired on {date}. Ask for a new one."
 
 ## Protection
 

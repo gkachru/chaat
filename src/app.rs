@@ -589,7 +589,7 @@ pub struct App {
     /// The setup file flow (onboarding and settings).
     pub setup: setup::SetupFlow,
     /// `CHAAT_ONBOARDING=1`: show the welcome screen even when configured,
-    /// until a file is applied, the form is saved or the person skips.
+    /// exactly as on a first run, until a file is applied or the form saved.
     pub onboarding_forced: bool,
     /// The setup file export form.
     pub export: setup_export::ExportForm,
@@ -2438,8 +2438,7 @@ impl App {
             | Action::OpenSetupFile
             | Action::ApplySetup
             | Action::CancelSetup
-            | Action::ShowSetupManual(_)
-            | Action::SkipOnboarding) => self.setup_action(action),
+            | Action::ShowSetupManual(_)) => self.setup_action(action),
             action @ (Action::OpenExportForm(_)
             | Action::ExportSetup
             | Action::DismissSetupPassphrase) => self.export_action(action),

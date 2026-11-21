@@ -40,7 +40,9 @@ pub fn drop_zone(app: &mut App, ui: &mut egui::Ui) {
         _ => None,
     };
     let width = ui.available_width();
-    let (rect, _) = ui.allocate_exact_size(vec2(width, 150.0), Sense::hover());
+    // The icon, two lines and the button take about 128 points; this leaves
+    // about 20 above and below.
+    let (rect, _) = ui.allocate_exact_size(vec2(width, 170.0), Sense::hover());
     let (fill, stroke) = match hover {
         Hover::Setup => (palette.surface_hover, Stroke::new(2.0, palette.accent)),
         Hover::Other => (palette.surface, Stroke::new(2.0, palette.danger)),

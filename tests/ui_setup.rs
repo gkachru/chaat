@@ -375,12 +375,11 @@ fn review_on_first_run_continues_to_sign_in() {
     assert!(h.has_text("  Continue to sign in  "));
     assert!(h.has_text("Who can sign in"));
     // Only the rail names the step; the review has its own heading.
-    let named = h
-        .texts()
-        .iter()
-        .filter(|t| *t == "Connect to your organization")
-        .count();
-    assert_eq!(named, 1, "one heading on the review");
+    assert!(h.has_text("Connect organization"));
+    assert!(
+        !h.has_text("Connect to your organization"),
+        "one heading on the review"
+    );
     // The IDs wait behind Details.
     assert!(!h.has_text(GUID));
 }
@@ -400,25 +399,15 @@ fn first_sign_in_offers_a_different_file() {
 }
 
 #[test]
-fn forced_welcome_shows_over_a_signed_in_chaat_and_skips() {
-    let mut h = Harness::workspace();
-    h.app.onboarding_forced = true;
-    h.frames(3);
-    assert!(!h.app.shows_workspace());
-    assert!(h.has_text("Drop your setup file here"));
-    assert!(
-        h.texts()
-            .iter()
-            .any(|t| t.starts_with("Shown because CHAAT_ONBOARDING=1 is set.")),
-        "{:?}",
-        h.texts()
-    );
-    assert!(h.has_text("Skip to Chaat"));
-    // The link's own action: `text_pos` misplaces text laid out by
-    // `horizontal_wrapped`, so a synthetic click would miss it.
-    h.act(Action::SkipOnboarding);
-    assert!(!h.app.onboarding_forced);
-    assert!(h.app.shows_workspace());
+fn forced_welcome_looks_like_a_first_run() {
+    let mut first = Harness::welcome();
+    first.frames(3);
+    let mut forced = Harness::workspace();
+    forced.app.onboarding_forced = true;
+    forced.frames(3);
+    assert!(!forced.app.shows_workspace());
+    // Same screen as a real first run: no extra text for the variable.
+    assert_eq!(forced.texts(), first.texts());
 }
 
 #[test]
