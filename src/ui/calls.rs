@@ -1,12 +1,11 @@
-//! Calls: start a call with someone, join a meeting by link, and an honest
-//! account of what calling can and cannot do today.
+//! Calls: start a call with someone, join a meeting by link, and where calls
+//! run, with a way to change it.
 
 use egui::{CornerRadius, Frame, Margin, Sense, Stroke, vec2};
 
 use super::widgets;
 use crate::app::App;
-use crate::calling::CAPABILITIES;
-use crate::model::{Action, ChatKind};
+use crate::model::{Action, ChatKind, SettingsPage};
 use crate::theme::{self, Icon};
 
 /// People from one-on-one chats, most recent first.
@@ -98,13 +97,6 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         Frame::new().inner_margin(Margin::symmetric(32, 0)).show(ui, |ui| {
             ui.set_max_width(ui.available_width().min(680.0));
             ui.label(egui::RichText::new("Calls and meetings").font(theme::bold(24.0)).color(palette.text));
-            ui.add_space(6.0);
-            let place = match app.opener() {
-                crate::calling::Opener::AppWindow(browser) => format!("Teams on the web, in a {} window beside Chaat", browser.kind.short()),
-                crate::calling::Opener::Browser => "Teams on the web, in your default browser".to_owned(),
-                crate::calling::Opener::TeamsApp => "the Microsoft Teams app".to_owned(),
-            };
-            ui.label(egui::RichText::new(format!("Calls and meetings open in {place}. The call itself runs in Microsoft's own client, so it costs nothing extra; Chaat shows the meeting chat and follows the call. Change this in Settings.")).color(palette.secondary));
             ui.add_space(18.0);
 
             // Join by link.
@@ -137,27 +129,29 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             ui.ctx().data_mut(|d| d.insert_temp(link_id, link));
             ui.add_space(18.0);
 
-            ui.label(egui::RichText::new("What works today").font(theme::semibold(15.0)).color(palette.text));
-            ui.add_space(6.0);
-            egui::Grid::new("call-capabilities").num_columns(3).spacing(vec2(16.0, 10.0)).striped(false).show(ui, |ui| {
-                for capability in CAPABILITIES {
-                    ui.label(egui::RichText::new(capability.name).font(theme::medium(13.0)).color(palette.text));
-                    let color = match capability.status {
-                        "Works" => palette.success,
-                        "Not possible" => palette.danger,
-                        _ => palette.warning,
-                    };
-                    ui.label(egui::RichText::new(capability.status).font(theme::semibold(12.0)).color(color));
-                    ui.add(egui::Label::new(egui::RichText::new(capability.detail).font(theme::regular(12.0)).color(palette.secondary)).wrap());
-                    ui.end_row();
-                }
-            });
-            ui.add_space(14.0);
-            ui.label(
-                egui::RichText::new("Calls open in Teams. Use the Teams window for audio, video and call controls.")
-                    .font(theme::regular(12.0))
-                    .color(palette.dim),
-            );
+            // Where calls run, and the way to change it.
+            let place = match app.opener() {
+                crate::calling::Opener::AppWindow(browser) => format!("Teams on the web, in a {} window beside Chaat", browser.kind.short()),
+                crate::calling::Opener::Browser => "Teams on the web, in your default browser".to_owned(),
+                crate::calling::Opener::TeamsApp => "the Microsoft Teams app".to_owned(),
+            };
+            Frame::new()
+                .fill(palette.panel)
+                .stroke(Stroke::new(1.0, palette.outline))
+                .corner_radius(CornerRadius::same(10))
+                .inner_margin(Margin::same(16))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(egui::RichText::new("How calls work").font(theme::semibold(15.0)).color(palette.text));
+                    ui.add_space(6.0);
+                    ui.add(egui::Label::new(egui::RichText::new(format!("Calls and meetings run in Microsoft's own client, not inside Chaat, so they cost nothing extra. They open in {place}; use that window for audio, video and call controls. Chaat shows the meeting chat and follows the call.")).font(theme::regular(13.0)).color(palette.secondary)).wrap());
+                    ui.add_space(4.0);
+                    ui.add(egui::Label::new(egui::RichText::new("Only Microsoft's clients ring for incoming calls. Keep Teams on the web or Teams mobile signed in to be reachable.").font(theme::regular(12.0)).color(palette.dim)).wrap());
+                    ui.add_space(10.0);
+                    if ui.add(egui::Button::new("Choose where calls open").min_size(vec2(0.0, 30.0))).clicked() {
+                        app.actions.push(Action::ShowSettingsPage(SettingsPage::Calls));
+                    }
+                });
         });
     });
 }

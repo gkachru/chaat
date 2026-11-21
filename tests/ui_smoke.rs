@@ -2696,6 +2696,42 @@ fn formatting_help_shows_only_while_typing() {
 }
 
 #[test]
+fn calls_page_explains_where_calls_run_and_links_to_settings() {
+    // At 380 the sidebar leaves the page no room; 760 is still narrow.
+    for width in [760.0, 1280.0] {
+        for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+            let mut h = Harness::new();
+            h.size.x = width;
+            h.app.settings.theme = theme.clone();
+            h.act(Action::Navigate(Section::Calls));
+            h.frames(5);
+            let texts = painted_texts(&h);
+            assert!(
+                texts.iter().any(|t| t == "How calls work"),
+                "{width} {theme:?}"
+            );
+            assert!(
+                !texts.iter().any(|t| t == "What works today"),
+                "the table is gone"
+            );
+            assert!(
+                widest_text(&h) <= width,
+                "fits at {width}: {}",
+                widest_text(&h)
+            );
+            let button =
+                ring_text_pos(&h, "Choose where calls open").expect("the button is painted");
+            h.click(button);
+            assert_eq!(
+                h.app.settings_page,
+                Some(SettingsPage::Calls),
+                "{width} {theme:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn calls_and_calendar_pages_fit_a_narrow_window() {
     let width = 1000.0;
     let mut h = Harness::new();

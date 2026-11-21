@@ -15,6 +15,8 @@ Select **Call** in a chat, **Join** on a meeting, or paste a Teams meeting
 link in the Calls page. By default, Chaat opens an Edge or Chrome app window
 without browser tabs. If neither browser is installed, it uses the default
 browser. The Teams desktop app is an explicit choice in Settings.
+The Calls page says where calls open and has a **Choose where calls open**
+button that goes to these settings.
 
 The **Calls and meetings** page in Settings controls:
 
