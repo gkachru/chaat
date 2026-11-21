@@ -400,6 +400,28 @@ fn first_sign_in_offers_a_different_file() {
 }
 
 #[test]
+fn forced_welcome_shows_over_a_signed_in_chaat_and_skips() {
+    let mut h = Harness::workspace();
+    h.app.onboarding_forced = true;
+    h.frames(3);
+    assert!(!h.app.shows_workspace());
+    assert!(h.has_text("Drop your setup file here"));
+    assert!(
+        h.texts()
+            .iter()
+            .any(|t| t.starts_with("Shown because CHAAT_ONBOARDING=1 is set.")),
+        "{:?}",
+        h.texts()
+    );
+    assert!(h.has_text("Skip to Chaat"));
+    // The link's own action: `text_pos` misplaces text laid out by
+    // `horizontal_wrapped`, so a synthetic click would miss it.
+    h.act(Action::SkipOnboarding);
+    assert!(!h.app.onboarding_forced);
+    assert!(h.app.shows_workspace());
+}
+
+#[test]
 fn applying_shows_progress_on_welcome() {
     let mut h = Harness::welcome();
     h.app.setup.stage = SetupStage::Applying;

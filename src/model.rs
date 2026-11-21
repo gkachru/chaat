@@ -927,6 +927,8 @@ pub enum Action {
     ExportSetup,
     /// Hide the passphrase shown after an export.
     DismissSetupPassphrase,
+    /// Leave the welcome screen that `CHAAT_ONBOARDING=1` forced.
+    SkipOnboarding,
     /// Shows the call's join link as a QR code, to join on a phone.
     JoinOnPhone,
     /// Opens Teams on the web once, to sign in there ahead of calls.

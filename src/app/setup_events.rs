@@ -38,6 +38,9 @@ impl App {
                     return;
                 }
                 self.setup.stage = SetupStage::Idle;
+                // The settings are saved either way: the forced welcome
+                // screen has done its job.
+                self.onboarding_forced = false;
                 if ok {
                     if self.setup.key_included {
                         self.settings.relay_key_set = true;

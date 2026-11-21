@@ -7,6 +7,16 @@ use crate::backend::{AuthStatus, Command};
 use crate::model::Action;
 use crate::setup_file::SetupSummary;
 
+/// Set to `1` to show the welcome screen at launch even when Chaat is
+/// configured, for trying the onboarding. A file applied there overrides
+/// only the settings it carries.
+pub const ONBOARDING_ENV: &str = "CHAAT_ONBOARDING";
+
+/// Whether `CHAAT_ONBOARDING=1` is set.
+pub fn onboarding_forced_by_env() -> bool {
+    std::env::var(ONBOARDING_ENV).is_ok_and(|value| value.trim() == "1")
+}
+
 /// Where the setup file flow stands.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub enum SetupStage {
@@ -88,6 +98,9 @@ impl App {
                         .accounts
                         .iter()
                         .any(|account| matches!(account.auth, AuthStatus::SignedIn { .. }));
+                // Only a new registration signs accounts in again.
+                let registration_changed = summary.client_id != self.settings.client_id
+                    || summary.tenant != self.settings.tenant;
                 self.settings.client_id = summary.client_id;
                 self.settings.tenant = summary.tenant;
                 // A file without a relay leaves the person's own relay alone.
@@ -102,7 +115,7 @@ impl App {
                     token: self.setup.token,
                 });
                 self.setup.stage = SetupStage::Applying;
-                if !self.demo {
+                if !self.demo && registration_changed {
                     for index in 0..self.accounts.len() {
                         self.start_account(index);
                     }
@@ -115,6 +128,13 @@ impl App {
                 self.setup.error = None;
             }
             Action::ShowSetupManual(show) => self.setup.manual = show,
+            Action::SkipOnboarding => {
+                self.discard_setup();
+                self.setup.stage = SetupStage::Idle;
+                self.setup.passphrase.clear();
+                self.setup.error = None;
+                self.onboarding_forced = false;
+            }
             _ => {}
         }
     }
@@ -285,6 +305,32 @@ mod tests {
             commands.try_recv(),
             Ok(Command::ApplySetup { token: 7 })
         ));
+    }
+
+    #[test]
+    fn forced_welcome_hides_the_workspace_until_skipped() {
+        let (mut app, _) = app();
+        assert!(app.shows_workspace());
+        app.onboarding_forced = true;
+        assert!(!app.shows_workspace());
+        app.setup.stage = SetupStage::Review(summary());
+        app.setup_action(Action::SkipOnboarding);
+        assert!(!app.onboarding_forced);
+        assert_eq!(app.setup.stage, SetupStage::Idle);
+        assert!(app.shows_workspace());
+    }
+
+    #[test]
+    fn forced_welcome_ends_when_a_file_is_applied() {
+        let (mut app, _) = app();
+        app.onboarding_forced = true;
+        app.setup.token = 3;
+        app.setup.stage = SetupStage::Review(summary());
+        app.setup_action(Action::ApplySetup);
+        // Still forced while applying, so the progress stays on screen.
+        assert!(app.onboarding_forced);
+        app.on_setup_event(crate::backend::Event::SetupApplied { token: 3, ok: true });
+        assert!(!app.onboarding_forced);
     }
 
     #[test]

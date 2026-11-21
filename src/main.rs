@@ -77,6 +77,10 @@ fn main() -> eframe::Result<()> {
     let geometry = settings.window;
     let mut app = App::new(dirs.clone(), settings, waker.clone(), false);
     app.attach_service(chaat::backend::Backend::spawn(dirs.clone(), waker.clone()));
+    app.onboarding_forced = chaat::app::onboarding_forced_by_env();
+    if app.onboarding_forced {
+        log::info!("welcome screen forced by {}", chaat::app::ONBOARDING_ENV);
+    }
     app.update_receipt = launch.receipt;
     if let Some(error) = launch.error {
         app.toast(chaat::model::ToastKind::Error, error);

@@ -147,7 +147,7 @@ fn reveal(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
 
 /// Whether applying `summary` changes the app registration while accounts
 /// are signed in, which signs them all in again.
-fn resigns(app: &App, summary: &crate::setup_file::SetupSummary) -> bool {
+pub(crate) fn resigns(app: &App, summary: &crate::setup_file::SetupSummary) -> bool {
     let signed_in = app
         .accounts
         .iter()

@@ -74,6 +74,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
 
 /// First run: nothing has ever signed in, so the setup steps frame the card.
 fn railed(app: &App) -> bool {
+    if app.onboarding_forced {
+        return true;
+    }
     match app.auth {
         AuthStatus::NotConfigured => true,
         AuthStatus::SignedOut
@@ -94,9 +97,10 @@ fn railed(app: &App) -> bool {
 }
 
 fn card(app: &mut App, ui: &mut egui::Ui) {
-    // Step one: no registration yet, or another setup file chosen from the
-    // sign-in step.
+    // Step one: no registration yet, forced by CHAAT_ONBOARDING, or another
+    // setup file chosen from the sign-in step.
     if matches!(app.auth, AuthStatus::NotConfigured)
+        || app.onboarding_forced
         || (railed(app) && app.setup.stage != SetupStage::Idle)
     {
         return onboarding(app, ui);
@@ -413,16 +417,51 @@ fn connect_step(app: &mut App, ui: &mut egui::Ui) {
         SetupStage::Passphrase(_) | SetupStage::Opening(_) => {
             onboarding::passphrase(app, ui);
         }
-        SetupStage::Review(_) => onboarding::review(app, ui, false, true),
+        SetupStage::Review(summary) => {
+            // Forced over a signed-in Chaat: say what applying costs, and
+            // only promise sign-in when nobody is signed in yet.
+            let warn = super::setup_settings::resigns(app, &summary);
+            let first_run = app.settings.accounts.is_empty();
+            onboarding::review(app, ui, warn, first_run);
+        }
         SetupStage::Applying => onboarding::applying(app, ui),
     }
-    // Here from the sign-in step: the way back without a new file.
-    if !matches!(app.auth, AuthStatus::NotConfigured)
+    if app.onboarding_forced {
+        forced_note(app, ui);
+    } else if !matches!(app.auth, AuthStatus::NotConfigured)
         && matches!(app.setup.stage, SetupStage::Failed(_))
         && ui.link("Back to sign in").clicked()
     {
+        // Here from the sign-in step: the way back without a new file.
         app.actions.push(Action::CancelSetup);
     }
+}
+
+/// Why the welcome screen shows on a configured Chaat, and the way out.
+fn forced_note(app: &mut App, ui: &mut egui::Ui) {
+    let palette = app.palette;
+    ui.add_space(6.0);
+    ui.separator();
+    ui.horizontal_wrapped(|ui| {
+        ui.label(
+            egui::RichText::new(format!(
+                "Shown because {}=1 is set. A setup file overrides only the settings it carries.",
+                crate::app::ONBOARDING_ENV
+            ))
+            .font(theme::regular(12.0))
+            .color(palette.dim),
+        );
+        let working = matches!(
+            app.setup.stage,
+            SetupStage::Opening(_) | SetupStage::Applying
+        );
+        if !matches!(app.auth, AuthStatus::NotConfigured)
+            && !working
+            && ui.link("Skip to Chaat").clicked()
+        {
+            app.actions.push(Action::SkipOnboarding);
+        }
+    });
 }
 
 /// The application (client) ID and tenant Chaat signs in with.

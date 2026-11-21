@@ -582,12 +582,15 @@ impl Account {
     }
 }
 
-pub use setup::{SetupFlow, SetupStage, is_setup_file};
+pub use setup::{ONBOARDING_ENV, SetupFlow, SetupStage, is_setup_file, onboarding_forced_by_env};
 pub use setup_export::ExportForm;
 
 pub struct App {
     /// The setup file flow (onboarding and settings).
     pub setup: setup::SetupFlow,
+    /// `CHAAT_ONBOARDING=1`: show the welcome screen even when configured,
+    /// until a file is applied, the form is saved or the person skips.
+    pub onboarding_forced: bool,
     /// The setup file export form.
     pub export: setup_export::ExportForm,
     /// Process-wide work survives account switching and sign-out.
@@ -764,6 +767,7 @@ impl App {
         let palette = crate::theme::resolve(&settings.theme, true);
         Self {
             setup: Default::default(),
+            onboarding_forced: false,
             export: Default::default(),
             form_client_id: settings.client_id.clone(),
             service: Backend::detached().0,
@@ -916,6 +920,9 @@ impl App {
 
     /// Whether the main interface (rather than the sign-in screen) shows.
     pub fn shows_workspace(&self) -> bool {
+        if self.onboarding_forced {
+            return false;
+        }
         self.is_signed_in()
             || ((self.reauth.is_some()
                 || matches!(
@@ -2203,6 +2210,7 @@ impl App {
                     );
                     return;
                 }
+                self.onboarding_forced = false;
                 self.settings.client_id = client_id;
                 self.settings.tenant = match tenant.trim() {
                     "" => "organizations".into(),
@@ -2430,7 +2438,8 @@ impl App {
             | Action::OpenSetupFile
             | Action::ApplySetup
             | Action::CancelSetup
-            | Action::ShowSetupManual(_)) => self.setup_action(action),
+            | Action::ShowSetupManual(_)
+            | Action::SkipOnboarding) => self.setup_action(action),
             action @ (Action::OpenExportForm(_)
             | Action::ExportSetup
             | Action::DismissSetupPassphrase) => self.export_action(action),
