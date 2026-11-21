@@ -51,7 +51,7 @@ the matching `UPDATE_SIGNING_KEY` secret, before automatic updates can work.
 ## Making a release
 
 1. Keep Cargo.toml and Cargo.lock at the intended version. A release tag
-   must match it exactly, such as `v0.1.0`.
+   must match it exactly, such as `v0.2.0`.
 2. Ensure the GitHub repository secret `UPDATE_SIGNING_KEY` holds the PEM
    Ed25519 private key matching `packaging/update-public-key.hex`. Keep a
    separate secure backup. Never commit the private key. Generate a pair

@@ -99,7 +99,7 @@ APIs serve work and school accounts only.
 
 | Platform | Command |
 |---|---|
-| macOS | Set `CODESIGN_IDENTITY`, then `cargo build --release && packaging/macos/bundle.sh target/release/chaat Chaat.app 0.1.0` |
+| macOS | Set `CODESIGN_IDENTITY`, then `cargo build --release && packaging/macos/bundle.sh target/release/chaat Chaat.app 0.2.0` |
 | Linux | `cargo build --release && packaging/linux/install.sh` (installs to `~/.local`) |
 | Windows | `cargo build --release` (icon and version embedded by `build.rs`) |
 

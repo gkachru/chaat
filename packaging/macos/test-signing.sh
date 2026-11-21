@@ -32,13 +32,13 @@ fi
 # Neither a missing identity nor an ad-hoc release may destroy an output.
 mkdir "$work/Existing.app"
 touch "$work/Existing.app/keep"
-if CODESIGN_IDENTITY='' "$here/bundle.sh" /no/binary "$work/Existing.app" 0.1.0 >"$work/missing.log" 2>&1; then
+if CODESIGN_IDENTITY='' "$here/bundle.sh" /no/binary "$work/Existing.app" 0.2.0 >"$work/missing.log" 2>&1; then
     echo 'Bundling without a persistent identity unexpectedly succeeded.' >&2
     exit 1
 fi
 test -f "$work/Existing.app/keep"
 for identity in '' -; do
-    if CODESIGN_IDENTITY="$identity" "$root/packaging/release.sh" aarch64-apple-darwin 0.1.0 >"$work/release.log" 2>&1; then
+    if CODESIGN_IDENTITY="$identity" "$root/packaging/release.sh" aarch64-apple-darwin 0.2.0 >"$work/release.log" 2>&1; then
         echo 'Release packaging without a persistent identity unexpectedly succeeded.' >&2
         exit 1
     fi

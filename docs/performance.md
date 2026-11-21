@@ -72,7 +72,7 @@ Tests run the same views without a display or account.
 ```sh
 cargo build --locked --release --bin chaat --example perf_probe
 CODESIGN_IDENTITY=- \
-packaging/macos/bundle.sh target/release/chaat target/Chaat.app 0.1.0
+packaging/macos/bundle.sh target/release/chaat target/Chaat.app 0.2.0
 open -W -n --stdout /tmp/chaat-startup.txt target/Chaat.app --args --measure-startup
 open -n target/Chaat.app
 # After settling, inspect this bundle's PID with footprint, vmmap and top.
