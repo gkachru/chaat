@@ -92,6 +92,11 @@ tenants, and most tenants block unverified multi-tenant apps.
    and leaving a group chat each ask for one more permission the first time. Each
    permission is explained in [docs/permissions.md](docs/permissions.md).
 
+To skip typing the IDs and the relay access key, an administrator can create
+an encrypted setup file in **Settings → Advanced** and send it to colleagues.
+They drop it on Chaat's first screen and enter the passphrase
+([docs/setup-file.md](docs/setup-file.md)).
+
 Personal Microsoft accounts and Teams (free) are not supported; Graph's Teams
 APIs serve work and school accounts only.
 
@@ -178,6 +183,9 @@ Report vulnerabilities privately through [SECURITY.md](SECURITY.md).
 MIT. See [LICENSE](LICENSE) and [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 All downloads include dependency, font and icon notices. `chaat --licenses`
 and `chaat-relay --licenses` print the complete notices embedded in the binary.
+The passphrase wordlist is the EFF large wordlist, copyright the Electronic
+Frontier Foundation, under
+[CC BY 3.0 US](https://creativecommons.org/licenses/by/3.0/us/).
 Chaat is based on Wren (MIT); the upstream copyright is kept in
 [LICENSE](LICENSE).
 Chaat is an independent project, not affiliated with or endorsed by Microsoft.

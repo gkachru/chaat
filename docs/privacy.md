@@ -13,6 +13,10 @@
   can be disabled in Settings. No Microsoft credentials or account data are
   sent to GitHub ([updates.md](updates.md)). Chaat opens Microsoft Teams
   links in your browser when you ask it to.
+- **Setup files** stay local. Chaat reads or writes a `.chaatsetup` file only
+  where you choose, never uploads it, and never logs its path, contents or
+  passphrase. The relay access key it may carry is stored in the OS credential
+  store ([setup-file.md](setup-file.md)).
 - **Plugins** are separate programs you add and turn on in Settings ›
   Plugins ([plugins.md](plugins.md)). A plugin never receives your tokens,
   your settings or message content. Chaat sends it the ID and sign-in name of

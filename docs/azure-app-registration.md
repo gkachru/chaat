@@ -110,6 +110,16 @@ Then select **Sign in with Microsoft**. Your browser opens Microsoft's sign-in
 page. After you approve, the browser tab says "You're signed in" and Chaat
 continues.
 
+## Share it with a setup file
+
+Once Chaat is pointed at the registration, create a setup file in
+**Settings → Advanced → Setup file → Create a setup file…**. It carries the
+client ID, the tenant and, if you choose, the push relay address and access
+key, encrypted with a generated passphrase. Colleagues drop it on Chaat's first
+screen and skip step 4. You can limit the file to accounts from your tenant.
+Send the passphrase separately from the file. Details and limits:
+[setup-file.md](setup-file.md).
+
 ## Accounts in several organisations
 
 Chaat uses one registration for all its accounts. To add accounts from more
