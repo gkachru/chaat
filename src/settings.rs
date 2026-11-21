@@ -124,9 +124,6 @@ pub struct Settings {
     /// The organization's name, from a setup file.
     #[serde(default)]
     pub org_label: Option<String>,
-    /// The tenant ID sign-in must land in, from a setup file.
-    #[serde(default)]
-    pub expected_tenant: Option<String>,
 }
 
 /// How calls and meetings open (docs/calling.md).
@@ -211,7 +208,6 @@ impl Default for Settings {
             automatic_updates: true,
             last_update_check: 0,
             org_label: None,
-            expected_tenant: None,
         }
     }
 }
@@ -347,7 +343,6 @@ mod tests {
     fn old_settings_file_loads() {
         let settings: super::Settings = serde_json::from_str("{}").unwrap();
         assert_eq!(settings.org_label, None);
-        assert_eq!(settings.expected_tenant, None);
     }
 
     use super::*;

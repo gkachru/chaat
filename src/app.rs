@@ -1556,10 +1556,6 @@ impl App {
         log::info!("account: {}", status.log_label());
         let became_signed_in = matches!(status, AuthStatus::SignedIn { .. })
             && !matches!(self.auth, AuthStatus::SignedIn { .. });
-        let signed_in_account = match &status {
-            AuthStatus::SignedIn { account, .. } if became_signed_in => Some(account.clone()),
-            _ => None,
-        };
         match &status {
             AuthStatus::SignedIn { account, .. } => {
                 // The same account signed in twice (through "Add account"):
@@ -1626,9 +1622,7 @@ impl App {
             self.continue_to_sign_in();
         }
         if became_signed_in {
-            if let Some(account) = &signed_in_account {
-                self.on_signed_in_setup(account);
-            }
+            self.on_signed_in_setup();
             self.remember_accounts_for_slot();
             for resource in [
                 Resource::Profile,

@@ -4,20 +4,23 @@ A setup file (`.chaatsetup`) carries the settings a person needs on first run, s
 
 ## What is in it
 
-- Organization name, shown as "Set up for {org}".
+- Organization name, shown as "Set up for {org}". It is a label only; for several organizations, name them all (for example "Contoso and Fabrikam").
 - Application (client) ID and directory (tenant) ID of the app registration.
-- Optionally, "only allow accounts from this tenant". After sign-in, an account from another tenant gets the toast "This account is from a different organization than {org}'s setup file."
 - Optionally, the push relay address and its access key ([realtime.md](realtime.md)).
 - The creation date and an optional "Stop accepting after" date. Chaat refuses a file past that date, so you can retire files after a key rotation.
 
 It holds no tokens, passwords or message data.
 
+The file does not decide who can sign in; the app registration does. A single-tenant registration admits only that organization's accounts. A multi-tenant registration with the tenant `organizations` admits accounts from any organization that allows the app ([azure-app-registration.md](azure-app-registration.md#accounts-in-several-organisations)). Files from Chaat 0.2.0 may carry an "only allow accounts from this tenant" setting; it is ignored.
+
 ## Create a file
 
-1. Open Settings > Advanced > Setup file and select **Create a setup file…**.
-2. Enter the organization name (required). Choose whether to limit accounts to the tenant, whether to include the push relay (offered only when a relay address and access key are set), and an optional "Stop accepting after" date (YYYY-MM-DD, today or later).
-3. Select **Create file…** and pick where to save. The default name is `Chaat setup.chaatsetup`.
-4. Chaat shows a generated passphrase of six words once. Select **Copy**, then **Done**; the passphrase is cleared.
+1. Open Settings > Advanced > Setup file and select **Create a setup file…**. A dialog opens.
+2. **Included** shows the app registration the file carries. Choose whether to include the push relay (offered only when a relay address and access key are set).
+3. Under **Shown to people who import it**, enter the organization name (required). The dialog previews what they see.
+4. Under **Expiry**, optionally enter a "Stop accepting after" date (YYYY-MM-DD, today or later).
+5. Select **Create file…** and pick where to save. The default name is `Chaat setup.chaatsetup`. Escape or **Cancel** closes the dialog without a file.
+6. The dialog shows a generated passphrase of six words once. Select **Copy**, then **Done**; the passphrase is cleared. Only **Done** closes this step.
 
 Send the passphrase separately from the file, for example by phone or another chat.
 
@@ -26,7 +29,7 @@ Send the passphrase separately from the file, for example by phone or another ch
 - On first run: drop the file on the window, or select **Choose file**. Enter the six-word passphrase (**Show** reveals it to check for typing mistakes; after a wrong passphrase the words stay in the field so you can correct them) and select **Open**. Check the summary (who can sign in, whether real-time updates are included; **Details** shows the IDs), then select **Continue to sign in**. Microsoft's sign-in page opens in your browser. After the first sign-in Chaat shows "Chaat is set up for {org}." once. **Enter details manually** replaces the drop zone with the registration form. On the sign-in step, **Use a different setup file** goes back to step one.
 - Later: Settings > Advanced > Setup file > **Import a setup file…**. If accounts are signed in and the client ID or tenant would change, the review warns "Applying signs every account in again."
 
-The summary shows the organization, who can sign in, whether real-time updates are included and any "Accepted until" date; **Details** holds the client ID, tenant and creation date. Applying overrides only the settings the file carries (client ID, tenant, organization, expected tenant, and the relay address and access key when included) and keeps everything else. The access key goes into the OS credential store. Accounts sign in again only when the client ID or tenant changed.
+The summary shows the organization, who can sign in, whether real-time updates are included and any "Accepted until" date; **Details** holds the client ID, tenant and creation date. Applying overrides only the settings the file carries (client ID, tenant, organization, and the relay address and access key when included) and keeps everything else. The access key goes into the OS credential store. Accounts sign in again only when the client ID or tenant changed.
 
 Error messages: "This isn't a Chaat setup file." "This file needs a newer version of Chaat." "This file can't be opened with that passphrase, or it was changed." "This file can't be read. Ask for a new one." "This setup file expired on {date}. Ask for a new one."
 

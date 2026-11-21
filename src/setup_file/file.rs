@@ -73,7 +73,6 @@ mod tests {
             org_label: "Acme".into(),
             client_id: GUID.into(),
             tenant: "organizations".into(),
-            expected_tenant: None,
             relay_url: key.map(|_| "https://relay.example.com".into()),
             relay_key: key.map(|k| Zeroizing::new(k.to_string())),
             import_by: None,

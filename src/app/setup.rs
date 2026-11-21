@@ -108,7 +108,6 @@ impl App {
                     self.settings.relay_url = summary.relay_url;
                 }
                 self.settings.org_label = Some(summary.org_label);
-                self.settings.expected_tenant = summary.expected_tenant;
                 self.mark_settings_dirty();
                 self.save_settings();
                 self.service.send(Command::ApplySetup {
@@ -200,7 +199,6 @@ mod tests {
             org_label: "Contoso".into(),
             client_id: "11111111-1111-1111-1111-111111111111".into(),
             tenant: "22222222-2222-2222-2222-222222222222".into(),
-            expected_tenant: Some("22222222-2222-2222-2222-222222222222".into()),
             relay_url: Some("https://relay.example.com".into()),
             relay_key_included: true,
             created: "2026-11-21".into(),
@@ -292,7 +290,6 @@ mod tests {
         assert_eq!(app.settings.tenant, s.tenant);
         assert_eq!(app.settings.relay_url, s.relay_url);
         assert_eq!(app.settings.org_label.as_deref(), Some("Contoso"));
-        assert_eq!(app.settings.expected_tenant, s.expected_tenant);
         assert_eq!(app.setup.stage, SetupStage::Applying);
         assert!(matches!(
             commands.try_recv(),

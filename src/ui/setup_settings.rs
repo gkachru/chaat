@@ -1,4 +1,5 @@
-//! The setup file group in settings: import, export form, passphrase reveal.
+//! The setup file group in settings and its dialogs: import, and export
+//! (the form, then the passphrase).
 
 use egui::{CornerRadius, Frame, Margin, Stroke};
 
@@ -10,63 +11,119 @@ use crate::model::Action;
 use crate::theme;
 
 /// The "Setup file" group on Settings › Advanced. Hidden in demo mode.
+/// Both flows open in a dialog over the page.
 pub fn group(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
     if app.demo {
         return;
     }
     let palette = app.palette;
-    group_heading(ui, &palette);
-    let busy = app.setup.stage != SetupStage::Idle;
-    if ui
-        .add_enabled(!busy, egui::Button::new("Import a setup file…"))
-        .clicked()
-    {
-        actions.push(Action::ChooseSetupFile);
-    }
+    super::settings::group(ui, &palette, "Setup file");
+    let busy = app.setup.stage != SetupStage::Idle || app.export.open;
+    ui.horizontal(|ui| {
+        if ui
+            .add_enabled(!busy, egui::Button::new("Import a setup file…"))
+            .clicked()
+        {
+            actions.push(Action::ChooseSetupFile);
+        }
+        if ui
+            .add_enabled(!busy, egui::Button::new("Create a setup file…"))
+            .clicked()
+        {
+            actions.push(Action::OpenExportForm(true));
+        }
+    });
     note(
         ui,
         &palette,
-        "Fills in the app registration and push relay from a file your administrator made.",
+        "A setup file carries the app registration and, optionally, the push relay, so others can start without typing them.",
     );
-    ui.add_space(6.0);
-    if app.export.passphrase.is_some() {
-        reveal(app, ui, actions);
-    } else if app.export.open {
-        export_form(app, ui, actions);
-    } else if ui.button("Create a setup file…").clicked() {
-        actions.push(Action::OpenExportForm(true));
-    }
 }
 
-fn group_heading(ui: &mut egui::Ui, palette: &theme::Palette) {
-    super::settings::group(ui, palette, "Setup file");
+/// The "Create a setup file" dialog: the form, then the passphrase.
+pub fn export_overlay(app: &mut App, ctx: &egui::Context) {
+    if !app.export.open && app.export.passphrase.is_none() {
+        return;
+    }
+    let palette = app.palette;
+    let mut actions = Vec::new();
+    let revealing = app.export.passphrase.is_some();
+    let response = egui::Modal::new(egui::Id::new("chaat-setup-export"))
+        .backdrop_color(palette.overlay)
+        .frame(
+            Frame::new()
+                .fill(palette.surface)
+                .stroke(Stroke::new(1.0, palette.outline))
+                .corner_radius(CornerRadius::same(14))
+                .inner_margin(Margin::same(20)),
+        )
+        .show(ctx, |ui| {
+            ui.set_width(440.0);
+            if revealing {
+                reveal(app, ui, &mut actions);
+            } else {
+                export_form(app, ui, &mut actions);
+            }
+        });
+    // Escape or a click outside cancels the form. The passphrase is shown
+    // only once, so only Done closes it.
+    if response.should_close() && !revealing && !app.export.busy {
+        actions.push(Action::OpenExportForm(false));
+    }
+    app.actions.extend(actions);
+}
+
+fn heading(ui: &mut egui::Ui, palette: &theme::Palette, title: &str, subtitle: &str) {
+    ui.label(
+        egui::RichText::new(title)
+            .font(theme::semibold(18.0))
+            .color(palette.text),
+    );
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new(subtitle)
+                .font(theme::regular(13.0))
+                .color(palette.secondary),
+        )
+        .wrap(),
+    );
+}
+
+fn field_label(ui: &mut egui::Ui, palette: &theme::Palette, text: &str) {
+    ui.add_space(4.0);
+    ui.label(
+        egui::RichText::new(text)
+            .font(theme::regular(13.0))
+            .color(palette.secondary),
+    );
 }
 
 fn export_form(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
     let palette = app.palette;
-    let has_tenant =
-        crate::settings::is_guid(&app.settings.tenant) || app.export_tenant().is_some();
     let has_relay = app.settings.relay_url.is_some() && app.settings.relay_key_set;
     let busy = app.export.busy;
-    ui.label(egui::RichText::new("Organization name").color(palette.secondary));
-    ui.add_enabled(
-        !busy,
-        widgets::text_field(
-            &mut app.export.org_label,
-            "Organization name",
-            theme::regular(14.0),
-        ),
+    heading(
+        ui,
+        &palette,
+        "Create a setup file",
+        "People who import it get these settings. The file is encrypted with a passphrase you send separately.",
     );
-    if has_tenant {
-        ui.add_enabled(
-            !busy,
-            egui::Checkbox::new(
-                &mut app.export.limit_tenant,
-                "Only allow accounts from this tenant",
-            ),
-        );
-    }
+
+    super::settings::group(ui, &palette, "Included");
+    field_label(ui, &palette, "App registration");
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new(format!(
+                "{} · {}",
+                app.settings.client_id, app.settings.tenant
+            ))
+            .font(theme::regular(13.0))
+            .color(palette.text),
+        )
+        .wrap(),
+    );
     if has_relay {
+        ui.add_space(4.0);
         ui.add_enabled(
             !busy,
             egui::Checkbox::new(
@@ -75,7 +132,31 @@ fn export_form(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
             ),
         );
     }
-    ui.label(egui::RichText::new("Stop accepting after (optional)").color(palette.secondary));
+
+    super::settings::group(ui, &palette, "Shown to people who import it");
+    field_label(ui, &palette, "Organization name");
+    ui.add_enabled(
+        !busy,
+        widgets::text_field(
+            &mut app.export.org_label,
+            "For example, Contoso",
+            theme::regular(14.0),
+        ),
+    );
+    let label = app.export.org_label.trim().to_owned();
+    note(
+        ui,
+        &palette,
+        if label.is_empty() {
+            "Required. They see it as \"Set up for …\". It does not change who can sign in."
+                .to_owned()
+        } else {
+            format!("They see \"Set up for {label}\".")
+        },
+    );
+
+    super::settings::group(ui, &palette, "Expiry");
+    field_label(ui, &palette, "Stop accepting after (optional)");
     ui.add_enabled(
         !busy,
         widgets::text_field(
@@ -84,32 +165,36 @@ fn export_form(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
             theme::regular(14.0),
         ),
     );
+
     if let Some(error) = &app.export.error {
-        ui.label(
-            egui::RichText::new(error)
-                .font(theme::regular(13.0))
-                .color(palette.danger),
+        ui.add_space(6.0);
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(error)
+                    .font(theme::regular(13.0))
+                    .color(palette.danger),
+            )
+            .wrap(),
         );
     }
-    let named = !app.export.org_label.trim().is_empty();
-    if !named {
-        note(
+    ui.add_space(14.0);
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        let ready = !busy && !label.is_empty();
+        if widgets::accent_button(
             ui,
             &palette,
-            "Enter an organization name to create the file. People see it when they import.",
-        );
-    }
-    ui.horizontal(|ui| {
-        let ready = !busy && named;
-        if ui
-            .add_enabled(ready, egui::Button::new("Create file…"))
-            .clicked()
+            ready,
+            "  Create file…  ",
+            theme::semibold(14.0),
+            34.0,
+        )
+        .clicked()
         {
             actions.push(Action::ExportSetup);
         }
         if busy {
             widgets::loading(ui, palette.secondary, 14.0);
-        } else if ui.button("Cancel").clicked() {
+        } else if widgets::secondary_button(ui, &palette, "  Cancel  ").clicked() {
             actions.push(Action::OpenExportForm(false));
         }
     });
@@ -120,7 +205,13 @@ fn reveal(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
     let Some(passphrase) = app.export.passphrase.clone() else {
         return;
     };
-    ui.label(egui::RichText::new("Setup file created. Passphrase:").color(palette.text));
+    heading(
+        ui,
+        &palette,
+        "Setup file created",
+        "Send the passphrase separately from the file, for example by phone or another chat. Chaat shows it only once.",
+    );
+    ui.add_space(12.0);
     ui.add(
         egui::Label::new(
             egui::RichText::new(&passphrase)
@@ -130,19 +221,15 @@ fn reveal(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         .wrap()
         .selectable(true),
     );
-    ui.horizontal(|ui| {
-        if ui.button("Copy").clicked() {
-            actions.push(Action::CopyText(passphrase));
-        }
-        if ui.button("Done").clicked() {
+    ui.add_space(14.0);
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        if widgets::primary_button(ui, &palette, "  Done  ").clicked() {
             actions.push(Action::DismissSetupPassphrase);
         }
+        if widgets::secondary_button(ui, &palette, "  Copy  ").clicked() {
+            actions.push(Action::CopyText(passphrase));
+        }
     });
-    note(
-        ui,
-        &palette,
-        "Send the passphrase separately from the file, for example by phone or another chat.",
-    );
 }
 
 /// Whether applying `summary` changes the app registration while accounts

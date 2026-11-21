@@ -72,6 +72,10 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     let mut actions = Vec::new();
     // Esc in a settings field leaves the field, not settings.
     let typing = ctx.memory(|memory| memory.focused().is_some());
+    // Esc in a setup file dialog closes the dialog, not settings.
+    let setup_dialog = app.export.open
+        || app.export.passphrase.is_some()
+        || app.setup.stage != crate::app::SetupStage::Idle;
     ctx.input_mut(|input| {
         let command = Modifiers::COMMAND;
         if input.consume_key(command, Key::K) || input.consume_key(command, Key::F) {
@@ -133,6 +137,7 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             actions.push(Action::CloseOverlay);
         } else if app.settings_page.is_some()
             && !typing
+            && !setup_dialog
             && input.consume_key(Modifiers::NONE, Key::Escape)
         {
             actions.extend(settings_escape(app));

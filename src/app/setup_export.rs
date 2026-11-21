@@ -12,7 +12,6 @@ use crate::setup_file::SetupPayload;
 pub struct ExportForm {
     pub open: bool,
     pub org_label: String,
-    pub limit_tenant: bool,
     pub include_relay: bool,
     pub import_by: String,
     /// The generated passphrase, shown once.
@@ -22,20 +21,6 @@ pub struct ExportForm {
 }
 
 impl App {
-    /// The tenant ID to limit an export to: the tenant setting when it is a
-    /// GUID, otherwise the active account's.
-    pub fn export_tenant(&self) -> Option<String> {
-        let tenant = self.settings.tenant.trim();
-        if crate::settings::is_guid(tenant) {
-            return Some(tenant.to_owned());
-        }
-        self.id
-            .as_deref()
-            .and_then(|id| id.rsplit_once('.'))
-            .map(|(_, tid)| tid.to_owned())
-            .filter(|tid| !tid.is_empty())
-    }
-
     /// Runs one export form action.
     pub fn export_action(&mut self, action: Action) {
         match action {
@@ -44,7 +29,6 @@ impl App {
                     ExportForm {
                         open: true,
                         org_label: self.settings.org_label.clone().unwrap_or_default(),
-                        limit_tenant: true,
                         ..Default::default()
                     }
                 } else {
@@ -112,11 +96,6 @@ impl App {
             org_label: self.export.org_label.trim().to_owned(),
             client_id: self.settings.client_id.clone(),
             tenant: self.settings.tenant.clone(),
-            expected_tenant: if self.export.limit_tenant {
-                self.export_tenant()
-            } else {
-                None
-            },
             relay_url: if include_relay {
                 self.settings.relay_url.clone()
             } else {
@@ -168,21 +147,6 @@ mod tests {
         app.service = service;
         app.export_action(Action::OpenExportForm(true));
         (app, commands)
-    }
-
-    #[test]
-    fn export_tenant_falls_back_to_account() {
-        let (mut app, _) = app();
-        app.id = Some("o.t9".into());
-        assert_eq!(app.export_tenant().as_deref(), Some("t9"));
-        app.settings.tenant = "22222222-2222-2222-2222-222222222222".into();
-        assert_eq!(
-            app.export_tenant().as_deref(),
-            Some("22222222-2222-2222-2222-222222222222")
-        );
-        app.settings.tenant = "organizations".into();
-        app.id = None;
-        assert_eq!(app.export_tenant(), None);
     }
 
     #[test]

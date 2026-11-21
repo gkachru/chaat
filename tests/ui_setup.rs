@@ -184,7 +184,6 @@ fn summary(relay: bool) -> SetupSummary {
         org_label: "Acme".into(),
         client_id: GUID.into(),
         tenant: "22222222-2222-3333-4444-555555555555".into(),
-        expected_tenant: None,
         relay_url: relay.then(|| "https://relay.example.com".into()),
         relay_key_included: relay,
         created: "2026-11-21T10:00:00Z".into(),
@@ -282,10 +281,10 @@ fn create_disabled_without_label() {
     h.act(Action::OpenExportForm(true));
     h.app.export.org_label.clear();
     h.frames(2);
-    let disabled = h.text_look("Create file…").expect("button drawn");
+    let disabled = h.text_look("  Create file…  ").expect("button drawn");
     h.app.export.org_label = "Acme".into();
     h.frames(2);
-    let enabled = h.text_look("Create file…").expect("button drawn");
+    let enabled = h.text_look("  Create file…  ").expect("button drawn");
     assert_ne!(
         disabled, enabled,
         "the button looks disabled without a name"
@@ -293,7 +292,7 @@ fn create_disabled_without_label() {
     // A click on the disabled button does nothing.
     h.app.export.org_label.clear();
     h.frames(2);
-    let pos = h.text_pos("Create file…").unwrap();
+    let pos = h.text_pos("  Create file…  ").unwrap();
     h.click(pos);
     assert!(h.app.export.error.is_none() && !h.app.export.busy);
 }
@@ -425,4 +424,76 @@ fn import_overlay_survives_leaving_settings() {
     h.act(Action::ShowSettingsPage(SettingsPage::General));
     h.frames(2);
     assert!(h.has_text("Applying…"));
+}
+
+fn escape() -> egui::Event {
+    egui::Event::Key {
+        key: egui::Key::Escape,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    }
+}
+
+#[test]
+fn export_opens_in_a_dialog_and_escape_cancels_it() {
+    let mut h = Harness::advanced();
+    h.frames(2);
+    assert!(!h.has_text("Organization name"), "no inline form");
+    let pos = h.text_pos("Create a setup file…").expect("button drawn");
+    h.click(pos);
+    assert!(h.app.export.open);
+    for text in [
+        "Create a setup file",
+        "INCLUDED",
+        "Organization name",
+        "EXPIRY",
+    ] {
+        assert!(h.has_text(text), "{text} shown");
+    }
+    h.frame_with(vec![escape()], Vec::new());
+    h.frames(2);
+    assert!(!h.app.export.open, "Escape cancels the dialog");
+    assert_eq!(
+        h.app.settings_page,
+        Some(SettingsPage::Advanced),
+        "and leaves settings open"
+    );
+}
+
+#[test]
+fn export_passphrase_stays_until_done() {
+    let mut h = Harness::advanced();
+    h.act(Action::OpenExportForm(true));
+    h.app.export.passphrase = Some("one-two-three-four-five-six".into());
+    h.frames(2);
+    assert!(h.has_text("Setup file created"));
+    h.frame_with(vec![escape()], Vec::new());
+    h.frames(2);
+    assert!(h.app.export.passphrase.is_some(), "Escape keeps it");
+    let pos = h.text_pos("  Done  ").expect("Done drawn");
+    h.click(pos);
+    assert!(h.app.export.passphrase.is_none());
+    assert!(!h.app.export.open);
+}
+
+#[test]
+fn export_dialog_draws_in_both_themes_and_widths() {
+    for width in [480.0, 1280.0] {
+        for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+            let mut h = Harness::advanced();
+            h.size.x = width;
+            h.app.settings.theme = theme;
+            h.app.settings.relay_url = Some("https://relay.example.com".into());
+            h.app.settings.relay_key_set = true;
+            h.act(Action::OpenExportForm(true));
+            h.app.export.org_label = "Contoso".into();
+            h.frames(2);
+            assert!(h.has_text("They see \"Set up for Contoso\"."));
+            assert!(h.has_text("Include the push relay (address and access key)"));
+            let create = h.text_pos("  Create file…  ").expect("Create drawn");
+            assert!(create.x < width, "Create fits at {width}");
+        }
+    }
 }

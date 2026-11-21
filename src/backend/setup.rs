@@ -124,7 +124,6 @@ mod tests {
             org_label: "Contoso".into(),
             client_id: "11111111-1111-1111-1111-111111111111".into(),
             tenant: "organizations".into(),
-            expected_tenant: None,
             relay_url: key.map(|_| "https://relay.example.com".into()),
             relay_key: key.map(|k| Zeroizing::new(k.to_owned())),
             import_by: None,

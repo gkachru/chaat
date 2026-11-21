@@ -18,8 +18,6 @@ pub struct SetupPayload {
     pub client_id: String,
     pub tenant: String,
     #[serde(default)]
-    pub expected_tenant: Option<String>,
-    #[serde(default)]
     pub relay_url: Option<String>,
     #[serde(default)]
     pub relay_key: Option<Zeroizing<String>>,
@@ -43,7 +41,6 @@ pub struct SetupSummary {
     pub org_label: String,
     pub client_id: String,
     pub tenant: String,
-    pub expected_tenant: Option<String>,
     pub relay_url: Option<String>,
     pub relay_key_included: bool,
     pub created: String,
@@ -70,11 +67,6 @@ pub fn validate(p: &SetupPayload, today: Date) -> Result<SetupSummary, SetupErro
     if !(1..=80).contains(&label_len) || p.org_label.chars().any(char::is_control) {
         return Err(SetupError::Invalid);
     }
-    if let Some(tenant) = &p.expected_tenant
-        && !crate::settings::is_guid(tenant)
-    {
-        return Err(SetupError::Invalid);
-    }
     let relay_url = match &p.relay_url {
         Some(url) => Some(crate::realtime::normalize_relay(url).ok_or(SetupError::Invalid)?),
         None => None,
@@ -96,7 +88,6 @@ pub fn validate(p: &SetupPayload, today: Date) -> Result<SetupSummary, SetupErro
         org_label: p.org_label.clone(),
         client_id: p.client_id.clone(),
         tenant: p.tenant.clone(),
-        expected_tenant: p.expected_tenant.clone(),
         relay_url,
         relay_key_included: p.relay_key.is_some(),
         created,
@@ -117,7 +108,6 @@ mod tests {
             org_label: "Acme".into(),
             client_id: GUID.into(),
             tenant: "organizations".into(),
-            expected_tenant: None,
             relay_url: None,
             relay_key: None,
             import_by: None,
@@ -157,9 +147,6 @@ mod tests {
     fn bad_guid_invalid() {
         let mut p = payload();
         p.client_id = "nope".into();
-        assert_eq!(validate(&p, today()), Err(SetupError::Invalid));
-        let mut p = payload();
-        p.expected_tenant = Some("nope".into());
         assert_eq!(validate(&p, today()), Err(SetupError::Invalid));
     }
 
@@ -238,8 +225,9 @@ me"
 
     #[test]
     fn unknown_fields_ignored_and_camel_case() {
+        // Files from 0.2.0 may carry `expectedTenant`; it is ignored now.
         let json = format!(
-            r#"{{"format":1,"created":"c","orgLabel":"A","clientId":"{GUID}","tenant":"t","extra":5}}"#
+            r#"{{"format":1,"created":"c","orgLabel":"A","clientId":"{GUID}","tenant":"t","expectedTenant":"x","extra":5}}"#
         );
         let p: SetupPayload = serde_json::from_str(&json).unwrap();
         assert_eq!(p.org_label, "A");

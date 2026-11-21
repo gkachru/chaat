@@ -49,7 +49,6 @@ fn payload() -> SetupPayload {
         org_label: "Contoso".into(),
         client_id: "6731de76-14a6-49ae-97bc-6eba6914391e".into(),
         tenant: "contoso.onmicrosoft.com".into(),
-        expected_tenant: None,
         relay_url: Some("https://relay.example.com".into()),
         relay_key: None,
         import_by: None,

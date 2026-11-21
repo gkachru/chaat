@@ -73,19 +73,8 @@ impl App {
         }
     }
 
-    /// Called when `account` signed in, to finish a pending setup.
-    pub fn on_signed_in_setup(&mut self, account: &str) {
-        if let Some(expected) = self.settings.expected_tenant.clone()
-            && account
-                .rsplit_once('.')
-                .is_some_and(|(_, tid)| tid != expected)
-        {
-            let org = self.settings.org_label.clone().unwrap_or_default();
-            self.toast(
-                ToastKind::Error,
-                format!("This account is from a different organization than {org}'s setup file."),
-            );
-        }
+    /// Called when an account signed in, to finish a pending setup.
+    pub fn on_signed_in_setup(&mut self) {
         if let Some(org) = self.setup.welcome.take() {
             self.toast(ToastKind::Info, format!("Chaat is set up for {org}."));
         }
@@ -119,7 +108,6 @@ mod tests {
             org_label: "Contoso".into(),
             client_id: "11111111-1111-1111-1111-111111111111".into(),
             tenant: "organizations".into(),
-            expected_tenant: None,
             relay_url: None,
             relay_key_included: false,
             created: "2026-11-21".into(),
@@ -199,28 +187,14 @@ mod tests {
     }
 
     #[test]
-    fn tenant_mismatch_toast() {
-        let (mut app, _) = app();
-        app.settings.expected_tenant = Some("t1".into());
-        app.settings.org_label = Some("Contoso".into());
-        app.on_signed_in_setup("o.t1");
-        assert!(app.toasts.is_empty());
-        app.on_signed_in_setup("o.t2");
-        assert_eq!(
-            app.toasts.last().map(|t| t.text.as_str()),
-            Some("This account is from a different organization than Contoso's setup file.")
-        );
-    }
-
-    #[test]
     fn set_up_toast_once() {
         let (mut app, _) = app();
         app.setup.welcome = Some("Contoso".into());
-        app.on_signed_in_setup("o.t1");
+        app.on_signed_in_setup();
         assert_eq!(app.toasts.len(), 1);
         assert_eq!(app.toasts[0].text, "Chaat is set up for Contoso.");
         app.toasts.clear();
-        app.on_signed_in_setup("o.t1");
+        app.on_signed_in_setup();
         assert!(app.toasts.is_empty());
     }
 

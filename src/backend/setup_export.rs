@@ -71,7 +71,6 @@ mod tests {
             org_label: "Contoso".into(),
             client_id: GUID.into(),
             tenant: GUID.into(),
-            expected_tenant: None,
             relay_url: relay.then(|| "https://relay.example.com".into()),
             relay_key: Some(Zeroizing::new("payload-key-must-be-ignored".into())),
             import_by: None,

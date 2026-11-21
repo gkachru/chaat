@@ -86,6 +86,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     overlays::show(app, &ctx);
     if app.shows_workspace() && !app.demo {
         setup_settings::import_overlay(app, &ctx);
+        setup_settings::export_overlay(app, &ctx);
     }
     toasts(app, &ctx);
     rings(app, &ctx);

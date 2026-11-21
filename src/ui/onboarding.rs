@@ -359,9 +359,7 @@ const REVIEW_LABEL_WIDTH: f32 = 128.0;
 
 /// Who the file lets sign in, in the person's terms.
 fn who_can_sign_in(summary: &crate::setup_file::SetupSummary) -> String {
-    if summary.expected_tenant.is_some() {
-        format!("Only accounts from {}", summary.org_label)
-    } else if summary.tenant == "organizations" {
+    if summary.tenant == "organizations" {
         "Any work or school account".to_owned()
     } else {
         format!("Accounts in {}", summary.tenant)
