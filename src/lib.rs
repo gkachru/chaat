@@ -22,6 +22,7 @@ pub mod plugin;
 pub mod realtime;
 pub mod secrets;
 pub mod settings;
+pub mod setup_file;
 pub mod store;
 pub mod sync;
 pub mod theme;

@@ -113,6 +113,12 @@ futures-util = { version = "0.3", default-features = false, features = ["sink", 
 # One protected-store API, with only each target's native provider below.
 # Refresh tokens never go into ordinary state files.
 keyring-core = "1"
+# Setup file: Argon2id derives the key from the passphrase.
+argon2 = { version = "0.5", default-features = false, features = ["alloc", "zeroize"] }
+# Setup file: XChaCha20-Poly1305 encrypts and authenticates the payload.
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
+# Setup file: wipes keys, passphrases and the relay key from memory.
+zeroize = { version = "1", features = ["serde"] }
 
 # kill(2) on a plugin's process group when its run ends (src/plugin/host.rs).
 # Already in the lock file through tokio and others.
