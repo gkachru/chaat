@@ -24,3 +24,10 @@
 *.log
 /settings.json
 /window.ron
+
+# superlite: dependency, build and cache folders
+.superlite/
+Thumbs.db
+.idea/
+*.swp
+docs/plans/*.report.*
