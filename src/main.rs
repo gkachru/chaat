@@ -12,7 +12,7 @@ use chaat::paths::AppDirs;
 use chaat::settings::Settings;
 use clap::Parser;
 
-/// A fast, native client for Microsoft Teams.
+/// A fast, native app that works with Microsoft Teams.
 #[derive(Debug, Parser)]
 #[command(name = "chaat", version, about)]
 struct Cli {

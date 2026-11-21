@@ -4,7 +4,7 @@
     <img src="packaging/icons/chaat-wordmark.svg" width="160" alt="Chaat">
   </picture>
 </p>
-<p align="center">A fast, native client for Microsoft Teams chats, channels and meetings.<br>
+<p align="center">A fast, native app that works with Microsoft Teams chats, channels and meetings.<br>
 Rust and egui. No browser engine. Works with Microsoft Teams through Microsoft's official APIs.</p>
 
 > **Status: early preview (0.1).** The interface, sign-in, Graph integration

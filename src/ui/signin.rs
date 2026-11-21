@@ -22,15 +22,23 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             widgets::window_drag(ui, header, "signin-drag");
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 ui.vertical_centered(|ui| {
-                    ui.add_space((ui.available_height() * 0.10).max(48.0));
-                    ui.add(egui::Image::new(LOGO).fit_to_exact_size(vec2(160.0, 121.0)).tint(palette.text).alt_text("Chaat"));
+                    // Short windows (a 720 px laptop) get a smaller logo and
+                    // less padding, so the card stays above the fold.
+                    let short = ui.ctx().content_rect().height() < SHORT_WINDOW;
+                    let (top, logo) = if short {
+                        ((ui.available_height() * 0.05).max(24.0), vec2(112.0, 85.0))
+                    } else {
+                        ((ui.available_height() * 0.10).max(48.0), vec2(160.0, 121.0))
+                    };
+                    ui.add_space(top);
+                    ui.add(egui::Image::new(LOGO).fit_to_exact_size(logo).tint(palette.text).alt_text("Chaat"));
                     ui.add_space(10.0);
                     ui.label(
-                        egui::RichText::new("A fast, native client for Microsoft Teams chats, channels and meetings.")
+                        egui::RichText::new("A fast, native app that works with Microsoft Teams chats, channels and meetings.")
                             .font(theme::regular(14.0))
                             .color(palette.secondary),
                     );
-                    ui.add_space(22.0);
+                    ui.add_space(if short { 16.0 } else { 22.0 });
                     Frame::new()
                         .fill(palette.surface)
                         .stroke(Stroke::new(1.0, palette.outline))
@@ -53,18 +61,31 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                                 card(app, ui);
                             });
                         });
-                    ui.add_space(18.0);
                     // Adding a second account: the way back.
-                    if let Some(previous) = app.adding_from().map(|account| account.label())
-                        && widgets::secondary_button(ui, &palette, &format!("  Back to {previous}  ")).clicked()
-                    {
-                        app.actions.push(Action::CancelAddAccount);
+                    if let Some(previous) = app.adding_from().map(|account| account.label()) {
+                        ui.add_space(18.0);
+                        if widgets::secondary_button(ui, &palette, &format!("  Back to {previous}  ")).clicked() {
+                            app.actions.push(Action::CancelAddAccount);
+                        }
                     }
                     ui.add_space(24.0);
-                    ui.label(
-                        egui::RichText::new("Chaat is an independent project based on the open-source Wren app, not affiliated with Microsoft. It talks only to Microsoft's official APIs and keeps your data on this computer.")
-                            .font(theme::regular(12.0))
-                            .color(palette.dim),
+                    // A narrow centered column under the card, not a line
+                    // across the whole window.
+                    let footer_width = (ui.available_width() - 32.0).clamp(240.0, FOOTER_WIDTH);
+                    ui.allocate_ui_with_layout(
+                        vec2(footer_width, 0.0),
+                        egui::Layout::top_down(egui::Align::Center),
+                        |ui| {
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new("Chaat is an independent project, not affiliated with Microsoft. It talks only to Microsoft's official APIs and keeps your data on this computer.")
+                                        .font(theme::regular(12.0))
+                                        .color(palette.dim),
+                                )
+                                .halign(egui::Align::Center)
+                                .wrap(),
+                            );
+                        },
                     );
                     ui.add_space(24.0);
                 });
@@ -193,6 +214,14 @@ fn state_card(app: &mut App, ui: &mut egui::Ui) {
                     .font(theme::semibold(18.0))
                     .color(palette.text),
             );
+            // Under the heading, like the review's subtitle.
+            if let Some(org) = app.settings.org_label.clone().filter(|org| !org.is_empty()) {
+                ui.label(
+                    egui::RichText::new(format!("Set up for {org}"))
+                        .font(theme::regular(13.0))
+                        .color(palette.secondary),
+                );
+            }
             ui.label(
                 egui::RichText::new(text).color(if matches!(status, AuthStatus::Failed(_)) {
                     palette.danger
@@ -200,13 +229,6 @@ fn state_card(app: &mut App, ui: &mut egui::Ui) {
                     palette.secondary
                 }),
             );
-            if let Some(org) = app.settings.org_label.clone().filter(|org| !org.is_empty()) {
-                ui.label(
-                    egui::RichText::new(format!("Set up for {org}"))
-                        .font(theme::medium(13.0))
-                        .color(palette.text),
-                );
-            }
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 if widgets::primary_button(ui, &palette, "  Sign in with Microsoft  ").clicked() {
@@ -241,6 +263,12 @@ fn state_card(app: &mut App, ui: &mut egui::Ui) {
         }
     }
 }
+
+/// Below this window height the welcome screen uses a smaller logo.
+const SHORT_WINDOW: f32 = 800.0;
+
+/// The footer's widest line, about the card's body width.
+const FOOTER_WIDTH: f32 = 560.0;
 
 /// The rail's step names: short enough for one line each.
 const STEPS: [&str; 3] = ["Connect organization", "Sign in", "Real-time updates"];
@@ -301,11 +329,8 @@ fn rail(app: &App, ui: &mut egui::Ui, step: usize, relay: Option<bool>) {
     for (index, name) in STEPS.iter().enumerate() {
         let current = index == step;
         let done = index < step || (index == 2 && relay == Some(true));
-        let colour = if done || current {
-            palette.accent
-        } else {
-            palette.dim
-        };
+        // Only the check carries the accent: an accent name reads as a link.
+        let colour = if done { palette.secondary } else { palette.dim };
         ui.horizontal_top(|ui| {
             let state = if done {
                 "done"
@@ -390,7 +415,7 @@ fn connect_step(app: &mut App, ui: &mut egui::Ui) {
                 egui::RichText::new(if manual {
                     "Enter the details of your organization's app registration."
                 } else {
-                    "Use the setup file from your administrator, or enter the details yourself."
+                    "Use the setup file your administrator sent you."
                 })
                 .color(palette.secondary),
             );

@@ -43,17 +43,45 @@ pub fn drop_zone(app: &mut App, ui: &mut egui::Ui) {
     // The icon, two lines and the button take about 128 points; this leaves
     // about 20 above and below.
     let (rect, _) = ui.allocate_exact_size(vec2(width, 170.0), Sense::hover());
-    let (fill, stroke) = match hover {
-        Hover::Setup => (palette.surface_hover, Stroke::new(2.0, palette.accent)),
-        Hover::Other => (palette.surface, Stroke::new(2.0, palette.danger)),
-        Hover::None => (
-            palette.panel,
-            Stroke::new(1.0, palette.accent.gamma_multiply(0.55)),
-        ),
+    let fill = match hover {
+        Hover::Setup => palette.surface_hover,
+        Hover::Other => palette.surface,
+        Hover::None => palette.panel,
     };
     ui.painter().rect_filled(rect, CornerRadius::same(12), fill);
-    ui.painter()
-        .rect_stroke(rect, CornerRadius::same(12), stroke, StrokeKind::Inside);
+    match hover {
+        // A dashed outline says "drop here"; a solid one would read as a
+        // text field.
+        Hover::None => {
+            let outline = rounded_outline(rect.shrink(0.5), 12.0);
+            ui.painter().extend(egui::Shape::dashed_line(
+                &outline,
+                Stroke::new(1.0, palette.accent.gamma_multiply(0.7)),
+                6.0,
+                4.0,
+            ));
+        }
+        Hover::Setup | Hover::Other => {
+            let colour = if hover == Hover::Setup {
+                palette.accent
+            } else {
+                palette.danger
+            };
+            ui.painter().rect_stroke(
+                rect,
+                CornerRadius::same(12),
+                Stroke::new(2.0, colour),
+                StrokeKind::Inside,
+            );
+        }
+    }
+    // Keyboard start: with nothing focused, Enter opens the file chooser.
+    if hover == Hover::None
+        && ui.memory(|m| m.focused().is_none())
+        && ui.input(|i| i.key_pressed(egui::Key::Enter))
+    {
+        app.actions.push(Action::ChooseSetupFile);
+    }
     let text = match hover {
         Hover::None => "Drop your setup file here",
         Hover::Setup => "Release to import",
@@ -91,6 +119,30 @@ pub fn drop_zone(app: &mut App, ui: &mut egui::Ui) {
                 .color(palette.danger),
         );
     }
+}
+
+/// The closed outline of a rounded rectangle, for a dashed stroke.
+fn rounded_outline(rect: egui::Rect, radius: f32) -> Vec<egui::Pos2> {
+    use std::f32::consts::{FRAC_PI_2, PI};
+    let r = radius.min(rect.width() / 2.0).min(rect.height() / 2.0);
+    // Corner centres and the angle each quarter arc starts at, clockwise
+    // from the top-left in screen coordinates.
+    let corners = [
+        (egui::pos2(rect.right() - r, rect.top() + r), -FRAC_PI_2),
+        (egui::pos2(rect.right() - r, rect.bottom() - r), 0.0),
+        (egui::pos2(rect.left() + r, rect.bottom() - r), FRAC_PI_2),
+        (egui::pos2(rect.left() + r, rect.top() + r), PI),
+    ];
+    const STEPS: usize = 8;
+    let mut points = Vec::with_capacity(4 * (STEPS + 1) + 1);
+    for (centre, start) in corners {
+        for step in 0..=STEPS {
+            let angle = start + FRAC_PI_2 * step as f32 / STEPS as f32;
+            points.push(centre + r * egui::vec2(angle.cos(), angle.sin()));
+        }
+    }
+    points.push(points[0]);
+    points
 }
 
 /// The passphrase entry.
@@ -324,7 +376,23 @@ fn relay_host(url: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use super::relay_host;
+    use super::{relay_host, rounded_outline};
+
+    #[test]
+    fn outline_is_closed_and_stays_on_the_rect() {
+        let rect = egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(200.0, 100.0));
+        let points = rounded_outline(rect, 12.0);
+        assert_eq!(points.first(), points.last());
+        for point in &points {
+            assert!(rect.expand(0.01).contains(*point), "{point:?} outside");
+        }
+        // Each edge is touched: the outline goes all the way round.
+        let near = |a: f32, b: f32| (a - b).abs() < 0.01;
+        assert!(points.iter().any(|p| near(p.y, rect.top())));
+        assert!(points.iter().any(|p| near(p.x, rect.right())));
+        assert!(points.iter().any(|p| near(p.y, rect.bottom())));
+        assert!(points.iter().any(|p| near(p.x, rect.left())));
+    }
 
     #[test]
     fn host_only() {
