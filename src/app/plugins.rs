@@ -296,7 +296,9 @@ impl App {
     /// Starts and stops plugin hosts to match the settings: every enabled
     /// entry with a path runs; a changed path restarts that host only.
     pub(crate) fn sync_plugins(&mut self) {
-        if self.demo {
+        // Without the service backend a start goes nowhere, yet would count
+        // as started; `attach_service` syncs again once it is there.
+        if self.demo || self.service.is_detached() {
             return;
         }
         // A plugin whose add flow is not finished runs only while its setup

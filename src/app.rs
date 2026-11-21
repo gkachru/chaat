@@ -726,9 +726,15 @@ impl App {
                 .as_ref()
                 .and_then(|active| ids.iter().position(|id| id == active))
                 .unwrap_or(0);
-            app.sync_plugins();
         }
         app
+    }
+
+    /// Connects the service backend (plugins, updates, secrets) and starts
+    /// the plugins that are turned on.
+    pub fn attach_service(&mut self, service: Backend) {
+        self.service = service;
+        self.sync_plugins();
     }
 
     /// An app with one account slot on `backend` (tests).
@@ -3523,6 +3529,26 @@ mod tests {
             &ctx,
         );
         assert!(app.plugins["ca"].sign_in.is_empty());
+    }
+
+    #[test]
+    fn plugins_turned_on_start_once_the_service_is_attached() {
+        // At launch App::new syncs before main attaches the service backend.
+        let (mut app, _) = app();
+        assert!(app.service.is_detached());
+        app.settings.plugins.push(crate::settings::PluginEntry {
+            id: "pr".into(),
+            path: PathBuf::from("plugin.exe"),
+            enabled: true,
+            ..Default::default()
+        });
+        app.sync_plugins();
+        let (service, mut commands) = Backend::recording();
+        app.attach_service(service);
+        assert!(matches!(
+            commands.try_recv(),
+            Ok(Command::StartPlugin { id, .. }) if id == "pr"
+        ));
     }
 
     #[test]

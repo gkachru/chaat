@@ -76,7 +76,7 @@ fn main() -> eframe::Result<()> {
     fastframe_titlebar::set_enabled(settings.custom_titlebar);
     let geometry = settings.window;
     let mut app = App::new(dirs.clone(), settings, waker.clone(), false);
-    app.service = chaat::backend::Backend::spawn(dirs.clone(), waker.clone());
+    app.attach_service(chaat::backend::Backend::spawn(dirs.clone(), waker.clone()));
     app.update_receipt = launch.receipt;
     if let Some(error) = launch.error {
         app.toast(chaat::model::ToastKind::Error, error);
