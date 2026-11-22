@@ -3607,7 +3607,7 @@ fn plugins_page_draws_in_both_themes_narrow_and_wide() {
 fn plugin_text_is_quoted_under_chaats_line() {
     // On the list, Chaat's line comes before any plugin's name.
     let h = plugins_list_harness(900.0, ThemeChoice::Dark);
-    let intro = "Separate programs you add. Chaat sends each one only what you allow.";
+    let intro = "Separate programs you add. Each runs as you and can reach what you can; Chaat sends it only what you allow.";
     assert!(texts_in_order(&h, &[intro, "Ring alerts"]));
     let mut h = plugins_page_harness_for("demo-alerts");
     let painted = painted_texts(&h);
@@ -3801,7 +3801,7 @@ fn a_changed_file_offers_run_or_keep_off() {
             let mut h = plugins_settings_harness_for("demo-changed", width, theme.clone());
             let painted = painted_texts(&h);
             for text in [
-                "The plugin file changed since you added it. Run the new file only if you trust it.",
+                "The plugin file changed since you added it. Run the new file only if you trust it. It gets the settings and secrets you saved for this plugin, and asks again for anything else.",
                 "Run the new file",
                 "Keep it off",
                 "New file fingerprint: 3f9a1c07be52",
@@ -5123,7 +5123,7 @@ fn needs_you_callout_stacks_file_then_needs_then_setup() {
                 h,
                 &[
                     "NEEDS YOU",
-                    "The plugin file changed since you added it. Run the new file only if you trust it.",
+                    "The plugin file changed since you added it. Run the new file only if you trust it. It gets the settings and secrets you saved for this plugin, and asks again for anything else.",
                     "Plugin \u{201C}Status light\u{201D} asks for:",
                     "Fill in the settings marked Required.",
                     "STATUS",

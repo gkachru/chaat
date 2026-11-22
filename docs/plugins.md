@@ -162,13 +162,18 @@ the file before every start.
 - A plugin with no stored hash (just added, or from an earlier version of
   Chaat) is trusted on first use: Chaat records the hash and runs it.
 - If the hash differs, Chaat does not run the file. Settings shows "The plugin
-  file changed since you added it. Run the new file only if you trust it."
-  with **Run the new file** and **Keep it off**. A changed file waits for you and is not retried.
+  file changed since you added it. Run the new file only if you trust it.
+  It gets the settings and secrets you saved for this plugin, and asks again
+  for anything else." with **Run the new file** and **Keep it off**. A
+  changed file waits for you and is not retried.
 - **Run the new file** stores the new hash and clears every approval and
   refusal for that plugin, so the new program must ask for its data again.
+  Its option values and saved secrets stay and are sent to the new file.
 
 Chaat hashes the file and then starts it, so a file replaced in between
-would run unchecked. That gap is short and is accepted. Pinning notices a
+would run unchecked. That gap is short and is accepted. It matters only if
+someone else can write to the plugin's folder, so keep plugins in a folder
+only you can write to, not a shared or downloads folder. Pinning notices a
 replaced file; it does not tell you whether the original file was safe.
 
 ## Start, ready and capabilities
@@ -477,9 +482,16 @@ Four messages:
 
 Rules:
 
-- Chaat treats every body as untrusted: it checks the `clientState` it set
-  and fetches from Graph as it does for a relay. A forged body can only cause
-  a fetch. Chaat never logs bodies, channels or addresses.
+- Chaat treats every body as untrusted. The plugin sees the `clientState`,
+  so checking it proves little; Chaat handles bodies exactly as a relay's
+  (see [realtime.md](realtime.md)). It takes at most 20 chat notices from a
+  body, fetches chat messages for pushes within a budget (a burst of 20, then
+  2 a second; over it a chat waits until you look, while the chat list still
+  refreshes), acts on lifecycle notices only for subscriptions it holds,
+  reauthorizes a subscription at most once every 10 minutes, and keeps
+  backing off when a recreated subscription ends within 2 minutes. A forged
+  body can cause fetches within those limits and nothing else. Chaat never
+  logs bodies, channels or addresses.
 - Lines from the plugin follow the usual limits. A burst over them is
   dropped, and a dropped body means one missed fetch, made up the next time
   you look.

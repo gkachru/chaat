@@ -61,7 +61,7 @@ pub(super) fn list_view(app: &App, ui: &mut egui::Ui, actions: &mut Vec<Action>)
     note(
         ui,
         &palette,
-        "Separate programs you add. Chaat sends each one only what you allow.",
+        "Separate programs you add. Each runs as you and can reach what you can; Chaat sends it only what you allow.",
     );
     if app.settings.plugins.is_empty() {
         widgets::empty_state(

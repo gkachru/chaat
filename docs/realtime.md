@@ -97,11 +97,19 @@ How it works:
    posts each change. The relay forwards it over the WebSocket.
 5. Chaat checks the `clientState` secret and fetches the changed chat with the
    usual date-ranged request, plus the chat list for unread state and
-   notifications. A burst of changes within a second is one fetch.
+   notifications. A burst of changes within a second is one fetch. Whoever
+   forwards notifications sees the `clientState`, so Chaat also limits what
+   they cost: at most 20 chat notices per body, and chat message fetches
+   from pushes within a budget (a burst of 20, then 2 a second; over it a
+   chat waits until you look, while the chat list still refreshes).
 6. Chaat renews the subscription every 40 minutes, reauthorizes it when Graph
-   asks, recreates it when Graph removes it or the relay drops, and deletes
+   asks (at most once every 10 minutes per subscription), recreates it when
+   Graph removes it or the relay drops, and deletes
    it when push is turned off or Chaat exits, waiting up to 3 seconds for
-   Graph to confirm (all accounts at once) so quitting stays quick.
+   Graph to confirm (all accounts at once) so quitting stays quick. Lifecycle
+   notices count only for a subscription Chaat holds. After a failure Chaat
+   waits 5 seconds, doubling up to 5 minutes; only a session that stayed up
+   2 minutes starts the wait over.
 7. Chaat records its subscription ids in the account folder
    (`push-subscriptions.json`). A run that ends without deleting them (a
    crash, a killed process, Graph slower than 3 seconds) leaves them in
@@ -244,7 +252,8 @@ export CHAAT_RELAY_KEY="$(openssl rand -base64 32)"
   key" or "the relay did not accept the access key".
 - Graph's routes (`/graph`, `/lifecycle`) need no key: Graph cannot send one,
   and a forged notification can only make one client fetch from Graph again,
-  and only if the sender knows that client's random channel.
+  within the limits above, and only if the sender knows that client's random
+  channel.
 - To change the key, restart the relay with the new one and tell everyone;
   clients with the old key are refused until they update it.
 

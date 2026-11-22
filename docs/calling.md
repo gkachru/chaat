@@ -191,7 +191,7 @@ identical in the plugin's repository; tests on both sides check against it.
 | plugin → Chaat | `sign_in_required` | `method` (`device_code`; absent means the same), `verification_uri`, `user_code`, `account` and `username` (optional) |
 | plugin → Chaat | `signed_in` | `account`, `username` |
 | plugin → Chaat | `listening` | `account`, `username`; sent each time an account's connection comes up |
-| plugin → Chaat | `incoming_call` | `id`, `caller`, `caller_object_id`, `video`, `group`, `account`, `username`, `ring_timeout_secs`, `thread_id` (optional). A call ringing two accounts shows a card for each |
+| plugin → Chaat | `incoming_call` | `id`, `caller`, `caller_object_id`, `video`, `group`, `account`, `username`, `ring_timeout_secs`, `thread_id` (optional). `id` and `thread_id` are 1 to 200 characters with no spaces or control characters; a call without such an `id` is dropped, and a bad `thread_id` or a `caller_object_id` that is not letters, digits and hyphens (at most 64) is ignored. A call ringing two accounts shows a card for each |
 | plugin → Chaat | `error` | `message`, shown as an error notice; with `account`, the notice names it and the account is no longer shown as listening |
 
 `call_ended` is reserved for when a plugin can report it. Chaat passes a

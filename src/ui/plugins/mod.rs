@@ -115,7 +115,7 @@ fn file_changed_items(
         ui.add(
             egui::Label::new(
                 egui::RichText::new(
-                    "The plugin file changed since you added it. Run the new file only if you trust it.",
+                    "The plugin file changed since you added it. Run the new file only if you trust it. It gets the settings and secrets you saved for this plugin, and asks again for anything else.",
                 )
                 .font(theme::regular(13.0))
                 .color(palette.text),

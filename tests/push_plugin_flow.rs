@@ -415,3 +415,90 @@ async fn a_flood_of_bodies_is_bounded() {
     };
     assert_eq!(messages[0].body.to_plain(), "Pushed!");
 }
+
+fn lifecycle(client_state: &str, event: &str, subscription: &str) -> String {
+    serde_json::json!({"value": [{
+        "subscriptionId": subscription,
+        "clientState": client_state,
+        "lifecycleEvent": event,
+    }]})
+    .to_string()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn lifecycle_notices_count_only_for_held_subscriptions_and_are_limited() {
+    let mut f = fixture().await;
+    Mock::given(method("POST"))
+        .and(path("/v1.0/subscriptions/sub-1/reauthorize"))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(&f.server)
+        .await;
+    f.backend.send(Command::PushPlugin(Some(route(URL))));
+    f.live();
+    let state = f.posts().await[0]["clientState"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let subscribed = f.count("POST", "/v1.0/subscriptions").await;
+    // Someone else's subscription: neither reauthorized nor remade.
+    for event in ["reauthorizationRequired", "subscriptionRemoved"] {
+        f.backend
+            .send(Command::PushBody(lifecycle(&state, event, "sub-other")));
+    }
+    // Ours, again and again: reauthorized once.
+    for _ in 0..5 {
+        f.backend.send(Command::PushBody(lifecycle(
+            &state,
+            "reauthorizationRequired",
+            "sub-1",
+        )));
+    }
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(
+        f.count("POST", "/v1.0/subscriptions/sub-1/reauthorize")
+            .await,
+        1
+    );
+    assert_eq!(f.count("POST", "/v1.0/subscriptions").await, subscribed);
+    assert_eq!(f.count("DELETE", "/v1.0/subscriptions/sub-1").await, 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn chat_fetches_from_pushes_stay_within_the_budget() {
+    let mut f = fixture().await;
+    f.backend.send(Command::PushPlugin(Some(route(URL))));
+    f.live();
+    let state = f.posts().await[0]["clientState"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // Three bodies of 20 made-up chats each: 60 chats, a budget of 20 (plus
+    // the little it refills meanwhile).
+    for round in 0..3 {
+        let items: Vec<serde_json::Value> = (0..20)
+            .map(|i| {
+                serde_json::json!({
+                    "clientState": state,
+                    "resource": format!("chats('19:r{round}c{i}@thread.v2')/messages('1')"),
+                })
+            })
+            .collect();
+        f.backend.send(Command::PushBody(
+            serde_json::json!({ "value": items }).to_string(),
+        ));
+    }
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let fetched = f
+        .server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| {
+            r.method.as_str() == "GET"
+                && r.url.path().starts_with("/v1.0/chats/19:r")
+                && r.url.path().ends_with("/messages")
+        })
+        .count();
+    assert!((20..=26).contains(&fetched), "{fetched} fetches");
+}

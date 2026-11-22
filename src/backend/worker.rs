@@ -24,7 +24,7 @@ use crate::paths::AppDirs;
 use crate::realtime::{self, Notice, PushStatus};
 use crate::secrets::SecretStore;
 use crate::store::Store;
-use crate::sync::{Freshness, Resource, Trigger};
+use crate::sync::{Freshness, PushBudget, Resource, Trigger};
 
 /// How many messages of a conversation the cache hands over at once.
 const CACHED_MESSAGES: usize = 200;
@@ -123,6 +123,14 @@ const PUSH_CLEANUP: Duration = Duration::from_secs(3);
 
 /// Bodies a push plugin may have waiting for the push loop; more are dropped.
 const PUSH_BODY_QUEUE: usize = 64;
+
+/// A subscription is reauthorized at most this often, however many
+/// `reauthorizationRequired` notices arrive.
+const REAUTHORIZE_GAP: Duration = Duration::from_secs(10 * 60);
+
+/// A push session that stayed live this long was healthy: its end starts
+/// the retry wait over.
+const HEALTHY_PUSH_SESSION: Duration = Duration::from_secs(2 * 60);
 
 /// How long presence notices gather before one fetch for all of them.
 const PRESENCE_BATCH: Duration = Duration::from_millis(1500);
@@ -231,6 +239,8 @@ struct Worker {
     expired: Option<AccountRecord>,
     cancel_sign_in: Option<watch::Sender<bool>>,
     freshness: Freshness,
+    /// How many per-chat message fetches pushes may still cause.
+    push_budget: PushBudget,
     /// Conversations whose newest page was checked for a resent message
     /// since the account started; resends take turns.
     resend_checked: Arc<tokio::sync::Mutex<std::collections::HashSet<ConversationId>>>,
@@ -327,6 +337,7 @@ pub(super) async fn run(
         expired: None,
         cancel_sign_in: None,
         freshness: Freshness::default(),
+        push_budget: PushBudget::default(),
         resend_checked: Arc::default(),
         store: None,
         drafts: Arc::default(),
@@ -753,10 +764,19 @@ impl Worker {
             }
             Internal::Confirm(resource) => self.fetch(resource, Trigger::AfterAction),
             Internal::Pushed(chat) => {
-                self.fetch(
-                    Resource::Messages(ConversationId::Chat(chat)),
-                    Trigger::Push,
-                );
+                // Over the budget the chat's messages wait until the person
+                // looks; the list below still shows the change.
+                // A notice for a chat fetched under a second ago costs
+                // nothing: `fetch` would skip it anyway.
+                let now = Instant::now();
+                let resource = Resource::Messages(ConversationId::Chat(chat));
+                if self.freshness.due(&resource, Trigger::Push, now) {
+                    if self.push_budget.take(now) {
+                        self.fetch(resource, Trigger::Push);
+                    } else {
+                        log::debug!("push: over the fetch budget; a chat waits");
+                    }
+                }
                 self.fetch(Resource::Chats, Trigger::Push);
             }
             Internal::PushMissed => self.fetch(Resource::Chats, Trigger::Push),
@@ -3246,6 +3266,7 @@ async fn push_loop(
             .clone()
             .unwrap_or_else(|| auth::random_token(32));
         let client_state = auth::random_token(24);
+        let mut live_at: Option<Instant> = None;
         let failure = 'session: {
             let mut sink = None;
             let mut stream = None;
@@ -3310,9 +3331,10 @@ async fn push_loop(
             record_subscriptions(&leftovers, &subscriptions).await;
             let mut contacts_open = true;
             out.send(Event::Push(PushStatus::Live));
+            live_at = Some(Instant::now());
+            let mut reauthorized: HashMap<String, Instant> = HashMap::new();
             // A change may have happened while connecting.
             let _ = internal.send(Internal::PushMissed);
-            pause = Duration::from_secs(5);
             let mut renew = tokio::time::interval(renew_every);
             renew.tick().await;
             let mut keepalive = tokio::time::interval(Duration::from_secs(30));
@@ -3409,14 +3431,28 @@ async fn push_loop(
                                 Notice::Missed => {
                                     let _ = internal.send(Internal::PushMissed);
                                 }
-                                Notice::Reauthorize => {
-                                    for id in &subscriptions {
-                                        if graph.reauthorize_subscription(id).await.is_err() {
+                                // Lifecycle notices count only for a subscription
+                                // this session holds, and a reauthorization at
+                                // most once per `REAUTHORIZE_GAP`: whoever
+                                // forwards bodies knows `clientState`.
+                                Notice::Reauthorize(Some(id)) if subscriptions.contains(&id) => {
+                                    let now = Instant::now();
+                                    let recent = reauthorized
+                                        .get(&id)
+                                        .is_some_and(|at| now.saturating_duration_since(*at) < REAUTHORIZE_GAP);
+                                    if !recent {
+                                        reauthorized.insert(id.clone(), now);
+                                        if graph.reauthorize_subscription(&id).await.is_err() {
                                             recreate = true;
                                         }
                                     }
                                 }
-                                Notice::Removed => recreate = true,
+                                Notice::Removed(Some(id)) if subscriptions.contains(&id) => {
+                                    recreate = true;
+                                }
+                                Notice::Reauthorize(_) | Notice::Removed(_) => {
+                                    push_log!(debug, "lifecycle notice for a subscription not held; ignored");
+                                }
                             }
                         }
                         if recreate {
@@ -3443,6 +3479,13 @@ async fn push_loop(
         };
         if *stop.borrow() {
             return;
+        }
+        // Only a session that stayed up a while starts the wait over: one
+        // ended at once (say, by a `subscriptionRemoved` again and again)
+        // keeps backing off, so subscriptions are not remade every few
+        // seconds.
+        if live_at.is_some_and(|at| at.elapsed() >= HEALTHY_PUSH_SESSION) {
+            pause = Duration::from_secs(5);
         }
         push_log!(info, "{failure}; retrying in {pause:?}");
         out.send(Event::Push(PushStatus::Failed(failure)));

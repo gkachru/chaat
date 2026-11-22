@@ -214,14 +214,20 @@ pub enum Notice {
     /// Someone's presence changed: the person's own, or a contact's in the
     /// bulk presence subscription. `None` when Graph did not say whose.
     Presence(Option<String>),
-    /// Graph wants the subscription reauthorized (the token behind it is
-    /// about to lapse).
-    Reauthorize,
+    /// Graph wants this subscription reauthorized (the token behind it is
+    /// about to lapse). `None` when the notice named no subscription.
+    Reauthorize(Option<String>),
     /// Notifications were lost; refresh the chat list.
     Missed,
-    /// Graph removed the subscription; make a new one.
-    Removed,
+    /// Graph removed this subscription; make a new one. `None` when the
+    /// notice named no subscription.
+    Removed(Option<String>),
 }
+
+/// The most chat notices one notification body yields; the rest are
+/// dropped. Graph batches a few at a time; a forged body naming hundreds of
+/// chats must not become hundreds of fetches.
+pub const MAX_CHAT_NOTICES: usize = 20;
 
 #[derive(Deserialize)]
 struct Batch {
@@ -232,6 +238,8 @@ struct Batch {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Item {
+    #[serde(default)]
+    subscription_id: Option<String>,
     #[serde(default)]
     client_state: Option<String>,
     #[serde(default)]
@@ -249,21 +257,24 @@ struct ResourceData {
 }
 
 /// Reads a notification batch. Items whose `clientState` is not ours are
-/// dropped: the relay, or anyone who guessed the URL, cannot make Chaat do
-/// more than fetch, but foreign items are still ignored.
+/// dropped. The relay or a push plugin sees `clientState`, so a matching one
+/// proves little: the caller still checks lifecycle notices against the
+/// subscriptions it holds and limits what they cost. At most
+/// `MAX_CHAT_NOTICES` chat notices are kept.
 pub fn parse(body: &str, client_state: &str) -> Vec<Notice> {
     let Ok(batch) = serde_json::from_str::<Batch>(body) else {
         return Vec::new();
     };
     let mut notices = Vec::new();
+    let mut chats = 0;
     for item in batch.value {
         if item.client_state.as_deref() != Some(client_state) {
             continue;
         }
         let notice = match item.lifecycle_event.as_deref() {
-            Some("reauthorizationRequired") => Some(Notice::Reauthorize),
+            Some("reauthorizationRequired") => Some(Notice::Reauthorize(item.subscription_id)),
             Some("missed") => Some(Notice::Missed),
-            Some("subscriptionRemoved") => Some(Notice::Removed),
+            Some("subscriptionRemoved") => Some(Notice::Removed(item.subscription_id)),
             Some(_) => None,
             None => item.resource.as_deref().and_then(|resource| {
                 if is_presence(resource) {
@@ -281,6 +292,12 @@ pub fn parse(body: &str, client_state: &str) -> Vec<Notice> {
         if let Some(notice) = notice
             && !notices.contains(&notice)
         {
+            if matches!(notice, Notice::Chat(_)) {
+                if chats == MAX_CHAT_NOTICES {
+                    continue;
+                }
+                chats += 1;
+            }
             notices.push(notice);
         }
     }
@@ -500,8 +517,31 @@ mod tests {
             {"clientState":"ours","lifecycleEvent":"missed"},{"clientState":"ours","lifecycleEvent":"subscriptionRemoved"}]}"#;
         assert_eq!(
             parse(body, "ours"),
-            vec![Notice::Reauthorize, Notice::Missed, Notice::Removed]
+            vec![
+                Notice::Reauthorize(Some("s1".into())),
+                Notice::Missed,
+                Notice::Removed(None)
+            ]
         );
         assert!(parse("not json", "ours").is_empty());
+    }
+
+    #[test]
+    fn one_body_yields_at_most_the_chat_notice_limit() {
+        let items: Vec<String> = (0..MAX_CHAT_NOTICES + 30)
+            .map(|i| {
+                format!(r#"{{"clientState":"ours","resource":"chats('19:c{i}')/messages('1')"}}"#)
+            })
+            .chain([r#"{"clientState":"ours","lifecycleEvent":"missed"}"#.to_owned()])
+            .collect();
+        let body = format!(r#"{{"value":[{}]}}"#, items.join(","));
+        let notices = parse(&body, "ours");
+        let chats = notices
+            .iter()
+            .filter(|n| matches!(n, Notice::Chat(_)))
+            .count();
+        assert_eq!(chats, MAX_CHAT_NOTICES);
+        // Lifecycle notices after the cap still count.
+        assert!(notices.contains(&Notice::Missed));
     }
 }

@@ -80,6 +80,17 @@ pub enum PushEvent {
     Down { reason: Option<String> },
 }
 
+/// An identifier from a plugin (a call or thread id): 1 to 200 characters,
+/// no whitespace, control or invisible characters. Anything else is `None`.
+fn short_token(text: String) -> Option<String> {
+    let ok = !text.is_empty()
+        && text.chars().count() <= 200
+        && !text.chars().any(|c| {
+            c.is_whitespace() || c.is_control() || crate::plugin::protocol::is_invisible(c)
+        });
+    ok.then_some(text)
+}
+
 /// The push event for a plugin message, if it is a well-formed one.
 pub fn push_event(message: PluginMessage) -> Option<PushEvent> {
     match message {
@@ -145,14 +156,15 @@ fn message_event(message: PluginMessage) -> Option<PluginEvent> {
             username,
             ring_timeout_secs,
         } => Some(PluginEvent::IncomingCall(RingAlert {
-            id,
+            // A call without a usable id is dropped.
+            id: short_token(id)?,
             caller: caller
                 .and_then(|name| plain_text(&name, 100))
                 .unwrap_or_else(|| "Unknown caller".to_owned()),
-            caller_object_id: caller_object_id.filter(|id| !id.is_empty()),
+            caller_object_id: caller_object_id.filter(|id| crate::realtime::is_user_id(id)),
             video,
             group,
-            thread_id,
+            thread_id: thread_id.and_then(short_token),
             account: account.as_deref().and_then(account_id),
             username: username.and_then(|name| plain_text(&name, 100)),
             ring_timeout: Some(ring_timeout(ring_timeout_secs)),
@@ -355,6 +367,31 @@ mod tests {
         };
         assert_eq!(alert.caller, "Grace Hopper");
         assert_eq!(alert.ring_timeout, Some(std::time::Duration::from_secs(10)));
+    }
+
+    #[test]
+    fn ring_ids_must_be_short_plain_tokens() {
+        let ring = |id: &str, object: &str, thread: &str| {
+            event(HostEvent::Message(parsed(json!({
+                "v": 1, "type": "incoming_call", "id": id,
+                "caller_object_id": object, "thread_id": thread
+            }))))
+        };
+        let Some(PluginEvent::IncomingCall(alert)) = ring("c1", "8c1e-42ab", "19:group@thread.v2")
+        else {
+            panic!("ring");
+        };
+        assert_eq!(alert.caller_object_id.as_deref(), Some("8c1e-42ab"));
+        assert_eq!(alert.thread_id.as_deref(), Some("19:group@thread.v2"));
+        let long = "x".repeat(201);
+        for bad in ["", "a b", "c\u{200B}1", long.as_str()] {
+            assert_eq!(ring(bad, "o2", "19:t"), None, "{bad:?}");
+        }
+        let Some(PluginEvent::IncomingCall(alert)) = ring("c1", "o'2", long.as_str()) else {
+            panic!("ring");
+        };
+        assert_eq!(alert.caller_object_id, None);
+        assert_eq!(alert.thread_id, None);
     }
 
     #[test]
