@@ -31,6 +31,8 @@ use crate::theme::Palette;
 mod calls;
 mod chat_actions;
 mod history;
+mod notify;
+use notify::NoticeItem;
 mod pins;
 mod plugins;
 mod push;
@@ -643,6 +645,18 @@ pub struct App {
     settings_dirty: bool,
     pub waker: Waker,
     pub demo: bool,
+    /// Where notifications are shown (recorded in the demo).
+    pub desktop: crate::notify::Desktop,
+    urgent: crate::notify::schedule::UrgentRepeats,
+    seen: crate::notify::schedule::Seen,
+    /// The newest message time already toasted, per account and conversation.
+    notified_newest: HashMap<(String, String), i64>,
+    /// Reminders snoozed: meeting id and when to show again.
+    snoozed: Vec<(String, i64)>,
+    /// Meeting chats the person took part in this run.
+    participated: HashSet<String>,
+    /// For requesting taskbar attention from notification code.
+    notify_ctx: Option<egui::Context>,
 
     pub accounts: Vec<Account>,
     pub active: usize,
@@ -833,6 +847,17 @@ impl App {
             dirs,
             settings,
             settings_dirty: false,
+            desktop: if demo {
+                crate::notify::Desktop::recording()
+            } else {
+                crate::notify::Desktop::new(waker.clone())
+            },
+            urgent: Default::default(),
+            seen: Default::default(),
+            notified_newest: Default::default(),
+            snoozed: Vec::new(),
+            participated: HashSet::new(),
+            notify_ctx: None,
             waker,
             demo,
             accounts: Vec::new(),
@@ -1131,7 +1156,9 @@ impl App {
         self.retire_duplicates();
         self.handle_tray();
         self.handle_requests();
+        self.handle_clicks();
         self.remind(ctx);
+        self.tick_urgent(ctx);
         self.apply_actions(ctx);
         self.save_settings();
     }
@@ -1239,49 +1266,13 @@ impl App {
         }
     }
 
-    /// Meeting reminders from the cached calendars: no network involved.
-    fn remind(&mut self, ctx: &egui::Context) {
-        if !self.settings.notifications {
-            return;
-        }
-        let now = crate::time::now();
-        let lead = 5 * 60 * 1000;
-        let mut next: Option<i64> = None;
-        let demo = self.demo;
-        for account in &mut self.accounts {
-            let mut due = Vec::new();
-            for meeting in &account.meetings {
-                if meeting.cancelled || meeting.all_day || account.reminded.contains(&meeting.id) {
-                    continue;
-                }
-                let at = meeting.start - lead;
-                if at <= now && meeting.start > now - 60_000 {
-                    due.push(meeting.clone());
-                } else if at > now {
-                    next = Some(next.map_or(at, |n| n.min(at)));
-                }
-            }
-            for meeting in due {
-                account.reminded.insert(meeting.id.clone());
-                if !demo {
-                    crate::notify::show(
-                        &meeting.subject,
-                        &format!("Starts {}", crate::time::until_label(meeting.start, now)),
-                    );
-                }
-            }
-        }
-        if let Some(next) = next {
-            ctx.request_repaint_after(Duration::from_millis(
-                (next - now).clamp(1_000, 3_600_000) as u64
-            ));
-        }
-    }
-
     // -- Events ------------------------------------------------------------------
 
     /// Applies one event to the account at `self.active`.
     pub fn handle(&mut self, event: Event, ctx: &egui::Context) {
+        if self.notify_ctx.is_none() {
+            self.notify_ctx = Some(ctx.clone());
+        }
         match event {
             Event::Update(event) => match event {
                 crate::updates::Event::Status(status) => {
@@ -1424,7 +1415,14 @@ impl App {
                     message.body = html::RichText::default();
                 }
             }
-            Event::Presence(list) => self.presence.extend(list),
+            Event::Presence(list) => {
+                let before = (!self.settings.notify.follow_available.is_empty())
+                    .then(|| self.presence.clone());
+                self.presence.extend(list);
+                if let Some(before) = before {
+                    self.observe_presence_for_follow(&before);
+                }
+            }
             Event::MyPresence(presence) => {
                 let me = self.me().to_owned();
                 if !me.is_empty() {
@@ -1731,8 +1729,8 @@ impl App {
         self.keep_local_chat_flags(&mut chats);
         chats.sort_by_key(Chat::list_order);
         let me = self.me().to_owned();
+        let mut notices = Vec::new();
         if !cached && !self.chats.is_empty() {
-            let mut notices = Vec::new();
             for chat in &chats {
                 let Some(preview) = &chat.preview else {
                     continue;
@@ -1740,23 +1738,19 @@ impl App {
                 let previous = self.chat(&chat.id).and_then(|c| c.preview.as_ref());
                 let new = previous
                     .is_none_or(|p| p.message_id != preview.message_id && preview.at > p.at);
-                let looking = !self.hidden
-                    && self.window_focused
-                    && self.open == Some(ConversationId::Chat(chat.id.clone()));
-                if new
-                    && !looking
-                    && preview.author_id.as_deref() != Some(me.as_str())
-                    && !preview.deleted
-                {
+                if new && preview.author_id.as_deref() != Some(me.as_str()) && !preview.deleted {
                     notices.push((
-                        chat.title(&me),
-                        preview.author.clone(),
-                        preview.text.clone(),
+                        chat.id.clone(),
+                        NoticeItem {
+                            message: preview.message_id.clone(),
+                            author: preview.author.clone(),
+                            text: preview.text.clone(),
+                            mentions_me: false,
+                            urgent: false,
+                            created: preview.at,
+                        },
                     ));
                 }
-            }
-            for (title, author, text) in notices {
-                self.notify_message(&title, author.as_deref(), &text);
             }
         }
         // Read state Chaat set locally survives a cached list.
@@ -1768,23 +1762,10 @@ impl App {
             }
         }
         self.chats = chats;
-    }
-
-    fn notify_message(&self, title: &str, author: Option<&str>, text: &str) {
-        if !self.settings.notifications || self.demo {
-            return;
+        // One toast per chat; the kind and title come from the new list.
+        for (chat, item) in notices {
+            self.notify_batch(&ConversationId::Chat(chat), vec![item]);
         }
-        let body = match author {
-            Some(author) if !title.contains(author) => format!("{author}: {text}"),
-            _ => text.to_owned(),
-        };
-        // With several accounts, say which one the message is for.
-        let title = if self.accounts.len() > 1 {
-            format!("{title} · {}", self.username())
-        } else {
-            title.to_owned()
-        };
-        crate::notify::show(&title, &body);
     }
 
     fn on_messages(
@@ -1814,11 +1795,18 @@ impl App {
             .filter(|m| m.delivery == Delivery::Sent)
             .map(|m| m.created)
             .max();
-        let incoming_new: Vec<(String, String)> = messages
+        let incoming_new: Vec<NoticeItem> = messages
             .iter()
             .filter(|m| !m.system && !m.deleted && !m.is_from(&me))
             .filter(|m| newest_before.is_some_and(|newest| m.created > newest))
-            .map(|m| (m.author.clone(), m.body.summary(140)))
+            .map(|m| NoticeItem {
+                message: m.id.clone(),
+                author: Some(m.author.clone()),
+                text: m.body.summary(140),
+                mentions_me: m.mentions(&me),
+                urgent: m.urgent,
+                created: m.created,
+            })
             .collect();
         if merge == Merge::Older && !messages.is_empty() {
             entry.restore_history_anchor = true;
@@ -1834,11 +1822,8 @@ impl App {
         if !cached {
             entry.fresh = true;
         }
-        if !cached && !(open && focused) {
-            let title = self.title_of(&conversation);
-            for (author, text) in incoming_new.iter().take(3) {
-                self.notify_message(&title, Some(author), text);
-            }
+        if !cached && !incoming_new.is_empty() {
+            self.notify_batch(&conversation, incoming_new);
         }
         // A message that arrives while Chaat is behind another window stays
         // unread, so Teams keeps it unread on other devices too. Coming back
@@ -2184,6 +2169,12 @@ impl App {
         if self.hidden || self.keeps_unread(chat) {
             return;
         }
+        let account = self.id.clone().unwrap_or_default();
+        self.urgent.stop(
+            &account,
+            &ConversationId::Chat(chat.to_owned()),
+            crate::time::now(),
+        );
         let me = self.me().to_owned();
         let demo = self.demo;
         let Some(entry) = self.chats.iter_mut().find(|c| c.id == chat) else {
@@ -2915,6 +2906,11 @@ impl App {
                 self.settings.theme = choice;
                 self.mark_settings_dirty();
             }
+            Action::SetNotify(settings) => self.set_notify(settings),
+            Action::MuteChat(chat, muted) => self.mute_chat(chat, muted),
+            Action::FollowAvailable { user, name, on } => self.follow_available(user, name, on),
+            Action::PauseNotifications(choice) => self.pause_notifications(choice),
+            Action::TestNotification => self.send_test_notification(),
             Action::SetNotifications(on) => {
                 self.settings.notifications = on;
                 self.mark_settings_dirty();
@@ -3092,6 +3088,12 @@ impl App {
         self.fetch(Resource::Messages(conversation.clone()), Trigger::Opened);
         if let ConversationId::Chat(chat) = &conversation {
             self.open_pins(chat);
+            // Opening the chat ends its urgent repeats.
+            if !self.hidden {
+                let account = self.id.clone().unwrap_or_default();
+                self.urgent
+                    .stop(&account, &conversation, crate::time::now());
+            }
             // A chat marked unread tells Graph it is read again.
             self.mark_chat_read(chat.clone());
             let me = self.me().to_owned();

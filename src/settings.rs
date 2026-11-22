@@ -90,6 +90,8 @@ pub struct Settings {
     pub tenant: String,
     pub theme: ThemeChoice,
     pub notifications: bool,
+    /// What notifies, and when (see docs/notifications.md).
+    pub notify: crate::notify::rules::NotifySettings,
     /// Keep syncing in the tray when the window closes.
     pub keep_running: bool,
     /// The interface zoom.
@@ -189,6 +191,7 @@ impl Default for Settings {
             tenant: "organizations".into(),
             theme: ThemeChoice::System,
             notifications: true,
+            notify: Default::default(),
             // Off by default: without push notifications a hidden Chaat
             // cannot learn about new messages (docs/realtime.md).
             keep_running: false,
@@ -339,6 +342,32 @@ pub fn is_guid(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn old_settings_file_without_notify_gets_defaults() {
+        let settings: super::Settings = serde_json::from_str(r#"{"notifications": true}"#).unwrap();
+        assert_eq!(
+            settings.notify,
+            crate::notify::rules::NotifySettings::default()
+        );
+        assert!(settings.notify.quiet_when_dnd);
+    }
+
+    #[test]
+    fn notify_settings_round_trip() {
+        let mut notify = crate::notify::rules::NotifySettings::default();
+        notify.muted_chats.insert("19:a@thread.v2".into());
+        notify
+            .follow_available
+            .insert("u-1".into(), "Ada Lovelace".into());
+        notify.paused_until = Some(42);
+        let json = serde_json::to_string(&notify).unwrap();
+        let back: crate::notify::rules::NotifySettings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, notify);
+        let partial: crate::notify::rules::NotifySettings =
+            serde_json::from_str(r#"{"flash": false}"#).unwrap();
+        assert!(!partial.flash && partial.preview);
+    }
+
     #[test]
     fn old_settings_file_loads() {
         let settings: super::Settings = serde_json::from_str("{}").unwrap();

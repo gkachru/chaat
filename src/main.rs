@@ -70,6 +70,7 @@ fn main() -> eframe::Result<()> {
         .init()
         .map_err(|e| eframe::Error::AppCreation(e.into()))?;
 
+    chaat::notify::register_identity(&dirs.data);
     let settings = Settings::load(&dirs.settings_file());
     // Windows and Linux: Chaat's own title bar unless the person turned it off.
     fastframe_titlebar::init();

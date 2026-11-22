@@ -47,7 +47,8 @@ the rename, when the app still had a demo mode:
 | Calendar, meeting reminders, Join | ✅ Implemented |
 | Calls and meetings | ✅ In Teams on the web, in its own Edge or Chrome window beside Chaat, with the meeting chat and a call bar in Chaat; free, since the call runs in Microsoft's client ([how](docs/calling.md)) |
 | Presence, photos | ✅ Implemented |
-| Light, dark and system themes, 8 palettes, keyboard shortcuts, tray, notifications | ✅ Implemented |
+| Light, dark and system themes, 8 palettes, keyboard shortcuts, tray | ✅ Implemented |
+| Notifications: mentions-only, Do not disturb, pause, mute, urgent repeats, reminders with Join and Snooze | ✅ Implemented; verified on Windows ([rules](docs/notifications.md)) |
 | App updates | ✅ Daily checks and verified downloads from GitHub releases; restart when ready ([details](docs/updates.md)) |
 | Real-time updates | ✅ On open, focus and refresh. ✅ Push through a self-hostable `chaat-relay`, or through a push relay plugin with a `cloudflared` tunnel instead of a hosted relay, since Microsoft forbids polling ([why](docs/realtime.md)) |
 | Multiple accounts, setting your availability and status message | ✅ Implemented |

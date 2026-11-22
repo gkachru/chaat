@@ -44,7 +44,7 @@ Status as of Chaat 0.1 (unreleased).
 | Start a new chat | Works | ⌘N or the compose button: search your organisation's directory (User.ReadBasic.All), pick one or more people, optionally name a group. `POST /chats` with Chat.Create, requested on first use. An existing 1:1 chat opens instead of a new one |
 | People panel in group and meeting chats: see members, add people (with or without chat history), leave | Works, leaving needs admin consent | People-count button in the header. Members with presence and, when Graph reports one, what they are doing (in a call, in a meeting, presenting). Add people one at a time with `POST /chats/{id}/members` (Chat.ReadWrite, already granted), either without chat history or with all of it. Leave uses `DELETE /chats/{id}/members/{membership-id}` with ChatMember.ReadWrite, requested on first use and admin-approved in most tenants. Until it is approved, Chaat explains and offers "Request access" and "Open in Teams". The full member list is fetched when the panel opens, since chat lists show at most 25 members |
 | Real-time updates | Works by default on intent; push works with a relay | Fetch on open, focus and refresh (Microsoft forbids background polling). With a self-hosted `chaat-relay` (or an optional push plugin that receives the notifications through its own tunnel, tested with fakes only), Graph change notifications push new messages and presence changes. See [realtime.md](realtime.md). When Microsoft can't be reached, a dim offline marker in the sidebar header replaces error pop-ups until a fetch gets through; reads are retried once after a reset connection |
-| New-message notifications | Partial | Whenever a fetch finds new messages in other chats. With the relay, also while Chaat runs in the background |
+| New-message notifications | Works, with limits | One toast per chat when a fetch or push update finds new messages. Rules for Do not disturb, calls, mentions-only group and meeting chats, local mute (not synced with Teams), pause, urgent repeats and click to open. Chat-list notices carry no mentions or importance, and Teams' own mute settings are not readable. With the relay or a push plugin, also while Chaat runs in the background. See [notifications.md](notifications.md) |
 
 ## Teams and channels
 
@@ -89,7 +89,7 @@ Status as of Chaat 0.1 (unreleased).
 | Integrated title bar | Works on Windows; compiled only on Linux | Minimize, maximize and close drawn in Chaat's header, with drag, double-click to maximize and edge resizing (fastframe-titlebar). On by default; "Use Chaat's own title bar" in Settings switches back to the system frame. macOS keeps its native traffic lights |
 | Keyboard shortcuts, ⌘K switcher | Works | ⌘/ lists them |
 | Tray / menu-bar item, keep running | Works | Off by default; with a self-hosted relay, push notifications continue while the window is closed |
-| Desktop notifications | Works | notify-rust |
+| Desktop notifications | Works on Windows; compiled only on Linux and macOS | notify-rust toasts with Join and Snooze on meeting reminders, a taskbar flash, and "Notify when available" (needs push). Tested headless and on Windows only. See [notifications.md](notifications.md) |
 | Single running instance | Works | fastframe-instance |
 | Performance overlay | Works | ⌘⇧P |
 | Personal Microsoft accounts / Teams (free) | Not possible | Graph's Teams APIs support work and school accounts only |

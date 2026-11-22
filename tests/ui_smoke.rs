@@ -7163,3 +7163,78 @@ fn pin_banner_shows_the_message_when_there_is_little_room() {
         }
     }
 }
+
+#[test]
+fn notifications_page_both_themes_narrow_and_wide() {
+    for width in [480.0, 1280.0] {
+        for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+            let mut h = Harness::new();
+            h.size.x = width;
+            h.app.settings.theme = theme;
+            h.act(Action::ShowSettingsPage(SettingsPage::Notifications));
+            assert!(h.frames(2) > 20, "draws at {width}");
+            let painted = painted_texts(&h);
+            assert!(
+                painted
+                    .iter()
+                    .any(|t| t == SettingsPage::Notifications.label())
+            );
+            assert!(
+                !painted.iter().any(|t| t.starts_with("Paused until")),
+                "not paused at {width}"
+            );
+
+            // Paused, with one followed person.
+            h.app.settings.notify.paused_until = Some(chaat::time::now() + 3_600_000);
+            h.app
+                .settings
+                .notify
+                .follow_available
+                .insert("u-ada".into(), "Ada Lovelace".into());
+            h.frames(3);
+            let painted = painted_texts(&h);
+            assert!(
+                painted.iter().any(|t| t.starts_with("Paused until")),
+                "paused label at {width}: {painted:?}"
+            );
+            assert!(
+                painted.iter().any(|t| t == "Ada Lovelace"),
+                "followed person at {width}"
+            );
+        }
+    }
+}
+
+#[test]
+fn chat_menu_has_mute() {
+    for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+        for width in CHAT_ACTION_WIDTHS {
+            let mut h = themed(&theme, width);
+            let row = leftmost_text(&h, "Katherine Johnson").expect("the row is listed");
+            right_click(&mut h, row);
+            assert!(
+                has_text(&h, "Mute notifications"),
+                "the menu offers Mute ({theme:?}, {width})"
+            );
+        }
+    }
+}
+
+#[test]
+fn account_menu_has_pause() {
+    for width in [480.0, 720.0, 1280.0] {
+        for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+            let mut h = Harness::new();
+            h.size.x = width;
+            h.app.settings.theme = theme;
+            h.app.open_account_menu = true;
+            h.frames(3);
+            assert!(
+                painted_texts(&h)
+                    .iter()
+                    .any(|t| t == "Pause notifications for 1 hour"),
+                "the account menu offers Pause at {width}"
+            );
+        }
+    }
+}

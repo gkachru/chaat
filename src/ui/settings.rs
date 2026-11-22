@@ -35,7 +35,8 @@ fn icon(page: SettingsPage) -> Icon {
         SettingsPage::General => Icon::Settings,
         SettingsPage::Appearance => Icon::Sun,
         SettingsPage::Calls => Icon::Phone,
-        SettingsPage::Push => Icon::Bell,
+        SettingsPage::Notifications => Icon::Bell,
+        SettingsPage::Push => Icon::Refresh,
         SettingsPage::Shortcuts => Icon::Keyboard,
         SettingsPage::Plugins => Icon::Settings,
         SettingsPage::Advanced => Icon::Lock,
@@ -241,6 +242,7 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
                                 SettingsPage::Account => account(app, ui, &mut actions),
                                 SettingsPage::OutOfOffice => out_of_office(app, ui, &mut actions),
                                 SettingsPage::General => general(app, ui, &mut actions),
+                                SettingsPage::Notifications => notifications(app, ui, &mut actions),
                                 SettingsPage::Appearance => appearance(app, ui, &mut actions),
                                 SettingsPage::Calls => calls(app, ui, &mut actions),
                                 SettingsPage::Push => push(app, ui, &mut actions),
@@ -554,6 +556,150 @@ fn out_of_office(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
     note(ui, &palette, state);
 }
 
+fn notifications(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+    use crate::notify::rules::{GroupAlerts, MeetingAlerts};
+    use crate::notify::schedule::PauseFor;
+
+    let palette = app.palette;
+    let mut notify = app.settings.notify.clone();
+
+    group(ui, &palette, "Notifications");
+    let mut on = app.settings.notifications;
+    if ui
+        .checkbox_hand(
+            &mut on,
+            "Desktop notifications for new messages and meeting reminders",
+        )
+        .changed()
+    {
+        actions.push(Action::SetNotifications(on));
+    }
+    ui.checkbox_hand(&mut notify.preview, "Show message preview");
+    ui.checkbox_hand(&mut notify.flash, "Flash the taskbar");
+    if ui.button("Send test notification").clicked() {
+        actions.push(Action::TestNotification);
+    }
+
+    group(ui, &palette, "Pause");
+    let now = crate::time::now();
+    if crate::notify::schedule::is_paused(notify.paused_until, now) {
+        let until = notify
+            .paused_until
+            .map(crate::time::clock)
+            .unwrap_or_default();
+        note(ui, &palette, format!("Paused until {until}."));
+        if ui.button("Resume").clicked() {
+            actions.push(Action::PauseNotifications(None));
+        }
+    } else {
+        note(ui, &palette, "Silence notifications for a while.");
+        ui.horizontal_wrapped(|ui| {
+            for (label, choice) in [
+                ("1 hour", PauseFor::OneHour),
+                ("2 hours", PauseFor::TwoHours),
+                ("Until tomorrow", PauseFor::UntilTomorrow),
+            ] {
+                if ui.button(label).clicked() {
+                    actions.push(Action::PauseNotifications(Some(choice)));
+                }
+            }
+        });
+    }
+
+    group(ui, &palette, "When to stay quiet");
+    ui.checkbox_hand(&mut notify.quiet_when_dnd, "Do not disturb");
+    ui.checkbox_hand(&mut notify.quiet_in_calls, "During calls and meetings");
+    note(
+        ui,
+        &palette,
+        "Urgent messages still get through while you are quiet.",
+    );
+
+    group(ui, &palette, "Chats");
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Group chats").color(palette.secondary));
+        egui::ComboBox::from_id_salt("notify-group-chats")
+            .selected_text(match notify.group_chats {
+                GroupAlerts::All => "All messages",
+                GroupAlerts::Mentions => "Mentions only",
+            })
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut notify.group_chats, GroupAlerts::All, "All messages");
+                ui.selectable_value(
+                    &mut notify.group_chats,
+                    GroupAlerts::Mentions,
+                    "Mentions only",
+                );
+            })
+            .response
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+    });
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Meeting chats").color(palette.secondary));
+        egui::ComboBox::from_id_salt("notify-meeting-chats")
+            .selected_text(match notify.meeting_chats {
+                MeetingAlerts::All => "All messages",
+                MeetingAlerts::AfterParticipating => "After I take part",
+                MeetingAlerts::Mentions => "Mentions only",
+            })
+            .show_ui(ui, |ui| {
+                ui.selectable_value(
+                    &mut notify.meeting_chats,
+                    MeetingAlerts::All,
+                    "All messages",
+                );
+                ui.selectable_value(
+                    &mut notify.meeting_chats,
+                    MeetingAlerts::AfterParticipating,
+                    "After I take part",
+                );
+                ui.selectable_value(
+                    &mut notify.meeting_chats,
+                    MeetingAlerts::Mentions,
+                    "Mentions only",
+                );
+            })
+            .response
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+    });
+    ui.checkbox_hand(
+        &mut notify.urgent_repeat,
+        "Repeat urgent messages until read",
+    );
+
+    group(ui, &palette, "People");
+    if notify.follow_available.is_empty() {
+        note(
+            ui,
+            &palette,
+            "Right-click a one-on-one chat and choose Notify when available to be told when that person comes online.",
+        );
+    }
+    for (user, name) in &notify.follow_available {
+        ui.horizontal(|ui| {
+            ui.label(name);
+            if ui.link("Turn off").clicked() {
+                actions.push(Action::FollowAvailable {
+                    user: user.clone(),
+                    name: name.clone(),
+                    on: false,
+                });
+            }
+        });
+    }
+    if !matches!(app.push, crate::realtime::PushStatus::Live) {
+        note(
+            ui,
+            &palette,
+            "Notify when available needs push updates. Set them up under Push updates.",
+        );
+    }
+
+    if notify != app.settings.notify {
+        actions.push(Action::SetNotify(notify));
+    }
+}
+
 fn general(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
     let palette = app.palette;
     group(ui, &palette, "Window");
@@ -575,18 +721,6 @@ fn general(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         .changed()
     {
         actions.push(Action::SetKeepRunning(keep));
-    }
-
-    group(ui, &palette, "Notifications");
-    let mut notifications = app.settings.notifications;
-    if ui
-        .checkbox_hand(
-            &mut notifications,
-            "Desktop notifications for new messages and meeting reminders",
-        )
-        .changed()
-    {
-        actions.push(Action::SetNotifications(notifications));
     }
 
     group(ui, &palette, "Presence");

@@ -163,7 +163,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             for index in range {
                 let chat = &app.chats[visible[index]];
                 let response = row(ui, app, chat, &me, now);
-                response.context_menu(|ui| menu(ui, &palette, chat, &me, &mut actions));
+                response.context_menu(|ui| menu(ui, app, chat, &me, &mut actions));
                 if response.clicked() {
                     actions.push(Action::OpenConversation(ConversationId::Chat(
                         chat.id.clone(),
@@ -175,15 +175,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
 }
 
 /// The right-click menu of a chat row.
-fn menu(
-    ui: &mut egui::Ui,
-    palette: &theme::Palette,
-    chat: &Chat,
-    me: &str,
-    actions: &mut Vec<Action>,
-) {
+fn menu(ui: &mut egui::Ui, app: &App, chat: &Chat, me: &str, actions: &mut Vec<Action>) {
     // A fixed width: a context menu offers the whole window as room.
-    ui.set_width(200.0);
+    ui.set_width(240.0);
+    let palette = &app.palette;
     let id = chat.id.clone();
     if !chat.is_notes() {
         let (icon, label, action) = if chat.hidden {
@@ -205,6 +200,45 @@ fn menu(
         actions.push(action);
         ui.close();
     }
+    let muted = is_muted(app, chat);
+    let (icon, label) = if muted {
+        (Icon::Bell, "Unmute notifications")
+    } else {
+        (Icon::BellOff, "Mute notifications")
+    };
+    if menu_item(ui, palette, icon, label) {
+        actions.push(Action::MuteChat(chat.id.clone(), !muted));
+        ui.close();
+    }
+    if chat.kind == ChatKind::OneOnOne
+        && matches!(app.push, crate::realtime::PushStatus::Live)
+        && let Some(peer) = chat.face(me)
+    {
+        {
+            let following = app
+                .settings
+                .notify
+                .follow_available
+                .contains_key(&peer.user_id);
+            let (icon, label) = if following {
+                (Icon::BellOff, "Stop notifying when available")
+            } else {
+                (Icon::Bell, "Notify when available")
+            };
+            if menu_item(ui, palette, icon, label) {
+                actions.push(Action::FollowAvailable {
+                    user: peer.user_id.clone(),
+                    name: peer.display_name.clone(),
+                    on: !following,
+                });
+                ui.close();
+            }
+        }
+    }
+}
+
+fn is_muted(app: &App, chat: &Chat) -> bool {
+    app.settings.notify.muted_chats.contains(&chat.id)
 }
 
 fn menu_item(ui: &mut egui::Ui, palette: &theme::Palette, icon: Icon, text: &str) -> bool {
@@ -358,7 +392,9 @@ fn row(ui: &mut egui::Ui, app: &App, chat: &Chat, me: &str, now: i64) -> egui::R
             None => p.text.clone(),
         }
     });
-    let preview_width = (inner.right() - text_left - if unread { 28.0 } else { 10.0 }).max(20.0);
+    let muted = is_muted(app, chat);
+    let reserved = if unread || muted { 28.0 } else { 10.0 };
+    let preview_width = (inner.right() - text_left - reserved).max(20.0);
     // An unsent draft stands in for the last message, except in the chat
     // that is open.
     let draft = (app.open != Some(crate::model::ConversationId::Chat(chat.id.clone())))
@@ -389,6 +425,14 @@ fn row(ui: &mut egui::Ui, app: &App, chat: &Chat, me: &str, now: i64) -> egui::R
             egui::pos2(inner.right() - 16.0, inner.top() + 39.0),
             4.5,
             palette.accent,
+        );
+    } else if muted {
+        Icon::BellOff.image(palette.dim, 14.0).paint_at(
+            ui,
+            egui::Rect::from_center_size(
+                egui::pos2(inner.right() - 16.0, inner.top() + 39.0),
+                egui::Vec2::splat(14.0),
+            ),
         );
     }
     response.on_hover_cursor(egui::CursorIcon::PointingHand)

@@ -11,6 +11,7 @@ use crate::model::Availability;
 use super::widgets;
 use crate::app::App;
 use crate::model::{Action, Section};
+use crate::notify::schedule::PauseFor;
 use crate::theme::{self, Icon};
 
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
@@ -422,6 +423,55 @@ fn account_menu(app: &mut App, avatar: &egui::Response) {
             if out_of_office.clicked() {
                 actions.push(Action::OpenOutOfOffice);
                 ui.close();
+            }
+            let paused_until = app.settings.notify.paused_until;
+            let now = crate::time::now();
+            if crate::notify::schedule::is_paused(paused_until, now) {
+                let until = paused_until.map(crate::time::clock).unwrap_or_default();
+                menu_row(
+                    ui,
+                    &palette,
+                    &format!("Notifications paused until {until}"),
+                    palette.secondary,
+                    |ui, at| paint_icon(ui, Icon::BellOff, at, palette.accent),
+                );
+                let resume = menu_row(
+                    ui,
+                    &palette,
+                    "Resume notifications",
+                    palette.text,
+                    |ui, at| paint_icon(ui, Icon::Bell, at, palette.secondary),
+                );
+                if resume.clicked() {
+                    actions.push(Action::PauseNotifications(None));
+                    ui.close();
+                }
+            } else {
+                for (label, choice, icon) in [
+                    (
+                        "Pause notifications for 1 hour",
+                        PauseFor::OneHour,
+                        Icon::BellOff,
+                    ),
+                    (
+                        "Pause notifications for 2 hours",
+                        PauseFor::TwoHours,
+                        Icon::BellOff,
+                    ),
+                    (
+                        "Pause notifications until tomorrow",
+                        PauseFor::UntilTomorrow,
+                        Icon::BellOff,
+                    ),
+                ] {
+                    let row = menu_row(ui, &palette, label, palette.secondary, |ui, at| {
+                        paint_icon(ui, icon, at, palette.secondary)
+                    });
+                    if row.clicked() {
+                        actions.push(Action::PauseNotifications(Some(choice)));
+                        ui.close();
+                    }
+                }
             }
         });
     app.actions.extend(actions);

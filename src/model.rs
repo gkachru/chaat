@@ -411,6 +411,15 @@ pub struct Message {
     pub pin_event: bool,
     pub subject: Option<String>,
     pub importance_high: bool,
+    /// Graph importance `urgent` (a subset of `importance_high`).
+    #[serde(default)]
+    pub urgent: bool,
+    /// User ids mentioned by name.
+    #[serde(default)]
+    pub mentions: Vec<String>,
+    /// The whole chat or channel is mentioned.
+    #[serde(default)]
+    pub mentions_everyone: bool,
     pub body: RichText,
     pub reactions: Vec<Reaction>,
     pub attachments: Vec<Attachment>,
@@ -420,6 +429,11 @@ pub struct Message {
 }
 
 impl Message {
+    /// Whether this message mentions `me` (or everyone).
+    pub fn mentions(&self, me: &str) -> bool {
+        self.mentions_everyone || self.mentions.iter().any(|id| id == me)
+    }
+
     pub fn is_from(&self, user: &str) -> bool {
         self.author_id.as_deref() == Some(user)
     }
@@ -737,6 +751,7 @@ pub enum SettingsPage {
     Account,
     OutOfOffice,
     General,
+    Notifications,
     Appearance,
     Calls,
     Push,
@@ -747,10 +762,11 @@ pub enum SettingsPage {
 }
 
 impl SettingsPage {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Account,
         Self::OutOfOffice,
         Self::General,
+        Self::Notifications,
         Self::Appearance,
         Self::Calls,
         Self::Push,
@@ -765,6 +781,7 @@ impl SettingsPage {
             Self::Account => "Account",
             Self::OutOfOffice => "Out of office",
             Self::General => "General",
+            Self::Notifications => "Notifications",
             Self::Appearance => "Appearance",
             Self::Calls => "Calls and meetings",
             Self::Push => "Push updates",
@@ -808,6 +825,17 @@ pub enum Action {
     DownloadUpdate,
     InstallUpdate,
     SetAutomaticUpdates(bool),
+    SetNotify(crate::notify::rules::NotifySettings),
+    /// Mute (true) or unmute a chat on this device, by conversation id.
+    MuteChat(String, bool),
+    /// Notify when this person becomes available (or stop).
+    FollowAvailable {
+        user: String,
+        name: String,
+        on: bool,
+    },
+    PauseNotifications(Option<crate::notify::schedule::PauseFor>),
+    TestNotification,
     Navigate(Section),
     OpenConversation(ConversationId),
     HideChat(String),

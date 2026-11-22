@@ -154,6 +154,22 @@ pub struct ChatMessage {
     pub channel_identity: Option<ChannelIdentity>,
     pub replies: Option<Vec<ChatMessage>>,
     pub web_url: Option<String>,
+    pub mentions: Vec<ChatMention>,
+}
+
+/// One entry of a message's `mentions`.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ChatMention {
+    pub mentioned: Option<Mentioned>,
+}
+
+/// Who or what is mentioned: a user, or a whole conversation (everyone).
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Mentioned {
+    pub user: Option<Identity>,
+    pub conversation: Option<serde_json::Value>,
 }
 
 /// One entry of `chats/{id}/pinnedMessages?$expand=message`.

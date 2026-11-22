@@ -60,6 +60,16 @@
   is on the roadmap. Signing out deletes it. Encoded message images use a
   128 MiB least-recently-used cache per account. The SQLite file can also
   contain unused pages and journal data.
+- **Notifications** ([notifications.md](notifications.md)). Notification text
+  (titles, message previews, names) is never logged. Settings keep the ids of
+  chats you muted and the ids and names of people you chose "Notify when
+  available" for, in the settings file. On Windows, so that toasts show as
+  Chaat with its icon, Chaat writes the per-user registry key
+  `HKCU\Software\Classes\AppUserModelId\app.chaat.Chaat` (values
+  `DisplayName` and `IconUri`) and the icon file `chaat-notification.png` in
+  Chaat's data folder. To remove them, delete that key (for example with
+  `reg delete HKCU\Software\Classes\AppUserModelId\app.chaat.Chaat /f`) and
+  the file. Chaat writes them again the next time it starts.
 - **Logs** never contain message text, tokens, authorization codes or URLs
   with query strings. Panics are logged without their payload
   (fastframe-log).

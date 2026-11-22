@@ -287,7 +287,7 @@ fn short_duration(seconds: u64) -> String {
 }
 
 pub fn message(
-    message: g::ChatMessage,
+    mut message: g::ChatMessage,
     conversation: Option<&ConversationId>,
     me: &str,
 ) -> Message {
@@ -396,6 +396,7 @@ pub fn message(
                 )
             });
     let missed_call = system && call_missed(message.event_detail.as_ref(), me);
+    let mentions = std::mem::take(&mut message.mentions);
     Message {
         web_url: message.web_url.filter(|url| !url.is_empty()),
         pin_event,
@@ -428,6 +429,16 @@ pub fn message(
         system,
         subject: message.subject.filter(|s| !s.trim().is_empty()),
         importance_high: matches!(message.importance.as_deref(), Some("high" | "urgent")),
+        urgent: message.importance.as_deref() == Some("urgent"),
+        mentions: mentions
+            .iter()
+            .filter_map(|m| m.mentioned.as_ref()?.user.as_ref()?.id.clone())
+            .collect(),
+        mentions_everyone: mentions.iter().any(|m| {
+            m.mentioned
+                .as_ref()
+                .is_some_and(|m| m.conversation.is_some())
+        }),
         body,
         reactions,
         attachments,
@@ -685,6 +696,7 @@ mod tests {
             Some(ConversationId::Chat("19:abc@thread.v2".into()))
         );
         assert!(message.edited && message.importance_high);
+        assert!(!message.urgent && message.mentions.is_empty() && !message.mentions_everyone);
         assert_eq!(message.body.to_plain(), "Agreed");
         assert_eq!(message.reactions.len(), 2);
         assert_eq!(message.reactions[0].users, vec!["u-me", "u-grace"]);
@@ -958,5 +970,48 @@ mod tests {
             Some("{\"type\":\"AdaptiveCard\"}")
         );
         assert_eq!(message.attachments[1].content, None);
+    }
+
+    fn parsed(extra: serde_json::Value) -> Message {
+        let mut json = serde_json::json!({"id": "1", "chatId": "19:a@thread.v2"});
+        json.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        message(serde_json::from_value(json).unwrap(), None, "u-me")
+    }
+
+    #[test]
+    fn mentions_parse_user_and_conversation() {
+        let m = parsed(serde_json::json!({"mentions": [
+            {"id": 0, "mentionText": "Me", "mentioned": {"user": {"id": "u-me"}}},
+            {"id": 1, "mentioned": {"user": {"id": "u-ada"}}}
+        ]}));
+        assert_eq!(m.mentions, vec!["u-me", "u-ada"]);
+        assert!(!m.mentions_everyone && m.mentions("u-me") && !m.mentions("u-x"));
+        let all = parsed(serde_json::json!({"mentions": [
+            {"id": 0, "mentioned": {"conversation": {"id": "19:a@thread.v2", "conversationIdentityType": "chat"}}}
+        ]}));
+        assert!(all.mentions_everyone && all.mentions.is_empty() && all.mentions("u-x"));
+    }
+
+    #[test]
+    fn urgent_split_from_high() {
+        let urgent = parsed(serde_json::json!({"importance": "urgent"}));
+        assert!(urgent.urgent && urgent.importance_high);
+        let high = parsed(serde_json::json!({"importance": "high"}));
+        assert!(!high.urgent && high.importance_high);
+        let normal = parsed(serde_json::json!({"importance": "normal"}));
+        assert!(!normal.urgent && !normal.importance_high);
+    }
+
+    #[test]
+    fn old_cached_message_loads() {
+        let mut value = serde_json::to_value(parsed(serde_json::json!({}))).unwrap();
+        let object = value.as_object_mut().unwrap();
+        for key in ["urgent", "mentions", "mentions_everyone"] {
+            assert!(object.remove(key).is_some());
+        }
+        let old: Message = serde_json::from_value(value).unwrap();
+        assert!(!old.urgent && old.mentions.is_empty() && !old.mentions_everyone);
     }
 }
