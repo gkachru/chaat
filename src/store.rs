@@ -18,6 +18,10 @@ use crate::model::{Channel, Chat, ConversationId, Meeting, Message, SearchHit, T
 use crate::outbox::{OutboxEntry, StoredDraft};
 
 const SCHEMA_VERSION: i32 = 1;
+/// The version of the HTML conversion cached messages went through. Raise it
+/// when `html::parse` reads Teams messages differently; older cached
+/// messages are then dropped and fetched again (2: tables, code blocks).
+const MESSAGES_FORMAT: i64 = 2;
 const MEDIA_BUDGET: usize = 128 * 1024 * 1024;
 
 pub struct Store {
@@ -116,7 +120,33 @@ impl Store {
                 local_id TEXT PRIMARY KEY, created INTEGER NOT NULL, json TEXT NOT NULL
              );",
         )?;
-        Ok(())
+        self.renew_messages_format()
+    }
+
+    /// Messages are cached already converted from Teams' HTML. When the
+    /// conversion learns something (tables, say), older rows would keep the
+    /// old reading for good, so they go and are fetched again when their
+    /// chat opens. Chats, drafts and the outbox stay.
+    fn renew_messages_format(&self) -> rusqlite::Result<()> {
+        let stored: Option<i64> = self
+            .db
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'messages_format'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .and_then(|value| value.parse().ok());
+        if stored.is_some_and(|stored| stored >= MESSAGES_FORMAT) {
+            return Ok(());
+        }
+        self.db.execute_batch(&format!(
+            "BEGIN;
+             DELETE FROM messages;
+             DELETE FROM messages_fts;
+             INSERT OR REPLACE INTO meta (key, value) VALUES ('messages_format', '{MESSAGES_FORMAT}');
+             COMMIT;"
+        ))
     }
 
     /// Encoded Graph-hosted content, so RAM eviction does not force a download.
@@ -855,6 +885,41 @@ mod tests {
         let back = store.outbox().unwrap().remove(0);
         assert_eq!(back.images, vec![image]);
         assert_eq!(back, e);
+    }
+
+    #[test]
+    fn an_older_message_format_drops_cached_messages_but_keeps_chats() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("old-format.db");
+        let chat = ConversationId::Chat("19:a".into());
+        {
+            let mut store = Store::open(&path).unwrap();
+            store
+                .save_chats(&[Chat {
+                    id: "19:a".into(),
+                    ..Default::default()
+                }])
+                .unwrap();
+            store
+                .save_messages(&chat, &[message("1", 1, "hello")])
+                .unwrap();
+            // As an older Chaat left it: no format recorded.
+            store
+                .db
+                .execute("DELETE FROM meta WHERE key = 'messages_format'", [])
+                .unwrap();
+        }
+        let mut store = Store::open(&path).unwrap();
+        assert!(store.messages(&chat, 10).unwrap().is_empty());
+        assert!(store.search("hello", 10).unwrap().is_empty());
+        assert_eq!(store.chats().unwrap().len(), 1);
+        // Messages cached in the current format stay across a reopen.
+        store
+            .save_messages(&chat, &[message("2", 2, "again")])
+            .unwrap();
+        drop(store);
+        let store = Store::open(&path).unwrap();
+        assert_eq!(store.messages(&chat, 10).unwrap().len(), 1);
     }
 
     #[test]
