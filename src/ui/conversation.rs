@@ -1689,7 +1689,13 @@ fn menu_item(ui: &mut egui::Ui, palette: &theme::Palette, icon: Icon, text: &str
         .layout_no_wrap(text.to_owned(), theme::regular(13.0), palette.text)
         .size()
         .x;
-    let width = ui.available_width().max(text_width + 44.0);
+    // A popup's first, hidden sizing pass offers egui's default area width
+    // (600). Filling it there would make the menu that wide for good.
+    let width = if ui.is_sizing_pass() {
+        text_width + 44.0
+    } else {
+        ui.available_width().max(text_width + 44.0)
+    };
     let (rect, response) = ui.allocate_exact_size(vec2(width, 28.0), Sense::click());
     if ui.is_rect_visible(rect) {
         let hovered = response.hovered() || response.has_focus();
@@ -2288,6 +2294,13 @@ fn composer(app: &mut App, ui: &mut egui::Ui, conversation: &ConversationId) {
                                 )
                             })
                             .unwrap_or((draft.text.chars().count(), draft.text.chars().count()));
+                        // Enter or Shift+Enter in a list item starts the next
+                        // item; on an empty item it ends the list, and the
+                        // next Enter sends. The mention list keeps Enter.
+                        let in_list = range.0 == range.1
+                            && candidates.is_empty()
+                            && crate::compose_format::continue_list(&draft.text, range.0).is_some();
+                        let mut continue_list = false;
                         if focused {
                             ui.input_mut(|input| {
                                 shortcut = composer_tools::take_shortcut(&mut input.events);
@@ -2300,6 +2313,14 @@ fn composer(app: &mut App, ui: &mut egui::Ui, conversation: &ConversationId) {
                                 input.events.retain(|event| {
                                     if let egui::Event::Paste(text) = event {
                                         pastes.push(text.clone());
+                                        false
+                                    } else if in_list
+                                        && matches!(event, egui::Event::Key {
+                                            key: Key::Enter, pressed: true, modifiers, ..
+                                        } if modifiers.matches_exact(Modifiers::NONE)
+                                            || modifiers.matches_exact(Modifiers::SHIFT))
+                                    {
+                                        continue_list = true;
                                         false
                                     } else if matches!(event, egui::Event::Key {
                                         key: Key::Enter, pressed: true, modifiers, ..
@@ -2379,6 +2400,9 @@ fn composer(app: &mut App, ui: &mut egui::Ui, conversation: &ConversationId) {
                         // re-entrant, so writing memory inside it deadlocks.
                         if let Some(at) = dismiss {
                             ui.ctx().data_mut(|d| d.insert_temp(dismissed_id, at));
+                        }
+                        if continue_list {
+                            composer_tools::continue_list_at_caret(ui.ctx(), id, &mut draft.text);
                         }
                         if let Some(format) = bar_format.or(shortcut) {
                             composer_tools::apply_format(ui.ctx(), id, &mut draft.text, format);

@@ -153,6 +153,39 @@ fn code_block(chars: &[char], start: usize, end: usize) -> (String, Range<usize>
     (collect(&out), inner..inner + (last - first))
 }
 
+/// What a new line at `cursor` (chars) does in a list item (`- `, `* `,
+/// `1. `): it starts the next item, numbered one up, or, on an item with no
+/// text, removes the marker to end the list. The new text and caret, or
+/// `None` to let the editor insert a plain new line.
+pub fn continue_list(text: &str, cursor: usize) -> Option<(String, usize)> {
+    let chars: Vec<char> = text.chars().collect();
+    let cursor = cursor.min(chars.len());
+    let start = line_start(&chars, cursor);
+    let end = line_end(&chars, cursor);
+    let line = &chars[start..end];
+    let (marker_len, next) = if line.starts_with(&['-', ' ']) || line.starts_with(&['*', ' ']) {
+        (2, format!("{} ", line[0]))
+    } else {
+        let n = numbered_len(line)?;
+        let number: u64 = line[..n - 2].iter().collect::<String>().parse().ok()?;
+        (n, format!("{}. ", number + 1))
+    };
+    if cursor < start + marker_len {
+        return None;
+    }
+    if line.len() == marker_len {
+        let mut out = chars[..start].to_vec();
+        out.extend_from_slice(&chars[end..]);
+        return Some((collect(&out), start));
+    }
+    let mut out = chars[..cursor].to_vec();
+    out.push('\n');
+    out.extend(next.chars());
+    let caret = out.len();
+    out.extend_from_slice(&chars[cursor..]);
+    Some((collect(&out), caret))
+}
+
 #[derive(Clone, Copy)]
 enum Prefix {
     Fixed(&'static str),
@@ -309,6 +342,43 @@ mod tests {
             apply(&text, range, Format::Numbered),
             ("a\nb".to_owned(), 0..3)
         );
+    }
+
+    #[test]
+    fn a_new_line_in_a_list_starts_the_next_item() {
+        assert_eq!(continue_list("- a", 3), Some(("- a\n- ".to_owned(), 6)));
+        assert_eq!(continue_list("* a", 3), Some(("* a\n* ".to_owned(), 6)));
+        assert_eq!(
+            continue_list("1. a\n2. b", 9),
+            Some(("1. a\n2. b\n3. ".to_owned(), 13))
+        );
+        // Inside an item: the rest moves to the new item.
+        assert_eq!(continue_list("- ab", 3), Some(("- a\n- b".to_owned(), 6)));
+        assert_eq!(
+            continue_list("x\n- é", 5),
+            Some(("x\n- é\n- ".to_owned(), 8))
+        );
+    }
+
+    #[test]
+    fn a_new_line_on_an_empty_item_ends_the_list() {
+        assert_eq!(continue_list("- a\n- ", 6), Some(("- a\n".to_owned(), 4)));
+        assert_eq!(
+            continue_list("1. a\n2. ", 8),
+            Some(("1. a\n".to_owned(), 5))
+        );
+    }
+
+    #[test]
+    fn a_new_line_outside_a_list_is_left_to_the_editor() {
+        assert_eq!(continue_list("abc", 3), None);
+        assert_eq!(continue_list("> q", 3), None);
+        assert_eq!(continue_list("-a", 2), None);
+        assert_eq!(continue_list("12.x", 4), None);
+        // The caret before the marker's end: a plain new line.
+        assert_eq!(continue_list("- a", 1), None);
+        assert_eq!(continue_list("", 0), None);
+        assert_eq!(continue_list("- a", 9), Some(("- a\n- ".to_owned(), 6)));
     }
 
     #[test]

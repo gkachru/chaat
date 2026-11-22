@@ -1796,6 +1796,13 @@ fn the_hover_bar_keeps_edit_delete_and_copy_in_a_menu() {
     for item in ["Edit", "Delete", "Copy text"] {
         assert!(texts.iter().any(|t| t == item), "the menu offers {item}");
     }
+    let chat = h.app.open.clone().unwrap();
+    let menu = egui::Id::new(("chaat-message-menu", chat.key()));
+    let rect = h
+        .ctx
+        .memory(|m| m.area_rect(menu))
+        .expect("the menu is an area");
+    assert!(rect.width() < 240.0, "the menu fits its items: {rect:?}");
 }
 
 #[test]
@@ -6441,6 +6448,53 @@ fn a_dismissed_mention_list_opens_again_for_a_new_at_sign() {
         h.app.drafts[&chat].text, "@Ada Lovelace ",
         "a new @ in the same place shows the list again"
     );
+}
+
+#[test]
+fn enter_in_a_list_adds_items_and_an_empty_item_ends_it() {
+    let key = |modifiers| egui::Event::Key {
+        key: egui::Key::Enter,
+        physical_key: Some(egui::Key::Enter),
+        pressed: true,
+        repeat: false,
+        modifiers,
+    };
+    for (width, theme) in [(720.0, ThemeChoice::Dark), (1280.0, ThemeChoice::Light)] {
+        let mut h = Harness::new();
+        h.size.x = width;
+        h.app.settings.theme = theme;
+        h.act(Action::OpenConversation(ConversationId::Chat(
+            "19:demo-ada@unq.gbl.spaces".into(),
+        )));
+        let chat = h.app.open.clone().unwrap();
+        h.app.focus_composer = true;
+        h.frames(3);
+        let count = h.app.conversations[&chat].messages.len();
+        h.frame_with(vec![egui::Event::Text("- one".into())]);
+        h.frames(1);
+        h.frame_with(vec![key(egui::Modifiers::NONE)]);
+        h.frames(1);
+        assert_eq!(h.app.drafts[&chat].text, "- one\n- ", "Enter adds an item");
+        h.frame_with(vec![egui::Event::Text("two".into())]);
+        h.frames(1);
+        h.frame_with(vec![key(egui::Modifiers::SHIFT)]);
+        h.frames(1);
+        assert_eq!(h.app.drafts[&chat].text, "- one\n- two\n- ");
+        h.frame_with(vec![key(egui::Modifiers::NONE)]);
+        h.frames(1);
+        assert_eq!(
+            h.app.drafts[&chat].text, "- one\n- two\n",
+            "Enter on an empty item ends the list"
+        );
+        assert_eq!(h.app.conversations[&chat].messages.len(), count);
+        h.frame_with(vec![key(egui::Modifiers::NONE)]);
+        h.frames(2);
+        assert_eq!(
+            h.app.conversations[&chat].messages.len(),
+            count + 1,
+            "Enter after the list sends"
+        );
+    }
 }
 
 #[test]

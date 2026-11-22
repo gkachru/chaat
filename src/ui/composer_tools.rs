@@ -108,6 +108,23 @@ pub fn insert_at_caret(ctx: &egui::Context, id: Id, text: &mut String, insert: &
     ctx.memory_mut(|m| m.request_focus(id));
 }
 
+/// A new line at the caret in a list item: the next item, or the end of
+/// the list. False, changing nothing, when the editor should insert a plain
+/// new line (outside a list, or over a selection).
+pub fn continue_list_at_caret(ctx: &egui::Context, id: Id, text: &mut String) -> bool {
+    let current = selection(ctx, id, text);
+    if !current.is_empty() {
+        return false;
+    }
+    let Some((edited, caret)) = compose_format::continue_list(text, current.start) else {
+        return false;
+    };
+    record_undo(ctx, id, text, current);
+    *text = edited;
+    set_selection(ctx, id, caret..caret);
+    true
+}
+
 /// The name shown on hover, with the shortcut when there is one.
 fn tooltip(name: &str, format: Format) -> String {
     let command = if cfg!(target_os = "macos") {
