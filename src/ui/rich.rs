@@ -537,22 +537,51 @@ fn show_blocks(
                             .rect_filled(bar, CornerRadius::same(2), palette.outline);
                     });
             }
-            Block::Item { ordered, spans } => {
+            Block::Item {
+                ordered,
+                spans,
+                depth,
+                style,
+                continued,
+            } => {
                 ui.horizontal_top(|ui| {
-                    ui.spacing_mut().item_spacing.x = 6.0;
+                    let gap = 6.0;
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    // A little inset for every list, and one step more for
+                    // each level of nesting; never more than 40% of the width.
+                    let indent = (8.0 + 20.0 * f32::from(*depth)).min(width * 0.4);
+                    ui.add_space(indent);
                     let marker = match ordered {
-                        Some(n) => format!("{n}."),
+                        Some(n) => style.marker(*n),
                         None => "•".into(),
                     };
-                    ui.add_sized(
-                        vec2(14.0, look.size * 1.42),
-                        egui::Label::new(
-                            egui::RichText::new(marker)
-                                .font(theme::regular(look.size))
-                                .color(palette.secondary),
-                        ),
-                    );
-                    paragraph(ui, spans, look, palette, width - 20.0, actions);
+                    let font = theme::regular(look.size);
+                    let measured = ui
+                        .fonts_mut(|f| {
+                            f.layout_no_wrap(marker.clone(), font.clone(), palette.secondary)
+                        })
+                        .size()
+                        .x;
+                    // Numbers share one column so the text after them lines up.
+                    let column = if ordered.is_some() {
+                        measured.max(look.size * 1.4)
+                    } else {
+                        measured.max(look.size * 0.8)
+                    };
+                    let (rect, _) = ui
+                        .allocate_exact_size(vec2(column, look.size * 1.42), egui::Sense::hover());
+                    if !*continued {
+                        ui.painter().text(
+                            egui::pos2(rect.right(), rect.center().y),
+                            egui::Align2::RIGHT_CENTER,
+                            marker,
+                            font,
+                            palette.secondary,
+                        );
+                    }
+                    ui.add_space(gap);
+                    let text_width = (width - indent - column - gap).max(40.0);
+                    paragraph(ui, spans, look, palette, text_width, actions);
                 });
             }
             Block::Code(code) => {

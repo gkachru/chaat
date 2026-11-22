@@ -20,8 +20,9 @@ use crate::outbox::{OutboxEntry, StoredDraft};
 const SCHEMA_VERSION: i32 = 1;
 /// The version of the HTML conversion cached messages went through. Raise it
 /// when `html::parse` reads Teams messages differently; older cached
-/// messages are then dropped and fetched again (2: tables, code blocks).
-const MESSAGES_FORMAT: i64 = 2;
+/// messages are then dropped and fetched again (2: tables, code blocks;
+/// 3: nested and lettered lists).
+const MESSAGES_FORMAT: i64 = 3;
 const MEDIA_BUDGET: usize = 128 * 1024 * 1024;
 
 pub struct Store {

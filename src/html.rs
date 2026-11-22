@@ -38,6 +38,9 @@ pub enum Script {
 
 /// The type scale of `AGENTS.md`; message sizes snap to it.
 const TYPE_SCALE: [u8; 9] = [11, 12, 13, 14, 15, 18, 20, 24, 30];
+/// Deeper lists draw at this depth, so hostile nesting cannot push text out
+/// of the bubble.
+const MAX_LIST_DEPTH: usize = 6;
 
 /// The scale step nearest to `size` (px treated as points); ties go down.
 fn snap_size(size: f32) -> Option<u8> {
@@ -84,6 +87,106 @@ pub struct Span {
     pub style: Style,
 }
 
+/// How an ordered list numbers its items.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ListStyle {
+    #[default]
+    Decimal,
+    LowerAlpha,
+    UpperAlpha,
+    LowerRoman,
+    UpperRoman,
+}
+
+impl ListStyle {
+    /// From an `<ol>`'s `type` attribute or its `list-style-type` style.
+    fn of(attrs: &[(String, String)]) -> Self {
+        if let Some(kind) = attr(attrs, "type") {
+            return match kind {
+                "a" => Self::LowerAlpha,
+                "A" => Self::UpperAlpha,
+                "i" => Self::LowerRoman,
+                "I" => Self::UpperRoman,
+                _ => Self::Decimal,
+            };
+        }
+        let style = attr(attrs, "style")
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let Some(at) = style.find("list-style-type") else {
+            return Self::Decimal;
+        };
+        let value = style[at..]
+            .split_once(':')
+            .map(|(_, v)| v.split(';').next().unwrap_or_default().trim())
+            .unwrap_or_default();
+        match value {
+            "lower-alpha" | "lower-latin" => Self::LowerAlpha,
+            "upper-alpha" | "upper-latin" => Self::UpperAlpha,
+            "lower-roman" => Self::LowerRoman,
+            "upper-roman" => Self::UpperRoman,
+            _ => Self::Decimal,
+        }
+    }
+
+    /// The marker for item `n`, with its trailing dot: "3.", "c.", "iii.".
+    pub fn marker(self, n: u32) -> String {
+        let body = match self {
+            Self::Decimal => n.to_string(),
+            Self::LowerAlpha => alpha(n),
+            Self::UpperAlpha => alpha(n).to_ascii_uppercase(),
+            Self::LowerRoman => roman(n),
+            Self::UpperRoman => roman(n).to_ascii_uppercase(),
+        };
+        format!("{body}.")
+    }
+}
+
+/// 1 → a, 26 → z, 27 → aa.
+fn alpha(mut n: u32) -> String {
+    if n == 0 {
+        return "0".into();
+    }
+    let mut out = Vec::new();
+    while n > 0 {
+        n -= 1;
+        out.push(b'a' + (n % 26) as u8);
+        n /= 26;
+    }
+    out.reverse();
+    String::from_utf8(out).unwrap_or_default()
+}
+
+/// 1 → i, 4 → iv, 1994 → mcmxciv; past 3999, plain digits.
+fn roman(mut n: u32) -> String {
+    if n == 0 || n > 3999 {
+        return n.to_string();
+    }
+    const PARTS: [(u32, &str); 13] = [
+        (1000, "m"),
+        (900, "cm"),
+        (500, "d"),
+        (400, "cd"),
+        (100, "c"),
+        (90, "xc"),
+        (50, "l"),
+        (40, "xl"),
+        (10, "x"),
+        (9, "ix"),
+        (5, "v"),
+        (4, "iv"),
+        (1, "i"),
+    ];
+    let mut out = String::new();
+    for (value, text) in PARTS {
+        while n >= value {
+            out.push_str(text);
+            n -= value;
+        }
+    }
+    out
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Block {
     Paragraph(Vec<Span>),
@@ -93,6 +196,15 @@ pub enum Block {
     Item {
         ordered: Option<u32>,
         spans: Vec<Span>,
+        /// Nesting: 0 for a top-level list, 1 for a list inside an item.
+        #[serde(default)]
+        depth: u8,
+        /// How `ordered` is written: 1, a, A, i or I.
+        #[serde(default)]
+        style: ListStyle,
+        /// A further paragraph of the item above: no marker of its own.
+        #[serde(default)]
+        continued: bool,
     },
     /// Old cached code blocks; new parses give [`Block::Snippet`].
     Code(String),
@@ -164,10 +276,24 @@ impl RichText {
                     out.push_str("> ");
                     push_spans(&mut out, spans);
                 }
-                Block::Item { ordered, spans } => {
-                    match ordered {
-                        Some(n) => out.push_str(&format!("{n}. ")),
-                        None => out.push_str("• "),
+                Block::Item {
+                    ordered,
+                    spans,
+                    depth,
+                    style,
+                    continued,
+                } => {
+                    out.push_str(&"  ".repeat(usize::from(*depth)));
+                    if *continued {
+                        out.push_str("  ");
+                    } else {
+                        match ordered {
+                            Some(n) => {
+                                out.push_str(&style.marker(*n));
+                                out.push(' ');
+                            }
+                            None => out.push_str("• "),
+                        }
                     }
                     push_spans(&mut out, spans);
                 }
@@ -467,6 +593,16 @@ fn named_entity(name: &str) -> Option<&'static str> {
     })
 }
 
+/// A list item being read.
+#[derive(Clone, Copy)]
+struct OpenItem {
+    ordered: Option<u32>,
+    style: ListStyle,
+    depth: u8,
+    /// A block of it was already written; more blocks continue it.
+    started: bool,
+}
+
 #[derive(Default)]
 struct Builder {
     blocks: Vec<Block>,
@@ -474,8 +610,13 @@ struct Builder {
     styles: Vec<(String, Style)>,
     quote_depth: usize,
     heading: bool,
-    list: Vec<Option<u32>>,
-    in_item: Option<Option<u32>>,
+    /// Open lists, innermost last: the next number (None for bullets) and
+    /// how numbers are written.
+    list: Vec<(Option<u32>, ListStyle)>,
+    /// The open list item, if text now belongs to one.
+    in_item: Option<OpenItem>,
+    /// Items whose text resumes when the list nested inside them closes.
+    outer_items: Vec<Option<OpenItem>>,
     pre: Option<String>,
     /// The language class of the open code block.
     pre_language: Option<String>,
@@ -620,8 +761,15 @@ impl Builder {
         if spans.is_empty() {
             return;
         }
-        let block = if let Some(ordered) = self.in_item {
-            Block::Item { ordered, spans }
+        let block = if let Some(item) = &mut self.in_item {
+            let continued = std::mem::replace(&mut item.started, true);
+            Block::Item {
+                ordered: item.ordered,
+                spans,
+                depth: item.depth,
+                style: item.style,
+                continued,
+            }
         } else if self.quote_depth > 0 {
             Block::Quote(spans)
         } else if self.heading {
@@ -735,26 +883,35 @@ impl Builder {
             }
             "ul" => {
                 self.flush();
-                self.list.push(None);
+                self.outer_items.push(self.in_item.take());
+                self.list.push((None, ListStyle::Decimal));
             }
             "ol" => {
                 self.flush();
+                self.outer_items.push(self.in_item.take());
                 let start = attr(attrs, "start")
                     .and_then(|s| s.parse::<u32>().ok())
                     .unwrap_or(1);
-                self.list.push(Some(start));
+                self.list.push((Some(start), ListStyle::of(attrs)));
             }
             "li" => {
                 self.flush();
-                let ordered = match self.list.last_mut() {
-                    Some(Some(n)) => {
+                let depth = self.list.len().saturating_sub(1).min(MAX_LIST_DEPTH) as u8;
+                let (ordered, style) = match self.list.last_mut() {
+                    Some((Some(n), style)) => {
                         let current = *n;
-                        *n += 1;
-                        Some(current)
+                        *n = n.saturating_add(1);
+                        (Some(current), *style)
                     }
-                    _ => None,
+                    Some((None, style)) => (None, *style),
+                    None => (None, ListStyle::Decimal),
                 };
-                self.in_item = Some(ordered);
+                self.in_item = Some(OpenItem {
+                    ordered,
+                    style,
+                    depth,
+                    started: false,
+                });
             }
             "hr" => {
                 self.flush();
@@ -866,8 +1023,16 @@ impl Builder {
             }
             "ul" | "ol" => {
                 self.flush();
-                self.list.pop();
-                self.in_item = None;
+                if self.list.pop().is_some() {
+                    // Text after a nested list still belongs to the item
+                    // that holds it, without a second marker.
+                    self.in_item = self.outer_items.pop().flatten().map(|mut item| {
+                        item.started = true;
+                        item
+                    });
+                } else {
+                    self.in_item = None;
+                }
             }
             _ => {}
         }
@@ -1244,6 +1409,78 @@ mod tests {
         );
         assert_eq!(rich.to_plain(), "Plan\n1. One\n2. Two\n• Dot\n> Wise\n—");
         assert!(matches!(rich.blocks[0], Block::Heading(_)));
+    }
+
+    #[test]
+    fn nested_lists_carry_their_depth() {
+        let rich = parse(
+            "<ol start=\"2\"><li><b>Architecture</b><ul><li>Genesys</li><li>Copilot</li></ul></li>\
+             <li>Business</li></ol>",
+        );
+        assert_eq!(
+            rich.to_plain(),
+            "2. Architecture\n  • Genesys\n  • Copilot\n3. Business"
+        );
+        let depths: Vec<u8> = rich
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                Block::Item { depth, .. } => Some(*depth),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(depths, [0, 1, 1, 0]);
+    }
+
+    #[test]
+    fn a_second_paragraph_in_an_item_keeps_one_number() {
+        let rich = parse(
+            "<ol start=\"7\"><li><p><b>Security</b></p><p>EU data residency</p></li>\
+             <li><p>Costs</p><p>Later</p></li></ol>",
+        );
+        assert_eq!(
+            rich.to_plain(),
+            "7. Security\n   EU data residency\n8. Costs\n   Later".replace("   ", "  ")
+        );
+        assert!(matches!(
+            rich.blocks[1],
+            Block::Item {
+                continued: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn text_after_a_nested_list_continues_its_item() {
+        let rich = parse("<ul><li>Parent<ul><li>Child</li></ul>tail</li></ul>");
+        assert_eq!(rich.to_plain(), "• Parent\n  • Child\n  tail");
+    }
+
+    #[test]
+    fn lettered_and_roman_lists() {
+        let typed = parse("<ol type=\"a\"><li>One</li><li>Two</li></ol>");
+        assert_eq!(typed.to_plain(), "a. One\nb. Two");
+        let styled = parse(
+            "<ol style=\"list-style-type: upper-roman\" start=\"3\"><li>Three</li><li>Four</li></ol>",
+        );
+        assert_eq!(styled.to_plain(), "III. Three\nIV. Four");
+        assert_eq!(ListStyle::LowerAlpha.marker(27), "aa.");
+        assert_eq!(ListStyle::LowerRoman.marker(1994), "mcmxciv.");
+        assert_eq!(ListStyle::LowerRoman.marker(4000), "4000.");
+    }
+
+    #[test]
+    fn deep_nesting_is_capped() {
+        let mut html = String::new();
+        for _ in 0..20 {
+            html.push_str("<ul><li>x");
+        }
+        let rich = parse(&html);
+        assert!(rich.blocks.iter().all(|b| match b {
+            Block::Item { depth, .. } => usize::from(*depth) <= MAX_LIST_DEPTH,
+            _ => true,
+        }));
     }
 
     #[test]
