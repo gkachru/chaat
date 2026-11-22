@@ -6379,6 +6379,71 @@ fn a_rich_message_draws_code_tables_sup_sub_and_sizes() {
 }
 
 #[test]
+fn escape_closes_the_mention_list_without_freezing() {
+    let mut h = Harness::new();
+    h.act(Action::OpenConversation(ConversationId::Chat(
+        "19:demo-launch@thread.v2".into(),
+    )));
+    let chat = h.app.open.clone().unwrap();
+    let first = h.app.conversations[&chat].messages[0].id.clone();
+    h.act(Action::StartReply(first));
+    h.app.focus_composer = true;
+    h.frames(3);
+    h.frame_with(vec![egui::Event::Text("@".into())]);
+    h.frames(2);
+    // Esc used to deadlock here: the dismissal wrote egui memory while
+    // the input lock was held.
+    h.frame_with(vec![egui::Event::Key {
+        key: egui::Key::Escape,
+        physical_key: Some(egui::Key::Escape),
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    }]);
+    h.frames(3);
+    assert_eq!(h.app.drafts[&chat].text, "@", "Esc keeps the typed text");
+    assert!(
+        h.app.drafts[&chat].reply_to.is_some(),
+        "Esc with the mention list open closes the list, not the reply"
+    );
+}
+
+#[test]
+fn a_dismissed_mention_list_opens_again_for_a_new_at_sign() {
+    let key = |key| egui::Event::Key {
+        key,
+        physical_key: Some(key),
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    };
+    let mut h = Harness::new();
+    h.act(Action::OpenConversation(ConversationId::Chat(
+        "19:demo-launch@thread.v2".into(),
+    )));
+    let chat = h.app.open.clone().unwrap();
+    h.app.focus_composer = true;
+    h.frames(3);
+    h.frame_with(vec![egui::Event::Text("@".into())]);
+    h.frames(2);
+    h.frame_with(vec![key(egui::Key::Escape)]);
+    h.frames(2);
+    // Esc took focus; click back in by asking for it, as a person would.
+    h.app.focus_composer = true;
+    h.frames(2);
+    h.frame_with(vec![key(egui::Key::Backspace)]);
+    h.frames(2);
+    assert!(h.app.drafts.get(&chat).is_none_or(|d| d.text.is_empty()));
+    h.frame_with(vec![egui::Event::Text("@".into())]);
+    h.frames(2);
+    h.frame_with(vec![key(egui::Key::Tab)]);
+    assert_eq!(
+        h.app.drafts[&chat].text, "@Ada Lovelace ",
+        "a new @ in the same place shows the list again"
+    );
+}
+
+#[test]
 fn escape_in_the_composer_cancels_a_reply() {
     let mut h = Harness::new();
     h.app.focus_composer = true;

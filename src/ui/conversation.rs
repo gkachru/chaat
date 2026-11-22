@@ -2072,11 +2072,15 @@ fn composer(app: &mut App, ui: &mut egui::Ui, conversation: &ConversationId) {
         .map(|range| range.primary.index.0);
     let dismissed_id = id.with("mention-dismissed");
     let dismissed: Option<usize> = ui.ctx().data(|d| d.get_temp(dismissed_id));
-    let mention = cursor
-        .and_then(|cursor| {
-            mention_query(&draft.text, cursor).map(|(at, query)| (at, query, cursor))
-        })
-        .filter(|(at, ..)| dismissed != Some(*at));
+    let typed = cursor.and_then(|cursor| {
+        mention_query(&draft.text, cursor).map(|(at, query)| (at, query, cursor))
+    });
+    // Esc dismisses one `@`. Once it is gone, a new one in the same place
+    // shows the list again.
+    if dismissed.is_some() && typed.as_ref().map(|(at, ..)| *at) != dismissed {
+        ui.ctx().data_mut(|d| d.remove_temp::<usize>(dismissed_id));
+    }
+    let mention = typed.filter(|(at, ..)| dismissed != Some(*at));
     let candidates = mention
         .as_ref()
         .map(|(_, query, _)| mention_candidates(app, conversation, query))
@@ -2274,6 +2278,7 @@ fn composer(app: &mut App, ui: &mut egui::Ui, conversation: &ConversationId) {
                         let mut shortcut = None;
                         let mut send = false;
                         let mut paste_requested = false;
+                        let mut dismiss: Option<usize> = None;
                         let range = egui::TextEdit::load_state(ui.ctx(), id)
                             .and_then(|state| state.cursor.char_range())
                             .map(|r| {
@@ -2333,7 +2338,7 @@ fn composer(app: &mut App, ui: &mut egui::Ui, conversation: &ConversationId) {
                                     if input.consume_key(Modifiers::NONE, Key::Escape)
                                         && let Some((at, ..)) = &mention
                                     {
-                                        ui.ctx().data_mut(|d| d.insert_temp(dismissed_id, *at));
+                                        dismiss = Some(*at);
                                     }
                                 }
                                 send |= enter;
@@ -2363,12 +2368,17 @@ fn composer(app: &mut App, ui: &mut egui::Ui, conversation: &ConversationId) {
                                 if input.consume_key(Modifiers::NONE, Key::Escape) {
                                     match &mention {
                                         Some((at, ..)) if !candidates.is_empty() => {
-                                            ui.ctx().data_mut(|d| d.insert_temp(dismissed_id, *at));
+                                            dismiss = Some(*at);
                                         }
                                         _ => actions.push(Action::CancelCompose),
                                     }
                                 }
                             });
+                        }
+                        // Written after input_mut: egui's context lock is not
+                        // re-entrant, so writing memory inside it deadlocks.
+                        if let Some(at) = dismiss {
+                            ui.ctx().data_mut(|d| d.insert_temp(dismissed_id, at));
                         }
                         if let Some(format) = bar_format.or(shortcut) {
                             composer_tools::apply_format(ui.ctx(), id, &mut draft.text, format);
