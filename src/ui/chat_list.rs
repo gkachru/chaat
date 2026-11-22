@@ -393,8 +393,12 @@ fn row(ui: &mut egui::Ui, app: &App, chat: &Chat, me: &str, now: i64) -> egui::R
         }
     });
     let muted = is_muted(app, chat);
-    let reserved = if unread || muted { 28.0 } else { 10.0 };
-    let preview_width = (inner.right() - text_left - reserved).max(20.0);
+    let agents = super::agents::has_pending(app, &ConversationId::Chat(chat.id.clone()));
+    let preview_width = (inner.right()
+        - text_left
+        - if unread || muted { 28.0 } else { 10.0 }
+        - if agents { 16.0 } else { 0.0 })
+    .max(20.0);
     // An unsent draft stands in for the last message, except in the chat
     // that is open.
     let draft = (app.open != Some(crate::model::ConversationId::Chat(chat.id.clone())))
@@ -434,6 +438,18 @@ fn row(ui: &mut egui::Ui, app: &App, chat: &Chat, me: &str, now: i64) -> egui::R
                 egui::Vec2::splat(14.0),
             ),
         );
+    }
+    if agents {
+        // A ring, so it never reads as the solid unread dot.
+        let x = inner.right() - if unread { 30.0 } else { 16.0 };
+        ui.painter().circle_stroke(
+            egui::pos2(x, inner.top() + 39.0),
+            4.0,
+            egui::Stroke::new(1.5, palette.accent),
+        );
+        return response
+            .on_hover_text("An agent proposed something here")
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
     }
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }

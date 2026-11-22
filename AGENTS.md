@@ -28,7 +28,19 @@ Microsoft Graph. These rules are for coding agents and contributors. Follow
   channel name per account for a push plugin (`push`: channel names only, no
   account IDs). A push plugin sees only what the relay sees: subscription
   ids, `clientState` and resource paths, never tokens or message text.
-  Beyond that, Chaat
+  The one exception to "never messages" is the `messages` need, for the
+  plugin that offers `agents` (exclusive: only the first enabled one that is
+  running). Only when the person has approved that need may Chaat answer its
+  reads and send it message events, and only for the chats and channels on
+  the per-account allow list (`settings.agent_access`, closed by default,
+  `agents::access`), filtered again in the backend. Reads come from the
+  local cache only (`backend/agents.rs`): never a Graph request, fetch or
+  `Freshness::claim`. Text only, no HTML or URLs, 60 000 bytes an answer.
+  An agent's reply or reaction is a proposal held in memory
+  (`agents::proposals`) that does nothing until the person clicks Send,
+  Accept or Edit; Chaat never sends or reacts on a plugin's say-so, and
+  proposing needs the account's propose switch plus read access. Never log
+  message text. Beyond that, Chaat
   sends a plugin only the values of that plugin's own options, with secret
   ones read from the credential store by the backend worker, never from
   settings files, and never logged. A plugin file that changed since the
@@ -75,6 +87,11 @@ Microsoft Graph. These rules are for coding agents and contributors. Follow
 - State that belongs to one signed-in person goes in `app::Account`, not
   `App`. `App` dereferences to the active account; events from background
   accounts are applied with that account swapped in and `App::hidden` set.
+- Agents (`src/agents/`, `src/app/agents.rs`, `src/backend/agents.rs`,
+  `src/plugin/agent.rs`): `agents` holds pure state (allow list, pending
+  proposals, the plain message view), `plugin/agent.rs` parses untrusted
+  plugin input, the backend answers reads from the cache, and `App` decides
+  access, shows proposals and runs the person's clicks as ordinary `Action`s.
 - Graph JSON stays in `src/graph/types.rs`. Translate it into `model` types
   in `src/graph/convert.rs`. Views never see Graph shapes.
 - `graph::Graph` sends the access token only to its own origin. Never build

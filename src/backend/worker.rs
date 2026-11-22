@@ -452,6 +452,12 @@ impl Worker {
             Command::SignOut => self.sign_out().await,
             Command::Fetch { resource, trigger } => self.fetch(resource, trigger),
             Command::CachedMessages(conversation) => self.cached_messages(conversation),
+            Command::AgentRead {
+                plugin,
+                request,
+                query,
+                access,
+            } => self.agent_read(plugin, request, query, access),
             Command::LoadOlder {
                 conversation,
                 before,
@@ -2247,6 +2253,36 @@ impl Worker {
                     cached: true,
                 });
             }
+        });
+    }
+
+    /// Answers an agent from the cache. Never fetches.
+    fn agent_read(
+        &self,
+        plugin: String,
+        request: u64,
+        query: crate::plugin::agent::AgentQuery,
+        access: crate::agents::access::AgentAccess,
+    ) {
+        let out = self.out.clone();
+        let Some(account) = &self.account else {
+            out.send(Event::AgentAnswer {
+                plugin,
+                request,
+                data: Err("not_found"),
+            });
+            return;
+        };
+        let store = Arc::clone(&account.store);
+        let me = account.record.id.split('.').next().unwrap_or_default();
+        let me = me.to_owned();
+        tokio::spawn(async move {
+            let data = super::agents::answer(store, me, query, access).await;
+            out.send(Event::AgentAnswer {
+                plugin,
+                request,
+                data,
+            });
         });
     }
 

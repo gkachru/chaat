@@ -4,6 +4,7 @@
 
 use crate::calling::RingAlert;
 use crate::calling::alerts::{is_microsoft_sign_in_page, is_user_code, ring_timeout};
+use crate::plugin::agent::{AgentProposal, AgentQuery, parse_proposal, parse_query};
 use crate::plugin::host::HostEvent;
 use crate::plugin::protocol::{
     OptionChoice, OptionSpec, PluginInfo, PluginMessage, StatusState, account_id, clean_choices,
@@ -66,6 +67,18 @@ pub enum PluginEvent {
     },
     /// A push receiver message; see `push_event`.
     Push(PushEvent),
+    /// A read request from the agents plugin, for one account.
+    AgentQuery {
+        request: u64,
+        account: String,
+        query: AgentQuery,
+    },
+    /// A reply or reaction proposal from the agents plugin.
+    AgentPropose {
+        request: u64,
+        account: String,
+        proposal: AgentProposal,
+    },
 }
 
 /// What a plugin's receiver reported, checked.
@@ -217,6 +230,20 @@ fn message_event(message: PluginMessage) -> Option<PluginEvent> {
         message @ (PluginMessage::PushReady { .. }
         | PluginMessage::Push { .. }
         | PluginMessage::PushDown { .. }) => push_event(message).map(PluginEvent::Push),
+        PluginMessage::AgentQuery { id, account, query } => Some(PluginEvent::AgentQuery {
+            request: id,
+            account: account_id(&account)?,
+            query: parse_query(&query)?,
+        }),
+        PluginMessage::AgentPropose {
+            id,
+            account,
+            proposal,
+        } => Some(PluginEvent::AgentPropose {
+            request: id,
+            account: account_id(&account)?,
+            proposal: parse_proposal(&proposal)?,
+        }),
         PluginMessage::Other => None,
     }
 }
@@ -497,6 +524,66 @@ mod tests {
             )),
             Some(PluginEvent::Push(PushEvent::Body { .. }))
         ));
+    }
+
+    #[test]
+    fn agent_fixtures_become_events() {
+        let fixture = |name: &str| {
+            std::fs::read_to_string(format!("tests/fixtures/plugin-protocol/{name}.json"))
+                .expect("fixture exists")
+        };
+        let message = |name: &str| PluginMessage::parse(&fixture(name)).unwrap();
+        assert_eq!(
+            event(HostEvent::Message(message("agent_query"))),
+            Some(PluginEvent::AgentQuery {
+                request: 7,
+                account: "o1.t1".into(),
+                query: AgentQuery::ReadMessages {
+                    conversation: "chat:19:a@thread.v2".into(),
+                    before: None,
+                    limit: 30
+                }
+            })
+        );
+        assert_eq!(
+            event(HostEvent::Message(message("agent_propose"))),
+            Some(PluginEvent::AgentPropose {
+                request: 8,
+                account: "o1.t1".into(),
+                proposal: AgentProposal::Reply {
+                    conversation: "chat:19:a@thread.v2".into(),
+                    text: "On it".into(),
+                    reply_to: None,
+                    agent: "Claude Code".into()
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn bad_agent_messages_are_dropped() {
+        let parse = |line: &str| PluginMessage::parse(line).and_then(message_event);
+        let query = |id: &str, account: &str, kind: &str| {
+            format!(
+                r#"{{"v":1,"type":"agent_query","id":{id},"account":{account},"query":{{"kind":"{kind}"}}}}"#
+            )
+        };
+        assert!(parse(&query("1", r#""o1.t1""#, "list_chats")).is_some());
+        // Odd account, unknown kind, mistyped required fields.
+        assert_eq!(parse(&query("1", r#""a b""#, "list_chats")), None);
+        assert_eq!(parse(&query("1", r#""o1.t1""#, "drop_table")), None);
+        assert_eq!(parse(&query(r#""1""#, r#""o1.t1""#, "list_chats")), None);
+        assert_eq!(parse(&query("1", "5", "list_chats")), None);
+        assert_eq!(
+            parse(r#"{"v":1,"type":"agent_propose","id":1,"account":"o1.t1"}"#),
+            None
+        );
+        assert_eq!(
+            parse(
+                r#"{"v":1,"type":"agent_propose","id":1,"account":"o1.t1","proposal":{"kind":"reply","conversation":"c","text":"\u0007"}}"#
+            ),
+            None
+        );
     }
 
     #[test]

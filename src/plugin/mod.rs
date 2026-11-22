@@ -4,6 +4,7 @@
 //! `protocol` defines the messages; what a plugin is for (today, call alerts)
 //! lives with that feature, in `calling::alerts`.
 
+pub mod agent;
 pub mod event;
 pub mod host;
 pub mod options;

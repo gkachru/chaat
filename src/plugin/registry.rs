@@ -11,17 +11,21 @@ pub const PRESENCE_DISPLAY: &str = "presence_display";
 /// them to Chaat. One such plugin at a time.
 pub const PUSH: &str = "push";
 
+/// Lets an AI agent read cached messages (allowed chats only) and propose
+/// replies and reactions the person approves. One such plugin at a time.
+pub const AGENTS: &str = "agents";
+
 /// The capabilities Chaat knows.
-pub const KNOWN: &[&str] = &[CALL_ALERTS, PRESENCE_DISPLAY, PUSH];
+pub const KNOWN: &[&str] = &[CALL_ALERTS, PRESENCE_DISPLAY, PUSH, AGENTS];
 
 /// Needs a plugin may ask for: account ids and sign-in names, and the
 /// person's availability and activity (never the status message), and
-/// per-account push channels.
-const NEEDS: &[&str] = &["accounts", "presence", PUSH];
+/// per-account push channels, and cached messages for an agent.
+const NEEDS: &[&str] = &["accounts", "presence", PUSH, "messages"];
 
 /// Whether only one enabled plugin may offer this capability.
 pub fn is_exclusive(capability: &str) -> bool {
-    capability == CALL_ALERTS || capability == PUSH
+    capability == CALL_ALERTS || capability == PUSH || capability == AGENTS
 }
 
 /// The known capabilities among `capabilities`, once each, in the order
@@ -74,7 +78,8 @@ mod tests {
             needs(&strings(&["presence", "tokens", "accounts", "presence"])),
             ["accounts", "presence"]
         );
-        assert!(needs(&strings(&["tokens", "messages"])).is_empty());
+        assert!(needs(&strings(&["tokens", "secrets"])).is_empty());
+        assert_eq!(needs(&strings(&["messages", "x"])), ["messages"]);
     }
 
     #[test]
@@ -86,7 +91,14 @@ mod tests {
     }
 
     #[test]
-    fn only_call_alerts_and_push_are_exclusive() {
+    fn registry_knows_agents() {
+        assert!(KNOWN.contains(&"agents"));
+        assert!(is_exclusive(AGENTS));
+        assert_eq!(offered(&strings(&["agents", "x"])), [AGENTS]);
+    }
+
+    #[test]
+    fn only_call_alerts_push_and_agents_are_exclusive() {
         assert!(is_exclusive(CALL_ALERTS));
         assert!(!is_exclusive(PRESENCE_DISPLAY));
         assert!(!is_exclusive("other"));

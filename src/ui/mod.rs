@@ -1,6 +1,7 @@
 //! The window: navigation rail, sidebar, the open conversation or page, and
 //! overlays. Every view reads [`App`] and pushes actions.
 
+pub mod agents;
 pub mod calendar;
 pub mod callbar;
 pub mod calls;

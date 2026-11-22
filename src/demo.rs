@@ -1253,6 +1253,62 @@ fn meeting(
     }
 }
 
+/// The demo chat the agent samples sit in.
+pub const AGENTS_CHAT: &str = "19:demo-ada@unq.gbl.spaces";
+
+/// For tests: an agents plugin that is on, plus one proposed reply (to Ada's
+/// first message) and one proposed reaction (on her last) in the first demo
+/// chat. The normal demo has none of this.
+pub fn populate_agents(app: &mut App) {
+    use crate::settings::PluginEntry;
+
+    app.settings.plugins.push(PluginEntry {
+        id: "demo-agents".into(),
+        path: "plugins/agents.exe".into(),
+        enabled: true,
+        needs: vec!["messages".into()],
+        approved_needs: vec!["messages".into()],
+        ..Default::default()
+    });
+    let state = app.plugins.entry("demo-agents".into()).or_default();
+    state.running = true;
+    state.info.name = Some("Agents".into());
+    state.offers = vec![crate::plugin::registry::AGENTS];
+    state.needs = vec!["messages"];
+
+    let account = app.id.clone().unwrap_or_default();
+    let conversation = ConversationId::Chat(AGENTS_CHAT.into());
+    let (first, last) = {
+        let messages = &app.conversation(&conversation).expect("demo chat").messages;
+        let from_ada = |m: &&Message| m.author_id.as_deref() == Some("u-ada");
+        (
+            messages.iter().find(from_ada).map(|m| m.id.clone()),
+            messages.iter().rev().find(from_ada).map(|m| m.id.clone()),
+        )
+    };
+    let now = crate::time::now();
+    let agent = "Claude Code".to_owned();
+    app.agent_proposals.reply(
+        "demo-agents",
+        &account,
+        conversation.clone(),
+        "Thanks Ada. I will check how Spotifast phrases its notes and send you a draft this afternoon."
+            .into(),
+        first,
+        agent.clone(),
+        now - 2 * MINUTE,
+    );
+    let _ = app.agent_proposals.reaction(
+        "demo-agents",
+        &account,
+        conversation,
+        last.expect("an Ada message"),
+        "👍".into(),
+        agent,
+        now - MINUTE,
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

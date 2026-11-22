@@ -237,7 +237,8 @@ impl App {
 
     /// What a plugin receives from Chaat now, for Settings › Plugins:
     /// `accounts` (account IDs and sign-in names), `presence` (availability
-    /// and activity), `push` (update channels, no account ids) and `options`
+    /// and activity), `push` (update channels, no account ids), `messages` (message text in
+    /// the chats the person allows) and `options`
     /// (its own option values).
     pub fn plugin_receives(&self, id: &str) -> Vec<&'static str> {
         let Some(entry) = self.settings.plugins.iter().find(|e| e.id == id) else {
@@ -245,7 +246,7 @@ impl App {
         };
         let state = self.plugins.get(id);
         let mut receives = Vec::new();
-        for need in ["accounts", "presence", registry::PUSH] {
+        for need in ["accounts", "presence", registry::PUSH, "messages"] {
             if Self::plugin_need_effective(entry, need) {
                 receives.push(need);
             }
@@ -657,6 +658,7 @@ impl App {
                     state.stopped();
                     self.push_plugin_stopped(&id);
                 }
+                self.prune_agent_proposals();
                 self.sync_push_route(false);
                 let state = self.plugins.entry(id.clone()).or_default();
                 state.message = message.clone();
@@ -787,6 +789,16 @@ impl App {
                 }
             }
             PluginEvent::Push(event) => self.on_push_event(&id, generation, event),
+            PluginEvent::AgentQuery {
+                request,
+                account,
+                query,
+            } => self.on_agent_query(&id, request, account, query),
+            PluginEvent::AgentPropose {
+                request,
+                account,
+                proposal,
+            } => self.on_agent_propose(&id, request, account, proposal),
         }
     }
 
@@ -1399,6 +1411,7 @@ fn need_short_words(need: &str) -> &'static str {
         "accounts" => "your accounts",
         "presence" => "your presence",
         registry::PUSH => "your update notifications",
+        "messages" => "messages",
         _ => "something new",
     }
 }

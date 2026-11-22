@@ -7238,3 +7238,325 @@ fn account_menu_has_pause() {
         }
     }
 }
+
+// -- Agents ------------------------------------------------------------------
+
+/// A narrow window shows the chat alone, docked beside a call.
+fn agents_harness(width: f32, theme: ThemeChoice) -> Harness {
+    let mut h = Harness::new();
+    h.size = egui::vec2(width, 900.0);
+    h.app.settings.theme = theme;
+    chaat::demo::populate_agents(&mut h.app);
+    if width < 500.0 {
+        h.app.pretend_docked();
+    }
+    h.frames(4);
+    h
+}
+
+/// One full-window frame whose actions are read before the app applies them.
+fn agents_frame(h: &mut Harness, events: Vec<egui::Event>) -> Vec<Action> {
+    h.time += 1.0 / 60.0;
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, h.size)),
+        time: Some(h.time),
+        events,
+        ..Default::default()
+    };
+    let app = &mut h.app;
+    let mut output = h.ctx.run_ui(input, |ui| {
+        chaat::ui::show(app, ui);
+    });
+    output.textures_delta.clear();
+    h.shapes = output.shapes;
+    std::mem::take(&mut h.app.actions)
+}
+
+fn agents_click(h: &mut Harness, wanted: &str) -> Vec<Action> {
+    let pos = ring_text_pos(h, wanted).unwrap_or_else(|| panic!("{wanted:?} is painted"));
+    let button = |pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    let mut actions = agents_frame(h, vec![egui::Event::PointerMoved(pos)]);
+    actions.extend(agents_frame(h, vec![button(true)]));
+    actions.extend(agents_frame(h, vec![button(false)]));
+    actions.extend(agents_frame(h, vec![]));
+    actions
+}
+
+fn agents_chat() -> ConversationId {
+    ConversationId::Chat(chaat::demo::AGENTS_CHAT.into())
+}
+
+#[test]
+fn card_both_themes_and_widths() {
+    for width in [360.0, 1400.0] {
+        for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+            let h = agents_harness(width, theme.clone());
+            let painted = painted_texts(&h);
+            for text in [
+                "Claude Code proposes a reply \u{B7} 2 min ago",
+                "Thanks Ada. I will check how Spotifast phrases its notes and send you a draft this afternoon.",
+                "Send",
+                "Edit",
+                "Claude Code \u{1F44D}",
+                "Accept",
+            ] {
+                assert!(
+                    painted.iter().any(|t| t == text),
+                    "{text:?} shows at {width} in {theme:?}: {painted:?}"
+                );
+            }
+            assert!(painted.iter().filter(|t| *t == "Discard").count() == 2);
+            assert!(
+                painted
+                    .iter()
+                    .any(|t| t.starts_with("Ada Lovelace: Morning!")),
+                "the quoted message shows"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_chat_list_marks_a_chat_with_a_proposal() {
+    let mut h = agents_harness(1400.0, ThemeChoice::Dark);
+    let rings = |h: &Harness| {
+        painted_shapes(h)
+            .iter()
+            .filter(|s| {
+                matches!(s, egui::epaint::Shape::Circle(c)
+                    if c.fill == egui::Color32::TRANSPARENT && c.stroke.width == 1.5)
+            })
+            .count()
+    };
+    assert_eq!(rings(&h), 1);
+    let account = h.app.id.clone().unwrap();
+    for id in ["p1", "p2"] {
+        h.app.agent_proposals.take(id);
+    }
+    assert!(!h.app.agent_proposals.has_pending(&account, &agents_chat()));
+    h.frames(2);
+    assert_eq!(rings(&h), 0);
+}
+
+#[test]
+fn outdated_hides_send() {
+    let mut h = agents_harness(1400.0, ThemeChoice::Dark);
+    let account = h.app.id.clone().unwrap();
+    h.app.agent_proposals.outdate(&account, &agents_chat());
+    h.frames(3);
+    let painted = painted_texts(&h);
+    assert!(
+        painted
+            .iter()
+            .any(|t| t == "Claude Code\u{2019}s reply is outdated: you answered since"),
+        "{painted:?}"
+    );
+    assert!(!painted.iter().any(|t| t == "Send"));
+    assert!(painted.iter().any(|t| t == "Edit"));
+}
+
+#[test]
+fn agent_name_is_plain_text() {
+    let mut h = agents_harness(1400.0, ThemeChoice::Light);
+    let account = h.app.id.clone().unwrap();
+    h.app.agent_proposals.reply(
+        "demo-agents",
+        &account,
+        agents_chat(),
+        "**bold** <b>x</b> [link](https://example.com)".into(),
+        None,
+        "**Bot**".into(),
+        chaat::time::now(),
+    );
+    h.frames(3);
+    let painted = painted_texts(&h);
+    assert!(
+        painted
+            .iter()
+            .any(|t| t.starts_with("**Bot** proposes a reply")),
+        "{painted:?}"
+    );
+    assert!(
+        painted
+            .iter()
+            .any(|t| t == "**bold** <b>x</b> [link](https://example.com)")
+    );
+}
+
+#[test]
+fn send_button_pushes_agent_send() {
+    let mut h = agents_harness(1400.0, ThemeChoice::Dark);
+    let actions = agents_click(&mut h, "Send");
+    assert!(
+        actions.contains(&Action::AgentSend {
+            proposal: "p1".into()
+        }),
+        "{actions:?}"
+    );
+    let mut h = agents_harness(1400.0, ThemeChoice::Dark);
+    let actions = agents_click(&mut h, "Edit");
+    assert!(actions.contains(&Action::AgentEdit {
+        proposal: "p1".into()
+    }));
+    let mut h = agents_harness(1400.0, ThemeChoice::Dark);
+    let actions = agents_click(&mut h, "Accept");
+    assert!(actions.contains(&Action::AgentAcceptReaction {
+        proposal: "p2".into()
+    }));
+}
+
+#[test]
+fn section_only_for_agents_plugin() {
+    for width in [480.0, 1280.0] {
+        for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+            let mut h = Harness::new();
+            chaat::demo::populate_agents(&mut h.app);
+            h.size = egui::vec2(width, 3000.0);
+            h.app.settings.theme = theme.clone();
+            h.act(Action::ShowSettingsPage(SettingsPage::Plugins));
+            h.app.plugins_view = PluginsView::Plugin("demo-agents".into());
+            h.frames(3);
+            let painted = painted_texts(&h);
+            for text in [
+                "WHAT AGENTS CAN SEE",
+                "Chats",
+                "Channels",
+                "Selected",
+                "Agents may propose replies and reactions",
+            ] {
+                assert!(
+                    painted.iter().any(|t| t == text),
+                    "{text:?} shows at {width} in {theme:?}: {painted:?}"
+                );
+            }
+            // One block per signed-in account.
+            assert_eq!(painted.iter().filter(|t| *t == "Chats").count(), 2);
+            h.app.plugins_view = PluginsView::Plugin("demo-light".into());
+            h.frames(3);
+            assert!(!painted_texts(&h).iter().any(|t| t == "WHAT AGENTS CAN SEE"));
+        }
+    }
+}
+
+#[test]
+fn everything_starts_closed() {
+    use chaat::agents::access::Access;
+    let h = agents_harness(1280.0, ThemeChoice::Dark);
+    for account in h.app.plugin_accounts() {
+        let access = h.app.agent_access_of(&account.id);
+        assert_eq!(access.chats, Access::None);
+        assert_eq!(access.channels, Access::None);
+        assert!(!access.propose);
+    }
+}
+
+#[test]
+fn access_section_pushes_changes() {
+    use chaat::agents::access::{Access, AgentAccess};
+    let mut h = Harness::new();
+    chaat::demo::populate_agents(&mut h.app);
+    h.size = egui::vec2(900.0, 3000.0);
+    h.app.plugins_view = PluginsView::Plugin("demo-agents".into());
+    let account = h.app.plugin_accounts()[0].id.clone();
+    h.app.settings.agent_access.insert(
+        account.clone(),
+        AgentAccess {
+            chats: Access::Selected([agents_chat().key()].into()),
+            ..Default::default()
+        },
+    );
+    plugins_page_frame(&mut h, vec![]);
+    plugins_page_frame(&mut h, vec![]);
+    assert!(painted_texts(&h).iter().any(|t| t == "Ada Lovelace"));
+    let actions = plugins_page_click(&mut h, "All");
+    assert!(
+        actions.iter().any(
+            |a| matches!(a, Action::SetAgentAccess { account: id, access }
+            if *id == account && access.chats == Access::All)
+        ),
+        "{actions:?}"
+    );
+}
+
+#[test]
+fn header_menu_toggles() {
+    use chaat::agents::access::Access;
+    for kind in ["none", "selected", "all"] {
+        let mut h = agents_harness(1280.0, ThemeChoice::Dark);
+        let account = h.app.id.clone().unwrap();
+        let mut access = h.app.agent_access_of(&account);
+        match kind {
+            "selected" => access.chats = Access::Selected([agents_chat().key()].into()),
+            "all" => access.chats = Access::All,
+            _ => {}
+        }
+        h.app.settings.agent_access.insert(account, access);
+        egui::Popup::toggle_id(&h.ctx, chaat::ui::agents::menu_id(&agents_chat()));
+        h.frames(3);
+        let painted = painted_texts(&h);
+        let has = |text: &str| painted.iter().any(|t| t == text);
+        match kind {
+            "none" => {
+                assert!(has("Let agents read this chat"), "{painted:?}");
+                let actions = agents_click(&mut h, "Let agents read this chat");
+                assert!(actions.contains(&Action::LetAgentsRead {
+                    conversation: agents_chat(),
+                    on: true
+                }));
+            }
+            "selected" => {
+                assert!(has("Stop agents reading this chat"), "{painted:?}");
+                assert!(!has("Let agents read this chat"));
+                let actions = agents_click(&mut h, "Stop agents reading this chat");
+                assert!(actions.contains(&Action::LetAgentsRead {
+                    conversation: agents_chat(),
+                    on: false
+                }));
+            }
+            _ => {
+                assert!(!has("Let agents read this chat"));
+                assert!(!has("Stop agents reading this chat"));
+                assert!(has("Agents may read all of these"));
+            }
+        }
+    }
+    // No agents plugin on: no menu at all.
+    let mut h = Harness::new();
+    egui::Popup::toggle_id(&h.ctx, chaat::ui::agents::menu_id(&agents_chat()));
+    h.frames(3);
+    assert!(!painted_texts(&h).iter().any(|t| t.contains("agents")));
+}
+
+#[test]
+fn messages_need_has_consent_words() {
+    let mut h = Harness::new();
+    chaat::demo::populate_agents(&mut h.app);
+    h.size = egui::vec2(900.0, 3000.0);
+    h.app
+        .settings
+        .plugins
+        .last_mut()
+        .unwrap()
+        .approved_needs
+        .clear();
+    h.app.plugins.get_mut("demo-agents").unwrap().pending_needs = vec!["messages"];
+    h.app.plugins_view = PluginsView::Plugin("demo-agents".into());
+    plugins_page_frame(&mut h, vec![]);
+    plugins_page_frame(&mut h, vec![]);
+    let painted = painted_texts(&h);
+    assert!(
+        painted
+            .iter()
+            .any(|t| t == "the text of messages in the chats and channels you allow")
+    );
+    assert!(!painted.iter().any(|t| t.contains("does not know")));
+    h.app.plugins_view = PluginsView::List;
+    plugins_page_frame(&mut h, vec![]);
+    plugins_page_frame(&mut h, vec![]);
+    assert!(painted_texts(&h).iter().any(|t| t == "Asks for messages"));
+}

@@ -1,0 +1,1 @@
+{"v":1,"type":"agent_query","id":7,"account":"o1.t1","query":{"kind":"read_messages","conversation":"chat:19:a@thread.v2","limit":30}}

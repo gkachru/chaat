@@ -28,6 +28,7 @@ use crate::settings::Settings;
 use crate::sync::{Resource, Trigger};
 use crate::theme::Palette;
 
+mod agents;
 mod calls;
 mod chat_actions;
 mod history;
@@ -689,6 +690,8 @@ pub struct App {
     pub rings: Vec<Ring>,
     /// Which rings already raised the window, and when it last was.
     ring_raises: calls::RingRaises,
+    /// Pending proposals from the agents plugin, by account. Process-wide.
+    pub agent_proposals: crate::agents::proposals::Proposals,
     /// The plugins of the plugin list at run time, by id. Process-wide, like
     /// the plugins themselves.
     pub plugins: std::collections::BTreeMap<String, PluginState>,
@@ -885,6 +888,7 @@ impl App {
             push_plugin: Default::default(),
             plugin_generation: 0,
             plugin_toasts: Default::default(),
+            agent_proposals: Default::default(),
             plugin_option_errors: Default::default(),
             plugins_view: PluginsView::default(),
             reordering: false,
@@ -1274,6 +1278,11 @@ impl App {
             self.notify_ctx = Some(ctx.clone());
         }
         match event {
+            Event::AgentAnswer {
+                plugin,
+                request,
+                data,
+            } => self.on_agent_answer(plugin, request, data),
             Event::Update(event) => match event {
                 crate::updates::Event::Status(status) => {
                     if matches!(status, crate::updates::Status::Ready(_)) {
@@ -1795,10 +1804,13 @@ impl App {
             .filter(|m| m.delivery == Delivery::Sent)
             .map(|m| m.created)
             .max();
-        let incoming_new: Vec<NoticeItem> = messages
+        let fresh_from_others: Vec<&Message> = messages
             .iter()
             .filter(|m| !m.system && !m.deleted && !m.is_from(&me))
             .filter(|m| newest_before.is_some_and(|newest| m.created > newest))
+            .collect();
+        let incoming_new: Vec<NoticeItem> = fresh_from_others
+            .iter()
             .map(|m| NoticeItem {
                 message: m.id.clone(),
                 author: Some(m.author.clone()),
@@ -1808,6 +1820,11 @@ impl App {
                 created: m.created,
             })
             .collect();
+        let agent_new: Vec<Message> = if cached || merge == Merge::Older {
+            Vec::new()
+        } else {
+            fresh_from_others.into_iter().cloned().collect()
+        };
         if merge == Merge::Older && !messages.is_empty() {
             entry.restore_history_anchor = true;
         }
@@ -1822,6 +1839,7 @@ impl App {
         if !cached {
             entry.fresh = true;
         }
+        self.agent_events_new_messages(&conversation, &agent_new);
         if !cached && !incoming_new.is_empty() {
             self.notify_batch(&conversation, incoming_new);
         }
@@ -2147,6 +2165,7 @@ impl App {
 
     fn on_sent(&mut self, conversation: ConversationId, local_id: String, message: Message) {
         self.pending_sends.remove(&local_id);
+        self.agent_event_user_sent(&conversation, &message.id);
         let entry = self.conversations.entry(conversation.clone()).or_default();
         if let Some(reply_to) = &message.reply_to
             && conversation.is_channel()
@@ -2205,6 +2224,7 @@ impl App {
 
     pub fn apply(&mut self, action: Action, ctx: &egui::Context) {
         self.apply_one(action, ctx);
+        self.prune_agent_proposals();
         self.plugins_view_follows_settings();
     }
 
@@ -3030,6 +3050,12 @@ impl App {
             | Action::SetPluginSecret { .. }
             | Action::PluginSignIn { .. }
             | Action::HidePluginSignIn { .. }) => self.apply_plugin_action(action),
+            action @ (Action::SetAgentAccess { .. }
+            | Action::LetAgentsRead { .. }
+            | Action::AgentSend { .. }
+            | Action::AgentEdit { .. }
+            | Action::AgentDiscard { .. }
+            | Action::AgentAcceptReaction { .. }) => self.apply_agent_action(action, ctx),
             Action::RingPlaceCall(id) => self.ring_place_call(&id, ctx),
             Action::RingOpenChat(id) => self.ring_open_chat(&id, ctx),
             Action::Quit => {
@@ -3248,6 +3274,7 @@ impl App {
         if text.trim().is_empty() && files.is_empty() && images.is_empty() {
             return;
         }
+        self.outdate_agent_proposals(&conversation);
         let (html, mentions) = html::compose_with_mentions(&text, &mentions);
         let mut preview_html = html.clone();
         for image in &images {

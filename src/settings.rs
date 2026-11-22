@@ -126,6 +126,9 @@ pub struct Settings {
     /// The organization's name, from a setup file.
     #[serde(default)]
     pub org_label: Option<String>,
+    /// What an `agents` plugin may read and propose, by account (`oid.tid`).
+    /// A missing account is fully closed.
+    pub agent_access: BTreeMap<String, crate::agents::access::AgentAccess>,
 }
 
 /// How calls and meetings open (docs/calling.md).
@@ -211,6 +214,7 @@ impl Default for Settings {
             automatic_updates: true,
             last_update_check: 0,
             org_label: None,
+            agent_access: BTreeMap::new(),
         }
     }
 }

@@ -339,7 +339,10 @@ fn header(app: &mut App, ui: &mut egui::Ui, conversation: &ConversationId) {
                     join = None;
                 }
                 // The title takes what the buttons on the right leave.
-                let icons = usize::from(web.is_some()) + if call_users.is_empty() { 0 } else { 2 };
+                let menu = super::agents::ReadMenu::of(app, conversation);
+                let icons = usize::from(menu != super::agents::ReadMenu::Hidden)
+                    + usize::from(web.is_some())
+                    + if call_users.is_empty() { 0 } else { 2 };
                 let mut buttons = icons as f32 * 34.0 + 16.0;
                 if join.is_some() {
                     buttons += 80.0;
@@ -389,6 +392,9 @@ fn header(app: &mut App, ui: &mut egui::Ui, conversation: &ConversationId) {
                     if buttons > 0.0 {
                         ui.add_space(buttons - 8.0);
                     }
+                    if menu != super::agents::ReadMenu::Hidden {
+                        agents_menu(ui, &palette, conversation, menu, &mut app.actions);
+                    }
                     if let Some(web) = web {
                         let open = widgets::icon_button(
                             ui,
@@ -435,6 +441,42 @@ fn header(app: &mut App, ui: &mut egui::Ui, conversation: &ConversationId) {
                     }
                 });
             });
+        });
+}
+
+/// The header's More menu, shown while an agents plugin is on: let agents
+/// read this conversation, or stop them.
+fn agents_menu(
+    ui: &mut egui::Ui,
+    palette: &theme::Palette,
+    conversation: &ConversationId,
+    menu: super::agents::ReadMenu,
+    actions: &mut Vec<Action>,
+) {
+    let more = widgets::icon_button(ui, palette, Icon::More, "More");
+    egui::Popup::menu(&more)
+        .id(super::agents::menu_id(conversation))
+        .show(|ui| {
+            ui.set_min_width(200.0);
+            match super::agents::menu_label(menu, conversation) {
+                Some(label) => {
+                    let on = menu == super::agents::ReadMenu::Let;
+                    let icon = if on { Icon::Plus } else { Icon::Close };
+                    if menu_item(ui, palette, icon, label) {
+                        actions.push(Action::LetAgentsRead {
+                            conversation: conversation.clone(),
+                            on,
+                        });
+                    }
+                }
+                None => {
+                    ui.label(
+                        egui::RichText::new("Agents may read all of these")
+                            .font(theme::regular(12.0))
+                            .color(palette.dim),
+                    );
+                }
+            }
         });
 }
 
@@ -1192,6 +1234,15 @@ fn message_row(
                     |ui| reactions(ui, app, conversation, message, me, actions),
                 );
             }
+            let pills = super::agents::pending_reactions(app, conversation, &message.id);
+            if !pills.is_empty() {
+                right_aligned(
+                    ui,
+                    egui::Id::new(("chaat-agent-pills", &message.id)),
+                    bubble_max,
+                    |ui| super::agents::reaction_pills(ui, app, &pills, actions),
+                );
+            }
         } else {
             ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
@@ -1235,6 +1286,10 @@ fn message_row(
                         // The pills tuck 1 point into the bubble's bottom edge.
                         ui.add_space(-(ui.spacing().item_spacing.y + REACTION_OVERLAP));
                         reactions(ui, app, conversation, message, me, actions);
+                    }
+                    let pills = super::agents::pending_reactions(app, conversation, &message.id);
+                    if !pills.is_empty() {
+                        super::agents::reaction_pills(ui, app, &pills, actions);
                     }
                 });
             });
@@ -2356,6 +2411,7 @@ fn composer(app: &mut App, ui: &mut egui::Ui, conversation: &ConversationId) {
             bottom: 14,
         }))
         .show(ui, |ui| {
+            super::agents::proposal_card(ui, app, conversation, &mut actions);
             composer_top = Some(ui.cursor().min);
             Frame::new()
                 .fill(palette.surface)

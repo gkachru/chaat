@@ -169,6 +169,9 @@ pub(super) fn plugin_page(
             account_rows(app, ui, entry, state, actions);
         }
     }
+    if state.is_some_and(|s| s.running) {
+        super::super::agents::access_section(ui, app, &entry.id, actions);
+    }
     file_section(app, ui, entry, actions);
     ui.add_space(14.0);
 }

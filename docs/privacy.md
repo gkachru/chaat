@@ -18,14 +18,21 @@
   passphrase. The relay access key it may carry is stored in the OS credential
   store ([setup-file.md](setup-file.md)).
 - **Plugins** are separate programs you add and turn on in Settings ›
-  Plugins ([plugins.md](plugins.md)). A plugin never receives your tokens,
-  your settings or message content. Chaat sends it the ID and sign-in name of
+  Plugins ([plugins.md](plugins.md)). A plugin never receives your tokens or
+  your settings. It receives message text only if it offers `agents`, declares
+  the `messages` need and you approve it, and then only the cached text of
+  chats and channels you put on that account's allow list (nothing by
+  default; no HTML, image URLs or attachment links), plus new messages and
+  your own sends in them. An agent's read never triggers a Graph request, and
+  its proposed replies and reactions are sent only when you click. Chaat
+  never logs message text or what an agent read. Chaat sends it the ID and sign-in name of
   each of your accounts, your busiest presence (availability and activity
   across accounts, never the status message), or the random channel names of
   a push plugin (no account IDs), only when the plugin declares
   that need and you approve it in Settings › Plugins, plus the values of the
   plugin's own options. A push plugin sees subscription ids, `clientState` and
-  resource paths, never tokens or message text. Secret option values are kept in the OS credential
+  resource paths, never tokens or message text. An agents plugin gets no
+  tokens either. Secret option values are kept in the OS credential
   store, not in files, and are not logged. A plugin file that changed since
   you added it does not run until you allow it. These needs limit what Chaat
   sends, not what the program can reach: a plugin runs as you and can read

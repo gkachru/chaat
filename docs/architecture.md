@@ -70,6 +70,10 @@ account already open is retired.
 | `store.rs` | Per-account SQLite cache with FTS5 search |
 | `sync.rs` | Fetch policy (no polling; dedupe repeated requests) |
 | `calling/` | Calls in Teams on the web: finding Edge and Chrome and starting their app windows (`browser.rs`), docking geometry (`dock.rs`), the call session behind the call bar (`session.rs`); the app side is in `app/calls.rs` ([calling.md](calling.md)) |
+| `plugin/` | External plugins: the host, the line protocol, capabilities and needs (`registry.rs`), and the agent protocol parser (`agent.rs`, untrusted input) ([plugins.md](plugins.md)) |
+| `agents/` | Pure agent state: the per-account allow list (`access.rs`), pending reply and reaction proposals (`proposals.rs`), and the plain view of a message and its size fit (`view.rs`) |
+| `app/agents.rs` | Chooses the one agents plugin, checks access, answers plugin lines, shows proposals and runs your clicks as ordinary `Action`s; sends new-message and user-sent events |
+| `backend/agents.rs` | Answers agent reads from the SQLite cache on the blocking pool (8 at once, 60 000-byte answers); never calls Graph |
 | `realtime.rs` | Push updates: relay WebSocket, Graph subscription lifecycle, notification parsing |
 | `relay/` (crate `chaat-relay`, binary `chaat-relay`) | The self-hostable relay: validation handshake, forwarding of Graph notifications, optional client access key |
 | `theme.rs` | Palettes (fastframe-theme compatible), visuals, type scale, Lucide icon table |
@@ -87,11 +91,25 @@ account already open is retired.
 | Push subscriptions this installation made and has not deleted yet (ids only) | `accounts/<account>/push-subscriptions.json` |
 | People Graph refused to follow for presence, for a week (user ids and times) | `accounts/<account>/presence-refused.json` |
 | Signed-in accounts, in order | `settings.json`, `accounts` |
+| What agents may read and propose, per account (`chats` and `channels`: none, selected keys or all; `propose`); closed when absent. Pending proposals are not stored | `settings.json`, `agent_access` |
 | Refresh token | OS credential store, service `app.chaat.Chaat` (on Windows, split across entries when longer than one holds) |
 | Push relay access key (shared by all accounts; kept on sign-out) | OS credential store, `relay-key`; `settings.json` records only `relay_key_set` |
 | Logs (no message contents, tokens or URLs with queries) | state folder, `chaat.log` (the previous run in `chaat.log.1`), `panic.log` |
 
 Signing out deletes that account's refresh token and folder.
+
+## Agents data flow
+
+```
+agent ─► plugin ─ agent_query ─► App::on_agent_query ─(plugin approved, account known)─► Command::AgentRead
+                                                                                             │ cache only
+plugin ◄─ agent_result ◄─ Event ◄───────── backend/agents.rs (filters by allow list again) ◄─┘
+plugin ─ agent_propose ─► App (allow list, propose switch) ─► Proposals (memory) ─► card / pill
+you click Send, Edit, Discard, Accept ─► Action ─► ordinary send or React ─► agent_outcome ─► plugin
+```
+
+Events (`new_message`, `user_sent`) go out from `App` only for allowed
+conversations. A plugin never sees a Graph shape, a token or a URL.
 
 ## Rendering and performance
 

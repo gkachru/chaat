@@ -19,6 +19,14 @@ Call alerts need no Chaat permission. The optional call-alerts plugin is a
 separate program with its own sign-in and consent (Teams' own client); Chaat
 never shares its tokens with it ([calling.md](calling.md#call-alerts-plugin)).
 
+Agents (an optional plugin that reads cached messages and proposes replies and
+reactions, [plugins.md](plugins.md#agent-plugins)) need no new Graph
+permission. Reads come from Chaat's cache and call nothing. A reply you
+approve is an ordinary send (`Chat.ReadWrite` or `ChatMessage.Send` in chats,
+`ChannelMessage.Send` in channels), and an accepted reaction is an ordinary
+`setReaction`. Channel text reaches an agent only if Chaat already holds it,
+which needs `ChannelMessage.Read.All`.
+
 | Permission | Requested | Endpoints | Admin consent |
 |---|---|---|---|
 | `openid`, `profile`, `offline_access` | At sign-in | Token endpoint (identity, refresh token) | No |

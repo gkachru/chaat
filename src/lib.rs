@@ -4,6 +4,7 @@
 //! pieces fit: `ui` draws state and emits `model::Action`s, `app` applies
 //! them, `backend` runs every network and disk task on its own runtime.
 
+pub mod agents;
 pub mod app;
 pub mod auth;
 pub mod backend;

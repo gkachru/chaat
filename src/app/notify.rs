@@ -305,7 +305,7 @@ impl App {
     }
 
     /// The index of a signed-in account by its id.
-    fn account_index(&self, id: &str) -> Option<usize> {
+    fn signed_in_account_index(&self, id: &str) -> Option<usize> {
         self.accounts.iter().position(|a| {
             a.id.as_deref() == Some(id) && matches!(a.auth, AuthStatus::SignedIn { .. })
         })
@@ -323,7 +323,7 @@ impl App {
                 Target::Test => None,
             };
             let index = match account {
-                Some(id) => match self.account_index(&id) {
+                Some(id) => match self.signed_in_account_index(&id) {
                     Some(index) => index,
                     None => continue,
                 },

@@ -5,6 +5,7 @@
 //! [`Command`]s and drains [`Event`]s each frame; every event wakes the
 //! window through the shell's [`Waker`], so an idle window draws nothing.
 
+mod agents;
 mod setup;
 mod setup_export;
 mod worker;
@@ -102,6 +103,13 @@ pub enum Command {
     },
     /// Reopen a model evicted from RAM without bypassing Graph freshness.
     CachedMessages(ConversationId),
+    /// An agent's read, answered from the cache only (`Event::AgentAnswer`).
+    AgentRead {
+        plugin: String,
+        request: u64,
+        query: crate::plugin::agent::AgentQuery,
+        access: crate::agents::access::AgentAccess,
+    },
     Paste {
         conversation: ConversationId,
         range: (usize, usize),
@@ -311,6 +319,13 @@ pub enum Merge {
 
 #[derive(Debug)]
 pub enum Event {
+    /// The answer to `Command::AgentRead`. The error is one of
+    /// `not_allowed`, `not_found`, `bad_request`, `busy`.
+    AgentAnswer {
+        plugin: String,
+        request: u64,
+        data: Result<serde_json::Value, &'static str>,
+    },
     Update(crate::updates::Event),
     Pasted {
         conversation: ConversationId,

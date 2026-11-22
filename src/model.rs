@@ -1136,6 +1136,33 @@ pub enum Action {
         plugin: String,
         account: Option<String>,
     },
+    /// Replaces what agents may use in one account (`oid.tid`).
+    SetAgentAccess {
+        account: String,
+        access: crate::agents::access::AgentAccess,
+    },
+    /// Lets agents read (or stop reading) one conversation of the active
+    /// account.
+    LetAgentsRead {
+        conversation: ConversationId,
+        on: bool,
+    },
+    /// Sends the proposed reply as the person.
+    AgentSend {
+        proposal: String,
+    },
+    /// Moves the proposed reply into the conversation's draft.
+    AgentEdit {
+        proposal: String,
+    },
+    /// Drops a proposed reply or reaction.
+    AgentDiscard {
+        proposal: String,
+    },
+    /// Applies a proposed reaction.
+    AgentAcceptReaction {
+        proposal: String,
+    },
     Quit,
 }
 

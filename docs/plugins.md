@@ -203,6 +203,7 @@ Capabilities:
 | `call_alerts` | Reports ringing calls and sign-ins. Exclusive: only the first enabled plugin offering it, in list order, gets rings and sign-in cards |
 | `presence_display` | Shows your presence. Any number of plugins |
 | `push` | Receives Graph's change notifications and forwards them (see [Push plugins](#push-plugins)). Exclusive: only the first enabled plugin offering it, in list order, that is running is used, and only with the `push` need approved |
+| `agents` | Lets an AI agent read cached messages and propose replies and reactions (see [Agent plugins](#agent-plugins)). Exclusive: only the first enabled plugin offering it, in list order, that is running is used, and only with the `messages` need approved |
 
 A plugin whose `ready` offers none of the capabilities Chaat knows is
 stopped with a notice and not restarted.
@@ -221,10 +222,13 @@ presence.
 | `accounts` | The ID (`oid.tid`) and sign-in name of each Chaat account, and later changes |
 | `presence` | Your busiest presence across accounts: availability and activity |
 | `push` | One random channel name per account for each run, no account IDs. The plugin sends back notification bodies Graph posted to it |
+| `messages` | For the `agents` plugin only: answers to its read requests and message events, limited to the chats and channels you allowed per account (Settings › Plugins, "What agents can see"). Suggested consent text: "the text of messages in the chats and channels you allow" |
 
 The first start sends an empty account list. Whatever the need, Chaat never
-sends a plugin its tokens, its settings (except the plugin's own option
-values) or any message content. Presence never includes your status message.
+sends a plugin its tokens or its settings (except the plugin's own option
+values). Without the `messages` need it never sends message content either;
+with it, only what [Agent plugins](#agent-plugins) describes. Presence never
+includes your status message.
 
 `needs` limit what Chaat sends. They do not limit what the program can
 reach: a plugin runs as you, with your permissions, and can read what you
@@ -504,6 +508,130 @@ Rules:
   that tunnels through a third party (the maintainer's uses Cloudflare) shows
   that party the same.
 
+## Agent plugins
+
+A plugin that offers `agents` and declares the `messages` need can let an AI
+agent on your computer read your cached messages and propose replies and
+reactions. Chaat is the gate: it decides what the agent may see, and you
+decide what gets sent. Nothing is read, answered or sent to the plugin until
+all of these hold:
+
+- the plugin is enabled, running and the first one that offers `agents`;
+- you approved its `messages` need;
+- the chat or channel is on that account's allow list.
+
+The allow list is per account and closed by default. Settings › Plugins, on
+the agents plugin's page, has a "What agents can see" section: for Chats and
+for Channels, **None**, **Selected** or **All**, and the switch "Agents may
+propose replies and reactions". The chat header menu has "Let agents read
+this chat" to add or remove one conversation. Proposing a reply or reaction
+needs the switch on and read access to that conversation. The list is stored
+in `settings.json` (`agent_access`, by account ID).
+
+Reads come from Chaat's local cache only. An agent request never causes a
+Graph request, a fetch or a refresh, so an agent sees what Chaat already
+holds, which is what you have opened or what push delivered. Conversations
+are named by a key, `chat:<chat id>` or `channel:<team id>:<channel id>`,
+which `list_chats` and `list_channels` return.
+
+### Messages
+
+| Direction | Message | Fields and rules |
+|---|---|---|
+| Plugin to Chaat | `agent_query` | `id`: a number the plugin picks, echoed in the answer. `account`: an account ID (`oid.tid`). `query`: an object with a `kind` (below). Unknown kinds and malformed queries are ignored without an answer |
+| Plugin to Chaat | `agent_propose` | `id`, `account` as above. `proposal`: an object with a `kind` (below). Unknown kinds and malformed proposals are ignored without an answer |
+| Chaat to plugin | `agent_result` | `id`: the request's. `ok`: `true` with `data`, or `false` with `data: {"error": <code>}` |
+| Chaat to plugin | `agent_outcome` | `proposal`: the id from the `agent_propose` answer. `outcome`: see below |
+| Chaat to plugin | `agent_event` | `account` and `event`: a new message or your own send in an allowed conversation (see below) |
+
+Query kinds. Ids (conversation keys, message ids) are 1 to 512 characters.
+`limit` is clamped to the maximum; a missing or non-numeric one means the
+default. Times (`before`, `since`) are Unix milliseconds.
+
+| `kind` | Fields | Answer `data` |
+|---|---|---|
+| `list_chats` | `limit` (default 50, at most 200) | `{"chats": [{id, title, kind, last_message_at, unread}]}`, newest activity first; `kind` is `one_on_one`, `group` or `meeting`; hidden chats are left out |
+| `list_channels` | none | `{"channels": [{id, team, channel, last_message_at}]}`, newest first |
+| `read_messages` | `conversation`, `before` (optional), `limit` (default 30, at most 200) | `{conversation_id, messages, more, before?}`, oldest first. When `more` is true, pass the returned `before` to get older messages |
+| `recent_messages` | `since` (default 0), `limit` (default 50, at most 200), `unread_only` (default false) | `{"messages": [...], "more": bool}` across allowed conversations, each message also carrying `conversation_id` and `conversation` (title). `unread_only` applies to chats |
+| `search` | `query` (1 to 2000 characters), `limit` (default 20, at most 100) | `{"hits": [{conversation_id, conversation, message_id, sender, time, snippet}]}` from the local search index, newest first |
+
+A message in an answer has `message_id`, `sender`, `sender_id`, `time` (UTC,
+ending in `Z`), `text` (plain text), `reply_to` and `reactions` (`emoji` and
+`count`), and, when present, `subject`, `edited` and `files` (file names
+only). There is no HTML, no attachment or image URL and no image data.
+Deleted messages and system events are left out.
+
+Proposal kinds:
+
+| `kind` | Fields |
+|---|---|
+| `reply` | `conversation`, `text` (at most 20 000 characters; control and invisible characters are removed, newlines kept; a proposal that is empty after cleaning is dropped), `reply_to` (optional message id, for a quote reply), `agent` (the agent's name, plain text cut to 40 characters; `Agent` when missing) |
+| `reaction` | `conversation`, `message` (a message id), `emoji` (1 to 16 characters, no whitespace or control characters), `agent` as above |
+
+A proposal is shown to you and does nothing until you click. A reply appears
+as a card above that conversation's composer with **Send**, **Edit** and
+**Discard**; a reaction appears as a pill under the message with **Accept**
+and **Discard**; the chat list marks conversations with pending proposals.
+A new reply replaces the pending reply of its conversation, and a new
+reaction replaces the pending one on the same message. A conversation holds
+at most 20 pending reactions. Proposals live in memory only, and go when the plugin stops or is removed, its messages permission is withdrawn, or the account signs out: a restart
+forgets them. Images and mentions are not supported yet, and review cannot
+be turned off.
+
+The answer to a proposal is `{"proposal_id": "p1", "state": "pending"}`. Ids
+are `p1`, `p2` and so on, and are not reused in a run.
+
+Outcomes, each sent as it happens:
+
+| `outcome` | Meaning |
+|---|---|
+| `sent` | You clicked **Send** and Chaat sent the reply (it shows as your message and, if Graph refuses it, can be retried) |
+| `edited` | You clicked **Edit**: the text went into the composer as a draft and the proposal is gone |
+| `discarded` | You clicked **Discard**, or you took the chat off the allow list |
+| `accepted` | You clicked **Accept** and Chaat reacted |
+| `outdated` | You wrote in that conversation yourself. The card stays so you can discard it, but it can no longer be sent or edited as is |
+| `replaced` | A newer proposal took its place |
+
+Events arrive only for allowed conversations, as `agent_event` with an
+`event` object:
+
+| `event.type` | Fields |
+|---|---|
+| `new_message` | `conversation_id`, `message`: the message as in an answer. Sent for messages from others that Chaat has newly received, not for history it loads |
+| `user_sent` | `conversation_id`, `message_id`: you sent a message there |
+
+Error codes in `agent_result` (`ok: false`):
+
+| `data.error` | Meaning |
+|---|---|
+| `not_allowed` | The plugin is not the active agents plugin, the conversation is not on the allow list, or the account's propose switch is off |
+| `no_account` | `account` is not a signed-in account |
+| `bad_request` | `conversation` is not a valid key |
+| `not_found` | An allowed conversation Chaat has no record of |
+| `busy` | More than 8 reads are running, the cache could not be read, or 20 reactions are already pending in that conversation |
+
+Limits: an answer is at most 60 000 bytes. A read that does not fit returns
+the newest messages that do, with `more` set, and a single message over the
+budget is cut with an ellipsis. At most 8 reads run at once, across
+accounts. The ordinary line limits apply.
+
+An example, after a `ready` with `"capabilities":["agents"]` and
+`"needs":["messages"]`, approved, with the chat allowed and proposing on:
+
+```
+plugin -> {"v":1,"type":"agent_query","id":7,"account":"o1.t1","query":{"kind":"read_messages","conversation":"chat:19:a@thread.v2","limit":30}}
+chaat  -> {"v":1,"type":"agent_result","id":7,"ok":true,"data":{"conversation_id":"chat:19:a@thread.v2","messages":[{"message_id":"1702","sender":"Ada","sender_id":"u-ada","time":"2026-11-22T09:14:00Z","text":"Can you review the draft?","reply_to":null,"reactions":[]}],"more":false}}
+plugin -> {"v":1,"type":"agent_propose","id":8,"account":"o1.t1","proposal":{"kind":"reply","conversation":"chat:19:a@thread.v2","text":"On it","agent":"Claude Code"}}
+chaat  -> {"v":1,"type":"agent_result","id":8,"ok":true,"data":{"proposal_id":"p1","state":"pending"}}
+chaat  -> {"v":1,"type":"agent_outcome","proposal":"p1","outcome":"sent"}
+chaat  -> {"v":1,"type":"agent_event","account":"o1.t1","event":{"type":"user_sent","conversation_id":"chat:19:a@thread.v2","message_id":"1703"}}
+```
+
+What the plugin does with what it reads, including handing it to an agent
+program, is outside Chaat. Read the plugin's documentation, and allow only
+the conversations you are willing to show that agent.
+
 ## Restart and backoff
 
 If a plugin exits, Chaat restarts it with backoff: 1 second, doubling to at
@@ -547,6 +675,8 @@ them (as JSON values; key order does not matter).
 | Plugin to Chaat | `push_ready` | `push_ready.json` |
 | Plugin to Chaat | `push` | `push.json` |
 | Plugin to Chaat | `push_down` | `push_down.json` |
+| Plugin to Chaat | `agent_query` | `agent_query.json` |
+| Plugin to Chaat | `agent_propose` | `agent_propose.json` |
 
 ## A minimal exchange
 
@@ -563,13 +693,15 @@ chaat  -> {"v":1,"type":"shutdown"}
 ## What Chaat promises
 
 Plugins stay outside Chaat. Chaat launches only what you add and turn on,
-never ships or updates one, and never gives one its tokens, its settings
-(beyond the plugin's own option values) or your messages. Beyond account IDs
-and sign-in names, the only data it can send a plugin is your busiest
-presence and, for a push plugin, channel names (random, one per account, no
-account IDs), and only to a plugin that asked for it and that you approved.
-A push plugin sends Chaat notification bodies, which Chaat checks and treats
-as untrusted. A
-file that changed since you added it does not run until you say so. These
+never ships or updates one, and never gives one its tokens or its settings
+(beyond the plugin's own option values). Beyond account IDs and sign-in
+names, the only data it can send a plugin is your busiest presence, for a
+push plugin, channel names (random, one per account, no account IDs), and,
+for the one agents plugin, the text of cached messages in the chats and
+channels you allowed, and only to a plugin that asked for it and that you
+approved. A push plugin sends Chaat notification bodies, which Chaat checks
+and treats as untrusted. An agents plugin can only propose: replies and
+reactions wait for your click, and Chaat never fetches from Microsoft for it.
+A file that changed since you added it does not run until you say so. These
 limits cover what Chaat sends; the program itself runs as you and can read
 what you can. See also [privacy.md](privacy.md).

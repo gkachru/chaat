@@ -74,6 +74,25 @@ pub enum HostMessage {
     PushChannels {
         channels: Vec<String>,
     },
+    /// The answer to one `agent_query` or `agent_propose`; see
+    /// `agent::result_line`. Only sent to the plugin with the `agents`
+    /// capability.
+    AgentResult {
+        id: u64,
+        ok: bool,
+        data: serde_json::Value,
+    },
+    /// What became of a proposal: sent, edited, discarded, outdated or
+    /// replaced.
+    AgentOutcome {
+        proposal: String,
+        outcome: String,
+    },
+    /// A new message or the person's own send, in an allowed conversation.
+    AgentEvent {
+        account: String,
+        event: serde_json::Value,
+    },
     Shutdown,
 }
 
@@ -189,6 +208,20 @@ pub enum PluginMessage {
     PushDown {
         #[serde(default, deserialize_with = "lenient_text")]
         reason: Option<String>,
+    },
+    /// A read request from the agents plugin; `query` is raw, see
+    /// `agent::parse_query`.
+    AgentQuery {
+        id: u64,
+        account: String,
+        query: serde_json::Value,
+    },
+    /// A reply or reaction proposal; `proposal` is raw, see
+    /// `agent::parse_proposal`.
+    AgentPropose {
+        id: u64,
+        account: String,
+        proposal: serde_json::Value,
     },
     #[serde(other)]
     Other,

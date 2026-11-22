@@ -93,6 +93,7 @@ impl Store {
                     PRIMARY KEY (conversation, id)
                 );
                 CREATE INDEX IF NOT EXISTS messages_by_time ON messages (conversation, created);
+                CREATE INDEX IF NOT EXISTS messages_by_created ON messages (created);
                 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
                     body, author, conversation UNINDEXED, id UNINDEXED,
                     tokenize = 'unicode61 remove_diacritics 2'
@@ -319,6 +320,28 @@ impl Store {
             row.get::<_, String>(0)
         })?;
         Ok(rows.filter_map(|json| from_json(&json.ok()?)).collect())
+    }
+
+    /// The newest `limit` cached messages of every conversation created after
+    /// `since`, newest first. Reads the cache only. Uses the `created` index.
+    pub fn recent_messages(&self, since: i64, limit: usize) -> rusqlite::Result<Vec<Message>> {
+        let mut query = self.db.prepare(
+            "SELECT conversation, json FROM messages WHERE created > ?1
+             ORDER BY created DESC LIMIT ?2",
+        )?;
+        let rows = query.query_map(params![since, limit as i64], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        Ok(rows
+            .filter_map(|row| {
+                let (key, json) = row.ok()?;
+                let mut message: Message = from_json(&json)?;
+                if message.conversation.is_none() {
+                    message.conversation = ConversationId::from_key(&key);
+                }
+                Some(message)
+            })
+            .collect())
     }
 
     /// Cached history immediately before the oldest visible message.
@@ -615,6 +638,33 @@ mod tests {
             .unwrap();
         let ids: Vec<String> = store.chats().unwrap().into_iter().map(|c| c.id).collect();
         assert_eq!(ids, ["new", "mid", "old"]);
+    }
+
+    #[test]
+    fn recent_messages_span_conversations_newest_first() {
+        let mut store = Store::in_memory().unwrap();
+        let a = ConversationId::Chat("19:a".into());
+        let b = ConversationId::Channel {
+            team: "t".into(),
+            channel: "19:c".into(),
+        };
+        store
+            .save_messages(&a, &[message("old", 100, "x"), message("a2", 300, "x")])
+            .unwrap();
+        store.save_messages(&b, &[message("b1", 200, "x")]).unwrap();
+        let ids = |since, limit| -> Vec<String> {
+            store
+                .recent_messages(since, limit)
+                .unwrap()
+                .into_iter()
+                .map(|m| m.id)
+                .collect()
+        };
+        assert_eq!(ids(150, 10), ["a2", "b1"]);
+        assert_eq!(ids(0, 2), ["a2", "b1"]);
+        assert_eq!(ids(300, 10), Vec::<String>::new());
+        let found = store.recent_messages(150, 10).unwrap();
+        assert_eq!(found[1].conversation, Some(b));
     }
 
     #[test]
