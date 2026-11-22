@@ -38,7 +38,7 @@ fn icon(page: SettingsPage) -> Icon {
         SettingsPage::Notifications => Icon::Bell,
         SettingsPage::Push => Icon::Refresh,
         SettingsPage::Shortcuts => Icon::Keyboard,
-        SettingsPage::Plugins => Icon::Settings,
+        SettingsPage::Plugins => Icon::Puzzle,
         SettingsPage::Advanced => Icon::Lock,
         SettingsPage::About => Icon::Info,
     }
@@ -1108,9 +1108,10 @@ fn push_plugin(
 
 fn shortcuts(app: &App, ui: &mut egui::Ui) {
     let palette = app.palette;
-    // Each section is its own grid; one key-column width for all of them
-    // keeps the descriptions on a single left edge.
-    let keys_width = ui
+    // One key-column width for every section keeps the descriptions on a
+    // single left edge; at most half the page, so narrow windows still have
+    // room for the descriptions to wrap.
+    let measured = ui
         .fonts_mut(|f| {
             super::keys::SHORTCUTS
                 .iter()
@@ -1127,23 +1128,35 @@ fn shortcuts(app: &App, ui: &mut egui::Ui) {
                 .fold(0.0, f32::max)
         })
         .max(180.0);
+    let gap = 24.0;
+    let keys_width = measured.min((ui.available_width() - gap) / 2.0);
     for (name, list) in super::keys::SHORTCUTS {
         group(ui, &palette, name);
-        egui::Grid::new(("shortcuts", *name))
-            .num_columns(2)
-            .min_col_width(keys_width)
-            .spacing(vec2(24.0, 8.0))
-            .show(ui, |ui| {
-                for (keys, what) in *list {
-                    ui.label(
-                        egui::RichText::new(super::keys::platform(keys))
-                            .font(theme::mono(13.0))
-                            .color(palette.accent),
-                    );
+        for (keys, what) in *list {
+            ui.horizontal_top(|ui| {
+                ui.allocate_ui_with_layout(
+                    vec2(keys_width, 0.0),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        ui.set_width(keys_width);
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(super::keys::platform(keys))
+                                    .font(theme::mono(13.0))
+                                    .color(palette.accent),
+                            )
+                            .wrap(),
+                        );
+                    },
+                );
+                ui.add_space(gap);
+                ui.vertical(|ui| {
+                    ui.set_max_width(ui.available_width());
                     ui.add(egui::Label::new(egui::RichText::new(*what).color(palette.text)).wrap());
-                    ui.end_row();
-                }
+                });
             });
+            ui.add_space(8.0);
+        }
     }
 }
 

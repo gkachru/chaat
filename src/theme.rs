@@ -40,6 +40,7 @@ fastframe_icons::icons! {
         At => "at-sign",
         Bell => "bell",
         BellOff => "bell-off",
+        Puzzle => "puzzle",
         Refresh => lucide "refresh-cw",
         LogOut => lucide "log-out",
         Alert => lucide "circle-alert",
