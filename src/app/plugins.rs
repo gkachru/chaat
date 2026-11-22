@@ -23,10 +23,6 @@ use crate::settings::{PluginEntry, plugin_id_for};
 /// The shortest time between two toasts from one plugin.
 const PLUGIN_TOAST_GAP: Duration = Duration::from_secs(10);
 
-/// The most `option_status` messages Chaat takes from one plugin in a second;
-/// the rest are dropped.
-const STATUS_PER_SECOND: u32 = 5;
-
 /// How long an action's button shows "Working…" without an answer.
 pub const ACTION_WORKING_LIMIT: Duration = Duration::from_secs(30);
 
@@ -99,8 +95,6 @@ pub struct PluginState {
     /// When the person last clicked each action's button, until a status
     /// (`ok` or `error`) for it arrives. See `PluginState::action_working`.
     pub action_started: BTreeMap<String, Instant>,
-    /// The start of the current second of statuses and how many it took.
-    pub(super) status_window: Option<(Instant, u32)>,
     /// Sign-ins it is waiting for, one per account.
     pub sign_in: Vec<PluginSignIn>,
     /// Accounts (`oid.tid`) it said it listens for.
@@ -135,7 +129,6 @@ impl PluginState {
         self.sent_presence = None;
         self.statuses.clear();
         self.action_started.clear();
-        self.status_window = None;
     }
 
     /// Whether an action's button shows "Working…": the person clicked it and
@@ -152,22 +145,12 @@ impl PluginState {
                 .is_some_and(|(state, _, at)| *state == StatusState::Working && within(*at))
     }
 
-    /// Takes one status, unless the plugin already sent too many this second.
+    /// Takes one status; the latest per option always wins. The host already
+    /// caps how many lines a plugin sends (`plugin::host`), and only options
+    /// the current `ready` described are kept, so there is no limit here: a
+    /// dropped update would leave a stale status on screen.
     fn take_status(&mut self, id: String, state: StatusState, message: Option<String>) {
         let now = Instant::now();
-        let (start, count) = match self.status_window {
-            Some((start, count))
-                if now.saturating_duration_since(start) < Duration::from_secs(1) =>
-            {
-                (start, count)
-            }
-            _ => (now, 0),
-        };
-        if count >= STATUS_PER_SECOND {
-            self.status_window = Some((start, count));
-            return;
-        }
-        self.status_window = Some((start, count + 1));
         // An answer ends the wait of a button that was clicked.
         if state != StatusState::Working {
             self.action_started.remove(&id);
@@ -2038,7 +2021,7 @@ mod tests {
     }
 
     #[test]
-    fn statuses_are_rate_limited_and_cleared_on_restart() {
+    fn the_latest_status_wins_and_restart_clears_them() {
         let (mut app, _commands) = option_app();
         app.sync_plugins();
         ready_with(&mut app, vec![spec("scan", OptionKind::Action)]);
@@ -2047,16 +2030,8 @@ mod tests {
         }
         assert_eq!(
             app.plugins["p"].statuses["scan"].1.as_deref(),
-            Some("m5"),
-            "five a second; the rest are dropped"
-        );
-        // A second later the limit is open again.
-        let past = Instant::now().checked_sub(Duration::from_secs(2)).unwrap();
-        app.plugins.get_mut("p").unwrap().status_window = Some((past, 5));
-        status(&mut app, "scan", StatusState::Error, "later");
-        assert_eq!(
-            app.plugins["p"].statuses["scan"].1.as_deref(),
-            Some("later")
+            Some("m7"),
+            "a burst never leaves an older status on screen"
         );
         // Only options the current `ready` describes have a status.
         status(&mut app, "unknown", StatusState::Ok, "x");

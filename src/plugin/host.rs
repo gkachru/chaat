@@ -42,15 +42,28 @@ pub enum HostEvent {
     /// The file does not match its pin. It was not run and is not retried
     /// (the host ends). `sha256` is the hash of the file as it is now.
     FileChanged { sha256: String },
-    /// The plugin sent lines faster than `LINES_PER_SECOND` (bursts of
-    /// `LINE_BURST`); the excess is dropped. Sent once per run.
+    /// The plugin sent lines of one kind faster than `LINES_PER_SECOND`
+    /// (bursts of `LINE_BURST`), or any lines faster than
+    /// `RAW_LINES_PER_SECOND`; the excess is dropped. Sent once per run.
     Flooding,
 }
 
-/// Lines a plugin may send per second, on average.
+/// Lines of one kind a plugin may send per second, on average. Forwarded
+/// push bodies and everything else (statuses, tunnel up and down, sign-ins)
+/// have separate allowances, so a burst of Graph notifications can't crowd
+/// out the line that says the tunnel went down.
 const LINES_PER_SECOND: f64 = 20.0;
-/// Lines a plugin may send at once before the rate applies.
+/// Lines of one kind a plugin may send at once before the rate applies.
 const LINE_BURST: f64 = 50.0;
+/// Forwarded push bodies get more: Graph sends a burst of presence
+/// notifications when subscriptions start, and the fetches they can cause
+/// are capped separately (`sync::PushBudget`).
+const PUSH_LINES_PER_SECOND: f64 = 50.0;
+const PUSH_LINE_BURST: f64 = 200.0;
+/// Lines of any kind read per second before parsing; bounds the parsing work
+/// a flooding plugin can cause.
+const RAW_LINES_PER_SECOND: f64 = 200.0;
+const RAW_LINE_BURST: f64 = 400.0;
 /// Messages waiting for a plugin's stdin; more are dropped.
 const QUEUE: usize = 256;
 /// A write to the plugin that takes this long ends the run.
@@ -407,17 +420,57 @@ async fn write_loop(
     }
 }
 
+/// The allowances for a plugin's lines: one before parsing, then one per
+/// kind of message.
+struct Limits {
+    raw: Bucket,
+    push: Bucket,
+    other: Bucket,
+}
+
+impl Limits {
+    fn new(now: Instant) -> Self {
+        Self {
+            raw: Bucket::with(now, RAW_LINES_PER_SECOND, RAW_LINE_BURST),
+            push: Bucket::with(now, PUSH_LINES_PER_SECOND, PUSH_LINE_BURST),
+            other: Bucket::new(now),
+        }
+    }
+
+    /// Whether to read (parse) one more line at all.
+    fn read(&mut self, now: Instant) -> bool {
+        self.raw.take(now)
+    }
+
+    /// Whether to pass on a parsed message, from its kind's allowance.
+    fn pass(&mut self, message: &PluginMessage, now: Instant) -> bool {
+        if matches!(message, PluginMessage::Push { .. }) {
+            self.push.take(now)
+        } else {
+            self.other.take(now)
+        }
+    }
+}
+
 /// A token bucket for the plugin's lines.
 struct Bucket {
     tokens: f64,
     at: Instant,
+    rate: f64,
+    burst: f64,
 }
 
 impl Bucket {
     fn new(now: Instant) -> Self {
+        Self::with(now, LINES_PER_SECOND, LINE_BURST)
+    }
+
+    fn with(now: Instant, rate: f64, burst: f64) -> Self {
         Self {
-            tokens: LINE_BURST,
+            tokens: burst,
             at: now,
+            rate,
+            burst,
         }
     }
 
@@ -425,7 +478,7 @@ impl Bucket {
     fn take(&mut self, now: Instant) -> bool {
         let elapsed = now.saturating_duration_since(self.at).as_secs_f64();
         self.at = now;
-        self.tokens = (self.tokens + elapsed * LINES_PER_SECOND).min(LINE_BURST);
+        self.tokens = (self.tokens + elapsed * self.rate).min(self.burst);
         if self.tokens >= 1.0 {
             self.tokens -= 1.0;
             true
@@ -490,7 +543,7 @@ async fn run_once(
     )));
 
     let mut lines = LineReader::new(tokio::io::BufReader::new(stdout));
-    let mut bucket = Bucket::new(Instant::now());
+    let mut limits = Limits::new(Instant::now());
     let mut flooding = false;
     let mut long_line_logged = false;
     loop {
@@ -523,11 +576,14 @@ async fn run_once(
                 let Some(line) = line? else {
                     return Err(std::io::Error::other("plugin closed its output").into());
                 };
-                if !bucket.take(Instant::now()) {
-                    if !std::mem::replace(&mut flooding, true) {
+                let flood = |flooding: &mut bool| {
+                    if !std::mem::replace(flooding, true) {
                         log::info!("plugin: sending lines too fast; dropping the excess");
                         sink(HostEvent::Flooding);
                     }
+                };
+                if !limits.read(Instant::now()) {
+                    flood(&mut flooding);
                     continue;
                 }
                 match line {
@@ -542,6 +598,9 @@ async fn run_once(
                         {
                             let _ = child.start_kill();
                             return Ok(Exit::Unsupported);
+                        }
+                        Some(message) if !limits.pass(&message, Instant::now()) => {
+                            flood(&mut flooding);
                         }
                         Some(message) => sink(HostEvent::Message(message)),
                         None => {}
@@ -726,6 +785,28 @@ mod tests {
         let much_later = later + Duration::from_secs(3600);
         let refilled = (0..200).filter(|_| bucket.take(much_later)).count();
         assert_eq!(refilled, 50);
+    }
+
+    #[test]
+    fn a_push_burst_leaves_room_for_status_lines() {
+        let start = Instant::now();
+        let mut limits = Limits::new(start);
+        let push = PluginMessage::Push {
+            channel: "c".into(),
+            body: "{}".into(),
+        };
+        let passed = (0..500).filter(|_| limits.pass(&push, start)).count();
+        assert_eq!(passed, 200);
+        // The tunnel going down still gets through.
+        assert!(limits.pass(&PluginMessage::PushDown { reason: None }, start));
+    }
+
+    #[test]
+    fn raw_lines_are_capped_before_parsing() {
+        let start = Instant::now();
+        let mut limits = Limits::new(start);
+        let read = (0..1000).filter(|_| limits.read(start)).count();
+        assert_eq!(read, 400);
     }
 
     #[test]

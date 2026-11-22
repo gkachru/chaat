@@ -145,7 +145,7 @@ Limits per plugin:
 
 | Limit | Value |
 |---|---|
-| Lines from the plugin | 20 a second on average, bursts of 50; the excess is dropped and reported once per run |
+| Lines from the plugin | Forwarded push bodies: 50 a second on average, bursts of 200. Everything else: 20 a second, bursts of 50. At most 200 lines a second are read at all. The excess is dropped and reported once per run |
 | Line length | 64 KiB; longer lines are dropped |
 | Messages waiting to be written to the plugin | 256; more are dropped |
 | A write to the plugin | 5 seconds; a timeout ends the run |
@@ -411,8 +411,8 @@ Plugin to Chaat:
 - `option_status { id, state, message? }`: how an option or action is doing.
   `state` is `ok`, `error` or `working`; any other state drops the message.
   `id` must be an option the current `ready` described, or the status is
-  ignored. `message` is plain text, at most 200 characters. Chaat takes at
-  most 5 of these a second per plugin and drops the rest. Statuses are
+  ignored. `message` is plain text, at most 200 characters. The latest status
+  for each option replaces the one before. Statuses are
   cleared when the plugin restarts or stops, and a status for an option that a
   new `ready` no longer describes goes.
 - `options_update { id, choices }`: replaces the choices of one `choice`
