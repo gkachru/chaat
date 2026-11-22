@@ -90,7 +90,7 @@ Status as of Chaat 0.1 (unreleased).
 | Integrated title bar | Works on Windows; compiled only on Linux | Minimize, maximize and close drawn in Chaat's header, with drag, double-click to maximize and edge resizing (fastframe-titlebar). On by default; "Use Chaat's own title bar" in Settings switches back to the system frame. macOS keeps its native traffic lights |
 | Keyboard shortcuts, ⌘K switcher | Works | ⌘/ lists them |
 | Tray / menu-bar item, keep running | Works | Off by default; with a self-hosted relay, push notifications continue while the window is closed |
-| Desktop notifications | Works on Windows; compiled only on Linux and macOS | notify-rust toasts with Join and Snooze on meeting reminders, a taskbar flash, and "Notify when available" (needs push). Tested headless and on Windows only. See [notifications.md](notifications.md) |
+| Desktop notifications | Works on Windows and Linux; not compiled on macOS | notify-rust toasts with Join and Snooze on meeting reminders, a taskbar flash, and "Notify when available" (needs push). Run on Windows, and on Linux in WSL (Debian 13, dunst). See [notifications.md](notifications.md) |
 | Single running instance | Works | fastframe-instance |
 | Performance overlay | Works | ⌘⇧P |
 | Personal Microsoft accounts / Teams (free) | Not possible | Graph's Teams APIs support work and school accounts only |

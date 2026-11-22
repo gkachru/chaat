@@ -59,6 +59,9 @@ pub struct Session {
     /// False once the credential store refused the refresh token: this run
     /// works, the next start will not.
     saved: AtomicBool,
+    /// The last refusal was because the store is locked (and its unlock
+    /// prompt failed or was dismissed), not missing.
+    store_locked: AtomicBool,
 }
 
 impl std::fmt::Debug for Session {
@@ -101,6 +104,7 @@ impl Session {
             }),
             granted: Mutex::new(granted),
             saved: AtomicBool::new(true),
+            store_locked: AtomicBool::new(false),
         };
         session
             .accept(&mut *session.tokens.lock().await, response)
@@ -136,6 +140,7 @@ impl Session {
             }),
             granted: Mutex::new(record.granted.clone()),
             saved: AtomicBool::new(true),
+            store_locked: AtomicBool::new(false),
         }))
     }
 
@@ -150,6 +155,11 @@ impl Session {
     /// start stays signed in.
     pub fn token_saved(&self) -> bool {
         self.saved.load(Ordering::Relaxed)
+    }
+
+    /// Whether the token was refused because the credential store is locked.
+    pub fn store_locked(&self) -> bool {
+        self.store_locked.load(Ordering::Relaxed)
     }
 
     pub fn has_scope(&self, scope: &str) -> bool {
@@ -208,21 +218,22 @@ impl Session {
             tokens.refresh = Some(refresh.clone());
             let key = refresh_key(&self.account);
             let store = Arc::clone(&self.secrets);
-            let saved = match tokio::task::spawn_blocking(move || store.write(&key, &refresh)).await
-            {
-                Ok(Ok(())) => true,
-                // The session still works for this run; the next start asks
-                // to sign in again.
-                Ok(Err(error)) => {
-                    log::warn!("could not store the refresh token: {error}");
-                    false
-                }
-                Err(_) => {
-                    log::warn!("could not store the refresh token");
-                    false
-                }
-            };
+            let (saved, locked) =
+                match tokio::task::spawn_blocking(move || store.write(&key, &refresh)).await {
+                    Ok(Ok(())) => (true, false),
+                    // The session still works for this run; the next start
+                    // asks to sign in again.
+                    Ok(Err(error)) => {
+                        log::warn!("could not store the refresh token: {error}");
+                        (false, error == crate::secrets::SecretError::Locked)
+                    }
+                    Err(_) => {
+                        log::warn!("could not store the refresh token");
+                        (false, false)
+                    }
+                };
             self.saved.store(saved, Ordering::Relaxed);
+            self.store_locked.store(locked, Ordering::Relaxed);
         }
         Ok(response.access_token)
     }
@@ -267,6 +278,47 @@ mod tests {
         let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode(br#"{"oid":"oid1","tid":"tid1","name":"Ada"}"#);
         format!("h.{payload}.s")
+    }
+
+    /// A store whose every write fails with one error.
+    struct Refusing(crate::secrets::SecretError);
+
+    impl SecretStore for Refusing {
+        fn read(&self, _: &str) -> Result<Option<String>, crate::secrets::SecretError> {
+            Ok(None)
+        }
+        fn write(&self, _: &str, _: &str) -> Result<(), crate::secrets::SecretError> {
+            Err(self.0)
+        }
+        fn delete(&self, _: &str) -> Result<(), crate::secrets::SecretError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_locked_store_is_told_apart_from_a_missing_one() {
+        use crate::secrets::SecretError;
+        for (error, locked) in [
+            (SecretError::Locked, true),
+            (SecretError::Unavailable, false),
+        ] {
+            let (session, _) = Session::from_sign_in(
+                AuthConfig::new("client", "organizations"),
+                reqwest::Client::new(),
+                Arc::new(Refusing(error)),
+                TokenResponse {
+                    access_token: "at1".into(),
+                    refresh_token: Some("rt1".into()),
+                    id_token: Some(id_token()),
+                    expires_in: Some(3600),
+                    scope: Some("User.Read".into()),
+                },
+            )
+            .await
+            .unwrap();
+            assert!(!session.token_saved());
+            assert_eq!(session.store_locked(), locked, "{error:?}");
+        }
     }
 
     #[tokio::test]

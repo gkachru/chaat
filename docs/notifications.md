@@ -109,8 +109,10 @@ on. Chaat stores the person's ID and name in the settings file.
   not reach Chaat. Chaat keeps at most 16 toasts waiting for a click; past
   that, toasts show without click handling.
 - **Linux**: a chat's new toast replaces its earlier one. Buttons and clicks
-  depend on the desktop's notification daemon.
+  depend on the desktop's notification daemon; it needs one running on the
+  session bus (GNOME and KDE have their own; dunst or mako elsewhere).
 - **macOS**: toasts come from the notification center. Chaat claims its
   own identity there only when it runs from an installed app bundle.
 - **Tested**: headless tests cover the rules and settings page, and the
-  feature was run on Windows. Linux and macOS were compiled only.
+  feature was run on Windows, and on Linux in WSL (Debian 13 with dunst):
+  toasts show there. macOS has not been compiled yet.

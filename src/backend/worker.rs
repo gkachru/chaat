@@ -1025,6 +1025,7 @@ impl Worker {
             },
         };
         let saved = session.token_saved();
+        let store_locked = session.store_locked();
         let session = Arc::new(session);
         self.out.send(Event::Granted(session.granted()));
         self.out
@@ -1048,9 +1049,8 @@ impl Worker {
             username: record.username,
         }));
         if !saved {
-            self.out.send(Event::Error(
-                "Chaat could not save this sign-in to the system credential store, so it will ask you to sign in again next time.".into(),
-            ));
+            self.out
+                .send(Event::Error(unsaved_sign_in_text(store_locked).into()));
         }
         self.restart_push().await;
     }
@@ -2962,6 +2962,15 @@ async fn save_refused(path: &std::path::Path, limits: &mut PresenceLimits) {
         tokio::task::spawn_blocking(move || realtime::write_refused(&path, &refused)).await;
     if !matches!(written, Ok(Ok(()))) {
         push_log!(warn, "could not remember refused presence users");
+    }
+}
+
+/// What the person reads when a sign-in could not be kept for next time.
+fn unsaved_sign_in_text(locked: bool) -> &'static str {
+    if locked {
+        "Chaat could not save this sign-in because the system keyring is locked. Unlock it and sign in again, or Chaat will ask you to sign in next time."
+    } else {
+        "Chaat could not save this sign-in to the system credential store, so it will ask you to sign in again next time."
     }
 }
 

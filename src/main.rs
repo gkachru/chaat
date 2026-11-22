@@ -57,7 +57,9 @@ fn main() -> eframe::Result<()> {
     dirs.ensure()
         .map_err(|e| eframe::Error::AppCreation(e.into()))?;
     let filter = if cli.verbose {
-        "info,chaat=debug"
+        // zbus (Linux notifications, keyring) logs every D-Bus handshake,
+        // raw bytes included, at info: keep it to warnings.
+        "info,chaat=debug,zbus=warn,tracing=warn"
     } else {
         "warn,chaat=info"
     };

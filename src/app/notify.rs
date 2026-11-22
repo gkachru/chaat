@@ -314,6 +314,15 @@ impl App {
     /// Acts on what the person did with toasts.
     pub(super) fn handle_clicks(&mut self) {
         for clicked in self.desktop.clicks() {
+            // Only the kind of click: never the toast's text or ids.
+            log::debug!(
+                "notification clicked: {}",
+                match clicked {
+                    Clicked::Open(_) => "open",
+                    Clicked::Join(_) => "join",
+                    Clicked::Snooze(_) => "snooze",
+                }
+            );
             let (Clicked::Open(target) | Clicked::Join(target) | Clicked::Snooze(target)) =
                 &clicked;
             let account = match target {
