@@ -283,6 +283,20 @@ fn button_id(button: Button) -> (&'static str, &'static str) {
     }
 }
 
+/// The actions a notification declares, as (id, label). On Linux a click on
+/// the body comes back only when there is a `default` action (freedesktop
+/// notification spec); without it daemons such as dunst treat the click as
+/// a dismissal. GNOME and KDE show no button for it. Windows reports body
+/// clicks on its own, and there an extra action would draw a button.
+fn actions(buttons: &[Button], with_default: bool) -> Vec<(&'static str, &'static str)> {
+    let mut list = Vec::with_capacity(buttons.len() + 1);
+    if with_default {
+        list.push(("default", "Open"));
+    }
+    list.extend(buttons.iter().map(|button| button_id(*button)));
+    list
+}
+
 /// The Linux notification id for a replace key. Never 0, which asks for a
 /// new notification.
 #[cfg(any(test, all(unix, not(target_os = "macos"))))]
@@ -383,8 +397,7 @@ fn show_and_wait(notice: Notice, ticket: Ticket, tx: Sender<Clicked>, waker: Opt
     if APP_ID_REGISTERED.load(Ordering::Acquire) {
         notification.app_id(APP_ID);
     }
-    for button in &notice.buttons {
-        let (id, label) = button_id(*button);
+    for (id, label) in actions(&notice.buttons, cfg!(all(unix, not(target_os = "macos")))) {
         notification.action(id, label);
     }
     let handle = match notification.show() {
@@ -575,6 +588,21 @@ mod tests {
         d.click(Clicked::Open(Target::Test));
         assert_eq!(d.clicks(), vec![Clicked::Open(Target::Test)]);
         assert!(d.clicks().is_empty());
+    }
+
+    #[test]
+    fn linux_toasts_declare_a_default_action_first() {
+        assert_eq!(
+            actions(&[Button::Join, Button::Snooze], true),
+            [("default", "Open"), ("join", "Join"), ("snooze", "Snooze")]
+        );
+        assert_eq!(actions(&[Button::Join], false), [("join", "Join")]);
+        assert!(actions(&[], false).is_empty());
+        // Whatever comes back for it opens the toast's target.
+        assert_eq!(
+            clicked_for(actions(&[], true)[0].0, &Target::Test),
+            Some(Clicked::Open(Target::Test))
+        );
     }
 
     #[test]
