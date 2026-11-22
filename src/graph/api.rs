@@ -422,12 +422,19 @@ impl Graph {
         me: &str,
     ) -> Result<Vec<PinnedMessage>, GraphError> {
         let _ = me;
-        let pins: g::Page<g::PinnedChatMessage> = self
+        // Some chats answer 404 here although they exist (seen 22 Nov 2026
+        // on a chat with nothing pinned). No pin list means nothing to show,
+        // not an error for the person.
+        let pins: g::Page<g::PinnedChatMessage> = match self
             .get(&format!(
                 "chats/{}/pinnedMessages?$expand=message",
                 segment(chat)
             ))
-            .await?;
+            .await
+        {
+            Err(GraphError::NotFound) => return Ok(Vec::new()),
+            other => other?,
+        };
         Ok(pins
             .value
             .into_iter()
@@ -1441,6 +1448,25 @@ mod tests {
                 .unwrap(),
             None
         );
+    }
+
+    #[tokio::test]
+    async fn pinned_messages_not_found_means_none() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/chats/19:a@thread.v2/pinnedMessages"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+                "error": {"code": "NotFound", "message": "Resource not found"}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let pins = graph(&server)
+            .await
+            .pinned_messages("19:a@thread.v2", "me")
+            .await
+            .unwrap();
+        assert!(pins.is_empty());
     }
 
     #[tokio::test]
