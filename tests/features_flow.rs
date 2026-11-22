@@ -331,7 +331,10 @@ async fn chats_mentions_files_and_status() {
         serde_json::from_slice::<serde_json::Value>(&preferred.body).unwrap(),
         serde_json::json!({"availability": "DoNotDisturb", "activity": "DoNotDisturb"})
     );
-    backend.send(Command::SetStatusMessage("Heads down".into()));
+    backend.send(Command::SetStatusMessage {
+        text: "Heads down".into(),
+        expires: None,
+    });
     wait_for(&backend, 5, |e| {
         matches!(e, Event::MyPresence(_)).then_some(())
     });

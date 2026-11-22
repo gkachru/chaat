@@ -80,6 +80,17 @@ const PEOPLE: &[Person] = &[
     },
 ];
 
+/// An Adaptive Card with the elements Chaat draws: text, facts, columns, an
+/// image (a placeholder; images are never fetched) and an Open URL action.
+const DEMO_CARD: &str = r#"{"type":"AdaptiveCard","version":"1.4","body":[
+{"type":"TextBlock","text":"Launch readiness","weight":"Bolder","size":"Medium"},
+{"type":"FactSet","facts":[{"title":"Build","value":"0.2 preview"},{"title":"Owner","value":"Grace Hopper"}]},
+{"type":"ColumnSet","columns":[
+{"type":"Column","items":[{"type":"TextBlock","text":"Tests","isSubtle":true},{"type":"TextBlock","text":"Passing"}]},
+{"type":"Column","items":[{"type":"TextBlock","text":"Signing","isSubtle":true},{"type":"TextBlock","text":"Ad hoc"}]}]},
+{"type":"Image","url":"https://example.com/chart.png","altText":"Burndown chart"}],
+"actions":[{"type":"Action.OpenUrl","title":"Open checklist","url":"https://example.com/checklist"}]}"#;
+
 fn person(id: &str) -> &'static Person {
     PEOPLE.iter().find(|p| p.id == id).unwrap_or(&PEOPLE[0])
 }
@@ -170,6 +181,7 @@ impl Builder {
             name: None,
             content_type: Some("messageReference".into()),
             url: None,
+            content: None,
         };
         self.text(author, at, body).attachments.push(attachment);
     }
@@ -295,12 +307,15 @@ pub fn populate(app: &mut App) {
         let mut b = Builder::new(ConversationId::Chat(id.into()));
         let t = now - 2 * DAY;
         b.system(t, "Ada Lovelace added Grace Hopper and Margaret Hamilton");
-        b.text(
-            "u-ada",
-            t + MINUTE,
-            "Welcome! This chat is for the launch checklist.",
-        );
-        b.text("u-grace", t + 30 * MINUTE, "I've drafted the rollback plan. Short version: the cache is only a cache, so a bad build can always be rolled back without losing anything.");
+        let welcome = b
+            .text(
+                "u-ada",
+                t + MINUTE,
+                "Welcome! This chat is for the launch checklist.",
+            )
+            .id
+            .clone();
+        let rollback = b.text("u-grace", t + 30 * MINUTE, "I've drafted the rollback plan. Short version: the cache is only a cache, so a bad build can always be rolled back without losing anything.").id.clone();
         b.react("👍", &["u-ada", "u-margaret", ME]);
         b.html("u-margaret", now - 5 * HOUR, "<p><at id=\"0\">Alex Rivera</at> can you confirm the macOS bundle is signed for the preview?</p>");
         b.text(ME, now - 5 * HOUR + 6 * MINUTE, "Ad-hoc signed for now; Developer ID signing needs the team certificate. I'll note it in the release checklist.");
@@ -310,10 +325,42 @@ pub fn populate(app: &mut App) {
             "Reminder: ~~Thursday~~ **Wednesday** is the go/no-go.",
         );
         b.react("😮", &["u-ada"]);
+        b.text("u-grace", now - 40 * MINUTE, "Go/no-go status:")
+            .attachments
+            .push(Attachment {
+                id: "demo-card".into(),
+                kind: AttachmentKind::Card,
+                name: None,
+                content_type: Some("application/vnd.microsoft.card.adaptive".into()),
+                url: None,
+                content: Some(DEMO_CARD.into()),
+            });
         b.text(
             "u-katherine",
             now - 31 * MINUTE,
             "The throttling review is in the Engineering › Incidents channel.",
+        );
+        // Two pinned messages; pins are chat-only in Graph.
+        app.pins.insert(
+            id.into(),
+            vec![
+                PinnedMessage {
+                    id: "demo-pin-1".into(),
+                    message_id: rollback,
+                    author: "Grace Hopper".into(),
+                    preview:
+                        "I've drafted the rollback plan. Short version: the cache is only a cache"
+                            .into(),
+                    at: t + 30 * MINUTE,
+                },
+                PinnedMessage {
+                    id: "demo-pin-2".into(),
+                    message_id: welcome,
+                    author: "Ada Lovelace".into(),
+                    preview: "Welcome! This chat is for the launch checklist.".into(),
+                    at: t + MINUTE,
+                },
+            ],
         );
         let mut c = chat(
             id,
@@ -421,6 +468,29 @@ pub fn populate(app: &mut App) {
             Some(now - 3 * DAY),
         );
         c.updated = now - 2 * MINUTE;
+        chats.push(c);
+        conversations.push(b.finish());
+    }
+
+    // A chat the person hid; it shows under the Hidden chip.
+    {
+        let id = "19:demo-offsite@thread.v2";
+        let mut b = Builder::new(ConversationId::Chat(id.into()));
+        let at = now - 9 * DAY;
+        b.text(
+            "u-ada",
+            at,
+            "Offsite venue shortlist is in the planning doc.",
+        );
+        let mut c = chat(
+            id,
+            ChatKind::Group,
+            Some("Offsite planning"),
+            &[ME, "u-ada", "u-dorothy"],
+            Some(now),
+        );
+        c.updated = at;
+        c.hidden = true;
         chats.push(c);
         conversations.push(b.finish());
     }

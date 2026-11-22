@@ -33,14 +33,15 @@ pub fn matches_kind(chat: &Chat, groups: bool, meetings: bool) -> bool {
 }
 
 /// Whether a chat shows in the list. With Unread on, a chat opened while
-/// unread stays too, so it does not vanish the moment it is read.
+/// unread stays too, so it does not vanish the moment it is read. With Hidden
+/// on, only hidden chats show (and Unread does not apply); otherwise none do.
 pub fn listed(app: &App, chat: &Chat, me: &str) -> bool {
     let kept = app.unread_kept.as_deref() == Some(chat.id.as_str())
         && app.open.as_ref() == Some(&ConversationId::Chat(chat.id.clone()));
-    !chat.hidden
+    chat.hidden == app.hidden_only
         && matches_filter(chat, &app.chat_filter, me)
         && matches_kind(chat, app.groups_only, app.meetings_only)
-        && (!app.unread_only || chat.is_unread(me) || kept)
+        && (app.hidden_only || !app.unread_only || chat.is_unread(me) || kept)
 }
 
 /// What the empty list says when the kind chips leave nothing to show.
@@ -76,8 +77,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 app.chat_filter.clear();
             }
             ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 6.0;
+            // Wrapped, so the chips never widen the sidebar past its set
+            // width (four chips do not fit in one row at the default 300).
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
                 if widgets::chip(ui, &palette, "Unread", app.unread_only)
                     .on_hover_text("Show only chats with unread messages")
                     .clicked()
@@ -95,6 +98,16 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     .clicked()
                 {
                     app.meetings_only = !app.meetings_only;
+                }
+                // Rarely needed, so an icon after the kind chips, and only
+                // while there is something hidden (or the filter is on, so it
+                // can be turned off). All four then fit one row.
+                if (app.hidden_only || app.chats.iter().any(|chat| chat.hidden))
+                    && widgets::icon_chip(ui, &palette, Icon::EyeOff, app.hidden_only)
+                        .on_hover_text("Hidden chats")
+                        .clicked()
+                {
+                    app.hidden_only = !app.hidden_only;
                 }
             });
         });
@@ -114,6 +127,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         let kind_text;
         let (title, text) = if !app.chats.is_empty() && !app.chat_filter.trim().is_empty() {
             ("No matches", "No chat or person matches the filter.")
+        } else if !app.chats.is_empty() && app.hidden_only {
+            ("No hidden chats", "Chats you hide show up here.")
         } else if !app.chats.is_empty() && app.unread_only {
             if by_kind {
                 kind_text = format!("No {kind} have unread messages.");
@@ -148,6 +163,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             for index in range {
                 let chat = &app.chats[visible[index]];
                 let response = row(ui, app, chat, &me, now);
+                response.context_menu(|ui| menu(ui, &palette, chat, &me, &mut actions));
                 if response.clicked() {
                     actions.push(Action::OpenConversation(ConversationId::Chat(
                         chat.id.clone(),
@@ -156,6 +172,72 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             }
         });
     app.actions.extend(actions);
+}
+
+/// The right-click menu of a chat row.
+fn menu(
+    ui: &mut egui::Ui,
+    palette: &theme::Palette,
+    chat: &Chat,
+    me: &str,
+    actions: &mut Vec<Action>,
+) {
+    // A fixed width: a context menu offers the whole window as room.
+    ui.set_width(200.0);
+    let id = chat.id.clone();
+    if !chat.is_notes() {
+        let (icon, label, action) = if chat.hidden {
+            (Icon::Eye, "Unhide", Action::UnhideChat(id.clone()))
+        } else {
+            (Icon::EyeOff, "Hide", Action::HideChat(id.clone()))
+        };
+        if menu_item(ui, palette, icon, label) {
+            actions.push(action);
+            ui.close();
+        }
+    }
+    let (icon, label, action) = if chat.is_unread(me) {
+        (Icon::Check, "Mark as read", Action::MarkChatRead(id))
+    } else {
+        (Icon::Chat, "Mark as unread", Action::MarkChatUnread(id))
+    };
+    if menu_item(ui, palette, icon, label) {
+        actions.push(action);
+        ui.close();
+    }
+}
+
+fn menu_item(ui: &mut egui::Ui, palette: &theme::Palette, icon: Icon, text: &str) -> bool {
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::click());
+    if ui.is_rect_visible(rect) {
+        let hovered = response.hovered() || response.has_focus();
+        if hovered {
+            ui.painter()
+                .rect_filled(rect, CornerRadius::same(6), palette.surface_hover);
+        }
+        let tint = if hovered {
+            palette.text
+        } else {
+            palette.secondary
+        };
+        icon.image(tint, 16.0).paint_at(
+            ui,
+            egui::Rect::from_center_size(
+                egui::pos2(rect.left() + 16.0, rect.center().y),
+                egui::Vec2::splat(16.0),
+            ),
+        );
+        ui.painter().text(
+            egui::pos2(rect.left() + 32.0, rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            text,
+            theme::regular(13.0),
+            palette.text,
+        );
+    }
+    response
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .clicked()
 }
 
 fn row(ui: &mut egui::Ui, app: &App, chat: &Chat, me: &str, now: i64) -> egui::Response {
@@ -412,6 +494,32 @@ later",
         assert!(matches_filter(&chat, "LAUNCH", "me"));
         assert!(matches_filter(&chat, "ada", "me"));
         assert!(!matches_filter(&chat, "grace", "me"));
+    }
+
+    #[test]
+    fn listed_respects_hidden_only() {
+        let (backend, _rx) = crate::backend::Backend::recording();
+        let mut app = App::with_backend(
+            crate::paths::AppDirs::under(&std::env::temp_dir().join("chaat-test-unused")),
+            crate::settings::Settings::default(),
+            crate::backend::Waker::default(),
+            backend,
+            false,
+        );
+        let shown = Chat {
+            id: "a".into(),
+            ..Default::default()
+        };
+        let hidden = Chat {
+            id: "b".into(),
+            hidden: true,
+            ..Default::default()
+        };
+        assert!(listed(&app, &shown, "me"));
+        assert!(!listed(&app, &hidden, "me"));
+        app.hidden_only = true;
+        assert!(!listed(&app, &shown, "me"));
+        assert!(listed(&app, &hidden, "me"));
     }
 
     #[test]

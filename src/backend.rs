@@ -15,7 +15,7 @@ use tokio::sync::mpsc;
 
 use crate::model::{
     Access, Availability, Channel, Chat, ConversationId, Meeting, Member, MentionRef, Message,
-    Presence, Profile, SearchHit, Team,
+    Millis, PinnedMessage, Presence, Profile, SearchHit, Team,
 };
 use crate::paths::AppDirs;
 use crate::sync::{Resource, Trigger};
@@ -155,7 +155,12 @@ pub enum Command {
     },
     /// Sets (`Some`) or resets (`None`) the person's preferred availability.
     SetAvailability(Option<Availability>),
-    SetStatusMessage(String),
+    /// Sets the status message, which clears itself at `expires` (UTC
+    /// milliseconds) when there is one.
+    SetStatusMessage {
+        text: String,
+        expires: Option<Millis>,
+    },
     /// Saves the automatic replies (Out of Office).
     SetOutOfOffice(crate::model::OutOfOffice),
     /// The person is using Chaat: keep the presence session Available.
@@ -183,6 +188,23 @@ pub enum Command {
         on: bool,
     },
     MarkRead(String),
+    /// Hides (`hide`) or unhides a chat for the person.
+    HideChat {
+        chat: String,
+        hide: bool,
+    },
+    /// Marks a chat unread for the person.
+    MarkChatUnread(String),
+    PinMessage {
+        chat: String,
+        message: String,
+    },
+    UnpinMessage {
+        chat: String,
+        pin: String,
+    },
+    /// Finds the join link of the meeting with this meeting ID.
+    FindMeetingById(String),
     /// The push relay to use, or none (docs/realtime.md).
     Relay(Option<String>),
     /// Where a push plugin receives Graph's posts (docs/realtime.md), or none.
@@ -418,6 +440,24 @@ pub enum Event {
         chat: String,
         added: Vec<String>,
         failed: Vec<String>,
+    },
+    /// Whether hiding or unhiding a chat worked.
+    ChatHidden {
+        chat: String,
+        hidden: bool,
+        ok: bool,
+    },
+    /// Marking a chat unread failed.
+    MarkUnreadFailed(String),
+    /// The pinned messages of a chat.
+    Pins {
+        chat: String,
+        pins: Vec<PinnedMessage>,
+    },
+    /// The join link of a meeting found by its meeting ID (`None`: none).
+    MeetingById {
+        id: String,
+        join_url: Option<String>,
     },
     /// The person left the chat.
     LeftChat(String),

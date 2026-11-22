@@ -29,16 +29,21 @@ use crate::sync::{Resource, Trigger};
 use crate::theme::Palette;
 
 mod calls;
+mod chat_actions;
 mod history;
+mod pins;
 mod plugins;
 mod push;
 mod setup;
 mod setup_events;
 mod setup_export;
+mod status;
 pub use calls::Docked;
 pub use history::HistoryLayout;
+pub use pins::message_link;
 pub use plugins::{ADD_START_LIMIT, PluginState, PluginSummary, PluginsView, SummaryLevel};
 pub use push::{PushPluginState, PushPluginView};
+pub use status::expiry_millis;
 
 /// Messages and view state of one conversation.
 #[derive(Debug, Default)]
@@ -363,6 +368,13 @@ pub struct Account {
     pub chat_filter: String,
     /// The chat list shows only unread chats (and the open one).
     pub unread_only: bool,
+    /// The chat list shows only the chats the person hid.
+    pub hidden_only: bool,
+    /// Pinned messages by chat id, as Graph last listed them.
+    pub pins: HashMap<String, Vec<crate::model::PinnedMessage>>,
+    /// Chats the person is hiding (`true`) or unhiding (`false`), awaiting
+    /// Graph, so a stale chat list does not undo it.
+    pub pending_hide: HashMap<String, bool>,
     /// The chat list shows group chats. With `meetings_only` off too, every
     /// kind shows; with both on, group and meeting chats show.
     pub groups_only: bool,
@@ -428,6 +440,9 @@ impl Account {
             selected_meeting: None,
             chat_filter: String::new(),
             unread_only: false,
+            hidden_only: false,
+            pins: HashMap::new(),
+            pending_hide: HashMap::new(),
             groups_only: false,
             meetings_only: false,
             unread_kept: None,
@@ -686,6 +701,9 @@ pub struct App {
     /// When each plugin was last asked to start, for the add flow's wait.
     plugin_started_at: std::collections::BTreeMap<String, std::time::Instant>,
     next_toast: u64,
+    /// The account each toast with an action belongs to, by account id, so
+    /// Undo lands on it after the person switched accounts.
+    toast_accounts: HashMap<u64, Option<String>>,
     pub actions: Vec<Action>,
 
     /// Forms.
@@ -696,6 +714,8 @@ pub struct App {
     /// to the settings file.
     pub form_relay_key: String,
     pub form_status: String,
+    /// How long the status message being typed lasts.
+    pub status_expiry: crate::model::StatusExpiry,
     /// The Out of Office page's fields, for the account on screen.
     pub form_out_of_office: crate::model::OutOfOfficeForm,
 
@@ -808,6 +828,7 @@ impl App {
             form_relay: settings.relay_url.clone().unwrap_or_default(),
             form_relay_key: String::new(),
             form_status: String::new(),
+            status_expiry: Default::default(),
             form_out_of_office: Default::default(),
             dirs,
             settings,
@@ -844,6 +865,7 @@ impl App {
             reordering: false,
             plugin_started_at: Default::default(),
             next_toast: 0,
+            toast_accounts: HashMap::new(),
             actions: Vec::new(),
             palette,
             applied_palette: None,
@@ -1013,6 +1035,7 @@ impl App {
             id: self.next_toast,
             kind,
             text,
+            action: None,
         });
         if self.toasts.len() > 4 {
             self.toasts.remove(0);
@@ -1431,6 +1454,10 @@ impl App {
             }
             Event::OutOfOfficeNotSaved => self.out_of_office_saving = false,
             Event::MeetingChat { join_url, chat } => self.on_meeting_chat(join_url, chat),
+            Event::MeetingById { id, join_url } => self.on_meeting_by_id(id, join_url, ctx),
+            Event::ChatHidden { chat, hidden, ok } => self.on_chat_hidden(chat, hidden, ok),
+            Event::MarkUnreadFailed(chat) => self.on_mark_unread_failed(chat),
+            Event::Pins { chat, pins } => self.on_pins(chat, pins),
             Event::UserName { user, name } => {
                 if let Some(name) = name {
                     self.names.insert(user, name);
@@ -1701,6 +1728,7 @@ impl App {
             self.left.retain(|id| listed.contains(id.as_str()));
         }
         chats.retain(|c| !self.leaving.contains_key(&c.id) && !self.left.contains(&c.id));
+        self.keep_local_chat_flags(&mut chats);
         chats.sort_by_key(Chat::list_order);
         let me = self.me().to_owned();
         if !cached && !self.chats.is_empty() {
@@ -1767,6 +1795,7 @@ impl App {
         more: Option<bool>,
         cached: bool,
     ) {
+        self.after_messages_pins(&conversation, &messages);
         if !self.recent_conversations.contains(&conversation) {
             self.recent_conversations.push_front(conversation.clone());
         }
@@ -1940,6 +1969,7 @@ impl App {
                     name: path.file_name().map(|n| n.to_string_lossy().into_owned()),
                     content_type: Some("reference".into()),
                     url: None,
+                    content: None,
                 });
             }
             let view = self.conversations.entry(conversation.clone()).or_default();
@@ -2151,7 +2181,7 @@ impl App {
     }
 
     fn mark_read(&mut self, chat: &str) {
-        if self.hidden {
+        if self.hidden || self.keeps_unread(chat) {
             return;
         }
         let me = self.me().to_owned();
@@ -2616,9 +2646,23 @@ impl App {
                 self.my_presence = Some(presence);
                 self.sync_plugin_presence();
                 if !self.demo {
-                    self.backend.send(Command::SetStatusMessage(text));
+                    let expires = self.status_expiry_millis();
+                    self.backend
+                        .send(Command::SetStatusMessage { text, expires });
                 }
             }
+            Action::SetStatusExpiry(expiry) => self.status_expiry = expiry,
+            Action::HideChat(chat) => self.hide_chat(chat),
+            Action::UnhideChat(chat) => self.unhide_chat(chat),
+            Action::MarkChatUnread(chat) => self.mark_chat_unread(chat),
+            Action::MarkChatRead(chat) => self.mark_chat_read(chat),
+            Action::ToastAction(toast) => self.run_toast_action(toast),
+            Action::PinMessage { chat, message } => self.pin_message(chat, message),
+            Action::UnpinMessage { chat, pin } => self.unpin_message(chat, pin),
+            Action::CopyMessageLink {
+                conversation,
+                message,
+            } => self.copy_message_link(conversation, message, ctx),
             Action::OpenOutOfOffice => {
                 self.apply(Action::ShowSettingsPage(SettingsPage::OutOfOffice), ctx);
                 self.ensure_scope(crate::auth::MAILBOX_SETTINGS_SCOPE);
@@ -3047,7 +3091,9 @@ impl App {
         self.scroll_to_end = 4;
         self.fetch(Resource::Messages(conversation.clone()), Trigger::Opened);
         if let ConversationId::Chat(chat) = &conversation {
-            self.mark_read(chat);
+            self.open_pins(chat);
+            // A chat marked unread tells Graph it is read again.
+            self.mark_chat_read(chat.clone());
             let me = self.me().to_owned();
             let members: Vec<String> = self
                 .chat(chat)
@@ -3248,6 +3294,7 @@ impl App {
                 name: path.file_name().map(|n| n.to_string_lossy().into_owned()),
                 content_type: Some("reference".into()),
                 url: None,
+                content: None,
             });
         }
         if let (Some(quoted), false) = (&reply_to, conversation.is_channel())
@@ -3266,6 +3313,7 @@ impl App {
                 name: None,
                 content_type: Some("messageReference".into()),
                 url: None,
+                content: None,
             });
         }
         if demo {

@@ -4,8 +4,8 @@ use super::types as g;
 use crate::html;
 use crate::model::{
     Attachment, AttachmentKind, AutoReplies, Availability, Channel, ChannelKind, Chat, ChatKind,
-    ConversationId, ExternalAudience, Meeting, Member, Message, OutOfOffice, Presence, Preview,
-    Profile, Reaction, Team, reaction_emoji,
+    ConversationId, ExternalAudience, Meeting, Member, Message, OutOfOffice, PinnedMessage,
+    Presence, Preview, Profile, Reaction, Team, reaction_emoji,
 };
 use crate::time::{parse_civil, parse_iso};
 
@@ -108,6 +108,7 @@ pub fn chat(chat: g::Chat, me: &str) -> Chat {
             .unwrap_or_default(),
         web_url: chat.web_url,
         join_url: chat.online_meeting_info.and_then(|info| info.join_web_url),
+        marked_unread: false,
         hidden: viewpoint.is_hidden.unwrap_or(false),
     }
 }
@@ -382,8 +383,22 @@ pub fn message(
         .collect::<Vec<_>>();
     let mut replies = replies;
     replies.sort_by_key(|reply| reply.created);
+    let pin_event = system
+        && message
+            .event_detail
+            .as_ref()
+            .and_then(|d| d.get("@odata.type"))
+            .and_then(|t| t.as_str())
+            .is_some_and(|t| {
+                matches!(
+                    t.trim_start_matches("#microsoft.graph."),
+                    "messagePinnedEventMessageDetail" | "messageUnpinnedEventMessageDetail"
+                )
+            });
     let missed_call = system && call_missed(message.event_detail.as_ref(), me);
     Message {
+        web_url: message.web_url.filter(|url| !url.is_empty()),
+        pin_event,
         missed_call,
         membership: system
             .then(|| membership(message.event_detail.as_ref()))
@@ -457,12 +472,36 @@ fn attachment(attachment: &g::Attachment) -> Option<Attachment> {
         Some(kind) if kind.contains('/') => AttachmentKind::File,
         _ => AttachmentKind::Other,
     };
+    let kind_is_card = matches!(kind, AttachmentKind::Card);
     Some(Attachment {
         id: attachment.id.clone().unwrap_or_default(),
         kind,
         name: attachment.name.clone(),
         content_type,
         url: attachment.content_url.clone(),
+        content: kind_is_card.then(|| attachment.content.clone()).flatten(),
+    })
+}
+
+/// A pin with its message, for the banner: the first 200 characters of the
+/// text. A pin whose message Graph left out is dropped.
+pub fn pinned_message(pin: g::PinnedChatMessage) -> Option<PinnedMessage> {
+    let message = pin.message?;
+    Some(PinnedMessage {
+        id: pin.id,
+        message_id: message.id,
+        author: message
+            .from
+            .as_ref()
+            .and_then(|f| f.name())
+            .unwrap_or_default()
+            .to_owned(),
+        preview: body_text(message.body.as_ref()).summary(200),
+        at: message
+            .created_date_time
+            .as_deref()
+            .and_then(parse_iso)
+            .unwrap_or_default(),
     })
 }
 
@@ -873,5 +912,51 @@ mod tests {
 
     fn meeting_of(event: g::Event) -> Meeting {
         meeting(event).unwrap()
+    }
+
+    #[test]
+    fn chat_message_web_url_and_pin_event_convert() {
+        let plain: g::ChatMessage = serde_json::from_value(serde_json::json!({
+            "id": "1", "messageType": "message", "chatId": "c",
+            "webUrl": "https://teams.microsoft.com/l/message/c/1"
+        }))
+        .unwrap();
+        let plain = message(plain, None, "u-me");
+        assert_eq!(
+            plain.web_url.as_deref(),
+            Some("https://teams.microsoft.com/l/message/c/1")
+        );
+        assert!(!plain.pin_event);
+        for kind in [
+            "messagePinnedEventMessageDetail",
+            "messageUnpinnedEventMessageDetail",
+        ] {
+            let raw: g::ChatMessage = serde_json::from_value(serde_json::json!({
+                "id": "2", "messageType": "systemEventMessage", "chatId": "c",
+                "eventDetail": {"@odata.type": format!("#microsoft.graph.{kind}")}
+            }))
+            .unwrap();
+            let event = message(raw, None, "u-me");
+            assert!(event.pin_event, "{kind}");
+            assert!(event.system);
+        }
+    }
+
+    #[test]
+    fn card_content_kept() {
+        let raw: g::ChatMessage = serde_json::from_value(serde_json::json!({
+            "id": "3", "messageType": "message", "chatId": "c",
+            "attachments": [
+                {"id": "a", "contentType": "application/vnd.microsoft.card.adaptive", "content": "{\"type\":\"AdaptiveCard\"}"},
+                {"id": "b", "contentType": "application/pdf", "content": "ignored"}
+            ]
+        }))
+        .unwrap();
+        let message = message(raw, None, "u-me");
+        assert_eq!(
+            message.attachments[0].content.as_deref(),
+            Some("{\"type\":\"AdaptiveCard\"}")
+        );
+        assert_eq!(message.attachments[1].content, None);
     }
 }

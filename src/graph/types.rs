@@ -153,6 +153,15 @@ pub struct ChatMessage {
     pub chat_id: Option<String>,
     pub channel_identity: Option<ChannelIdentity>,
     pub replies: Option<Vec<ChatMessage>>,
+    pub web_url: Option<String>,
+}
+
+/// One entry of `chats/{id}/pinnedMessages?$expand=message`.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PinnedChatMessage {
+    pub id: String,
+    pub message: Option<ChatMessageInfo>,
 }
 
 #[derive(Debug, Default, Deserialize)]

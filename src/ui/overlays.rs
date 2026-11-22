@@ -5,7 +5,7 @@ use egui::{CornerRadius, Frame, Key, Margin, Modifiers, Sense, Stroke, vec2};
 
 use super::widgets::{self, PointerControls as _};
 use crate::app::{App, Overlay};
-use crate::model::{Action, ConversationId, Member, SearchHit};
+use crate::model::{Action, ConversationId, Member, SearchHit, StatusExpiry};
 use crate::theme::{self, Icon};
 
 pub fn show(app: &mut App, ctx: &egui::Context) {
@@ -901,6 +901,10 @@ fn status_message(app: &mut App, ctx: &egui::Context) {
     let palette = app.palette;
     let mut actions = Vec::new();
     let mut text = app.form_status.clone();
+    // Keeps the pick while the dialog is open; the action stores it on Save.
+    let mut expiry = ctx.data_mut(|d| {
+        *d.get_temp_mut_or_insert_with(egui::Id::new("status-expiry-pick"), || app.status_expiry)
+    });
     let close = modal(palette, ctx, "status-message", 440.0, 120.0, |ui| {
         Frame::new().inner_margin(Margin::same(20)).show(ui, |ui| {
             ui.label(
@@ -923,11 +927,35 @@ fn status_message(app: &mut App, ctx: &egui::Context) {
             );
             response.request_focus();
             ui.add_space(12.0);
+            // The label on its own line: beside five chips it wrapped them.
+            ui.label(
+                egui::RichText::new("Clear after")
+                    .font(theme::regular(12.0))
+                    .color(palette.secondary),
+            );
+            ui.add_space(2.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+                for (choice, label) in [
+                    (StatusExpiry::Never, "Never"),
+                    (StatusExpiry::Today, "Today"),
+                    (StatusExpiry::OneHour, "1 hour"),
+                    (StatusExpiry::FourHours, "4 hours"),
+                    (StatusExpiry::ThisWeek, "This week"),
+                ] {
+                    if widgets::chip(ui, &palette, label, expiry == choice).clicked() {
+                        expiry = choice;
+                    }
+                }
+            });
+            ui.add_space(12.0);
             ui.horizontal(|ui| {
                 if widgets::primary_button(ui, &palette, "  Save  ").clicked() {
+                    actions.push(Action::SetStatusExpiry(expiry));
                     actions.push(Action::SetStatusMessage(text.clone()));
                 }
                 if widgets::secondary_button(ui, &palette, "Clear").clicked() {
+                    actions.push(Action::SetStatusExpiry(StatusExpiry::Never));
                     actions.push(Action::SetStatusMessage(String::new()));
                 }
                 if widgets::secondary_button(ui, &palette, "Cancel").clicked() {
@@ -939,6 +967,12 @@ fn status_message(app: &mut App, ctx: &egui::Context) {
     app.form_status = text;
     if close {
         actions.push(Action::CloseOverlay);
+    }
+    let pick = egui::Id::new("status-expiry-pick");
+    if actions.is_empty() {
+        ctx.data_mut(|d| d.insert_temp(pick, expiry));
+    } else {
+        ctx.data_mut(|d| d.remove_temp::<StatusExpiry>(pick));
     }
     app.actions.extend(actions);
 }

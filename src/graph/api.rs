@@ -6,7 +6,8 @@ use serde_json::json;
 use super::types as g;
 use super::{Graph, GraphError, convert, segment};
 use crate::model::{
-    Channel, Chat, ConversationId, Meeting, Message, Presence, Profile, SearchHit, Team,
+    Channel, Chat, ConversationId, Meeting, Message, PinnedMessage, Presence, Profile, SearchHit,
+    Team,
 };
 
 /// Graph's page size limit for chats and messages.
@@ -382,6 +383,95 @@ impl Graph {
             &json!({ "user": { "id": me, "tenantId": tenant } }),
         )
         .await
+    }
+
+    /// Hides or unhides a chat for the person (Chat.ReadWrite).
+    pub async fn hide_chat(
+        &self,
+        chat: &str,
+        me: &str,
+        tenant: &str,
+        hide: bool,
+    ) -> Result<(), GraphError> {
+        let action = if hide { "hideForUser" } else { "unhideForUser" };
+        self.post_no_content(
+            &format!("chats/{}/{action}", segment(chat)),
+            &json!({ "user": { "id": me, "tenantId": tenant } }),
+        )
+        .await
+    }
+
+    /// `markChatUnreadForUser` (Chat.ReadWrite).
+    pub async fn mark_chat_unread(
+        &self,
+        chat: &str,
+        me: &str,
+        tenant: &str,
+    ) -> Result<(), GraphError> {
+        self.post_no_content(
+            &format!("chats/{}/markChatUnreadForUser", segment(chat)),
+            &json!({ "user": { "id": me, "tenantId": tenant } }),
+        )
+        .await
+    }
+
+    /// The pinned messages of a chat (Chat.ReadWrite).
+    pub async fn pinned_messages(
+        &self,
+        chat: &str,
+        me: &str,
+    ) -> Result<Vec<PinnedMessage>, GraphError> {
+        let _ = me;
+        let pins: g::Page<g::PinnedChatMessage> = self
+            .get(&format!(
+                "chats/{}/pinnedMessages?$expand=message",
+                segment(chat)
+            ))
+            .await?;
+        Ok(pins
+            .value
+            .into_iter()
+            .filter_map(convert::pinned_message)
+            .collect())
+    }
+
+    /// Pins a chat message (ChatMessage.Send).
+    pub async fn pin_message(&self, chat: &str, message: &str) -> Result<(), GraphError> {
+        self.post_no_content(
+            &format!("chats/{}/pinnedMessages", segment(chat)),
+            &json!({
+                "message@odata.bind": format!(
+                    "https://graph.microsoft.com/v1.0/chats/{chat}/messages/{message}"
+                )
+            }),
+        )
+        .await
+    }
+
+    /// Removes a pin (Chat.ReadWrite).
+    pub async fn unpin_message(&self, chat: &str, pin: &str) -> Result<(), GraphError> {
+        self.delete(&format!(
+            "chats/{}/pinnedMessages/{}",
+            segment(chat),
+            segment(pin)
+        ))
+        .await
+    }
+
+    /// The join link of the meeting with this meeting ID (OnlineMeetings.Read).
+    pub async fn meeting_join_url_by_id(&self, id: &str) -> Result<Option<String>, GraphError> {
+        let id = id.replace('\'', "''");
+        let meetings: g::Page<g::OnlineMeeting> = self
+            .get(&format!(
+                "me/onlineMeetings?$filter=joinMeetingIdSettings/joinMeetingId%20eq%20'{}'",
+                urlencoding::encode(&id)
+            ))
+            .await?;
+        Ok(meetings
+            .value
+            .into_iter()
+            .find_map(|meeting| meeting.join_web_url)
+            .filter(|url| !url.is_empty()))
     }
 
     /// `GET /me/joinedTeams` (Team.ReadBasic.All). The endpoint takes no
@@ -1207,5 +1297,187 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].snippet, "the launch plan");
         assert_eq!(hits[0].author, "Ada");
+    }
+
+    async fn expect_post(server: &MockServer, route: &str, body: serde_json::Value, status: u16) {
+        Mock::given(method("POST"))
+            .and(path(route))
+            .and(body_json(body))
+            .respond_with(ResponseTemplate::new(status))
+            .expect(1)
+            .mount(server)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn hide_posts_user_body() {
+        let server = MockServer::start().await;
+        expect_post(
+            &server,
+            "/chats/19:a@thread.v2/hideForUser",
+            json!({"user": {"id": "u-me", "tenantId": "t1"}}),
+            204,
+        )
+        .await;
+        graph(&server)
+            .await
+            .hide_chat("19:a@thread.v2", "u-me", "t1", true)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn unhide_posts_user_body() {
+        let server = MockServer::start().await;
+        expect_post(
+            &server,
+            "/chats/19:a@thread.v2/unhideForUser",
+            json!({"user": {"id": "u-me", "tenantId": "t1"}}),
+            204,
+        )
+        .await;
+        graph(&server)
+            .await
+            .hide_chat("19:a@thread.v2", "u-me", "t1", false)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn mark_unread_posts_user_body() {
+        let server = MockServer::start().await;
+        expect_post(
+            &server,
+            "/chats/19:a@thread.v2/markChatUnreadForUser",
+            json!({"user": {"id": "u-me", "tenantId": "t1"}}),
+            204,
+        )
+        .await;
+        graph(&server)
+            .await
+            .mark_chat_unread("19:a@thread.v2", "u-me", "t1")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn pin_binds_message_url() {
+        let server = MockServer::start().await;
+        expect_post(
+            &server,
+            "/chats/19:a@thread.v2/pinnedMessages",
+            json!({"message@odata.bind": "https://graph.microsoft.com/v1.0/chats/19:a@thread.v2/messages/1700"}),
+            201,
+        )
+        .await;
+        graph(&server)
+            .await
+            .pin_message("19:a@thread.v2", "1700")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn unpin_deletes_pin_path() {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path("/chats/19:a@thread.v2/pinnedMessages/p1"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&server)
+            .await;
+        graph(&server)
+            .await
+            .unpin_message("19:a@thread.v2", "p1")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn meeting_by_id_filters_and_returns_join_web_url() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/me/onlineMeetings"))
+            .and(query_param(
+                "$filter",
+                "joinMeetingIdSettings/joinMeetingId eq '123456789012'",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"value": [
+                {"joinWebUrl": "https://teams.microsoft.com/l/meetup-join/x"},
+                {"joinWebUrl": "https://teams.microsoft.com/l/meetup-join/y"}
+            ]})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let found = graph(&server)
+            .await
+            .meeting_join_url_by_id("123456789012")
+            .await
+            .unwrap();
+        assert_eq!(
+            found.as_deref(),
+            Some("https://teams.microsoft.com/l/meetup-join/x")
+        );
+    }
+
+    #[tokio::test]
+    async fn meeting_by_id_none_and_apostrophe_doubled() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/me/onlineMeetings"))
+            .and(query_param(
+                "$filter",
+                "joinMeetingIdSettings/joinMeetingId eq '1''2'",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"value": []})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        assert_eq!(
+            graph(&server)
+                .await
+                .meeting_join_url_by_id("1'2")
+                .await
+                .unwrap(),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn pinned_preview_strips_html_and_caps_200_chars() {
+        let server = MockServer::start().await;
+        let long = "x".repeat(300);
+        Mock::given(method("GET"))
+            .and(path("/chats/19:a@thread.v2/pinnedMessages"))
+            .and(query_param("$expand", "message"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"value": [
+                {"id": "p1", "message": {"id": "m1", "createdDateTime": "2026-11-20T10:00:00Z",
+                    "from": {"user": {"displayName": "Ada"}},
+                    "body": {"contentType": "html", "content": "<p>Ship it</p>"}}},
+                {"id": "p2", "message": {"id": "m2", "createdDateTime": "2026-11-20T10:00:00Z",
+                    "from": {"user": {"displayName": "Bo"}},
+                    "body": {"contentType": "html", "content": format!("<p>{long}</p>")}}},
+                {"id": "p3"}
+            ]})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let pins = graph(&server)
+            .await
+            .pinned_messages("19:a@thread.v2", "me")
+            .await
+            .unwrap();
+        assert_eq!(pins.len(), 2);
+        assert_eq!(
+            pins[0],
+            PinnedMessage {
+                id: "p1".into(),
+                message_id: "m1".into(),
+                author: "Ada".into(),
+                preview: "Ship it".into(),
+                at: crate::time::parse_iso("2026-11-20T10:00:00Z").unwrap(),
+            }
+        );
+        assert_eq!(pins[1].preview.chars().count(), 200);
     }
 }

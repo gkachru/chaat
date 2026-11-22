@@ -4,6 +4,7 @@
 pub mod calendar;
 pub mod callbar;
 pub mod calls;
+pub mod cards;
 pub mod chat_list;
 pub mod code;
 pub mod composer_tools;
@@ -25,7 +26,7 @@ pub mod widgets;
 use egui::{Align2, CornerRadius, Frame, Margin, Stroke, vec2};
 
 use crate::app::App;
-use crate::model::{Action, Section, ToastKind};
+use crate::model::{Action, Section, ToastAction, ToastKind};
 use crate::theme::{self, Icon};
 
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
@@ -371,15 +372,28 @@ fn toasts(app: &mut App, ctx: &egui::Context) {
     for toast in &app.toasts {
         times.entry(toast.id).or_insert(now);
     }
+    // While the pointer rests on the toasts, a toast with a button keeps
+    // its time: Undo must not vanish under the cursor.
+    let area_id = egui::Id::new("chaat-toasts-rect");
+    let area_rect: Option<egui::Rect> = ctx.data(|d| d.get_temp(area_id));
+    if let (Some(rect), Some(pointer)) = (area_rect, ctx.pointer_hover_pos())
+        && rect.contains(pointer)
+    {
+        for toast in app.toasts.iter().filter(|t| t.action.is_some()) {
+            times.insert(toast.id, now);
+        }
+    }
     // Information fades after a few seconds; errors stay until dismissed.
     let mut expired = Vec::new();
     for toast in &app.toasts {
         if toast.kind == ToastKind::Info {
             let age = now - times[&toast.id];
-            if age > 3.5 {
+            // A toast with a button stays longer, to leave time to use it.
+            let limit = if toast.action.is_some() { 6.0 } else { 3.5 };
+            if age > limit {
                 expired.push(toast.id);
             } else {
-                ctx.request_repaint_after(std::time::Duration::from_secs_f64(3.6 - age));
+                ctx.request_repaint_after(std::time::Duration::from_secs_f64(limit + 0.1 - age));
             }
         }
     }
@@ -389,7 +403,7 @@ fn toasts(app: &mut App, ctx: &egui::Context) {
     times.retain(|id, _| app.toasts.iter().any(|t| t.id == *id));
     ctx.data_mut(|d| d.insert_temp(shown_id, times));
 
-    egui::Area::new(egui::Id::new("chaat-toasts"))
+    let shown = egui::Area::new(egui::Id::new("chaat-toasts"))
         .anchor(Align2::CENTER_BOTTOM, vec2(0.0, -96.0))
         .order(egui::Order::Foreground)
         .interactable(true)
@@ -427,6 +441,15 @@ fn toasts(app: &mut App, ctx: &egui::Context) {
                                 )
                                 .wrap(),
                             );
+                            if let Some(ToastAction::UndoHide(_)) = &toast.action {
+                                let undo =
+                                    widgets::link_button(ui, &palette, "Undo", theme::medium(13.0));
+                                widgets::on_click(
+                                    &undo,
+                                    &mut app.actions,
+                                    Action::ToastAction(toast.id),
+                                );
+                            }
                             if toast.kind == ToastKind::Error {
                                 let close = widgets::icon_button_sized(
                                     ui,
@@ -448,6 +471,7 @@ fn toasts(app: &mut App, ctx: &egui::Context) {
                 ui.add_space(6.0);
             }
         });
+    ctx.data_mut(|d| d.insert_temp(area_id, shown.response.rect));
 }
 
 /// The call-alerts cards at the top right: the plugin's sign-in panel while it
@@ -486,8 +510,13 @@ fn rings(app: &mut App, ctx: &egui::Context) {
             });
         ui.add_space(6.0);
     };
+    // Below the conversation header, and below the pin banner when one shows,
+    // so the cards never cover its Unpin button.
+    let top = conversation::pin_banner_bottom(ctx)
+        .unwrap_or(theme::HEADER_HEIGHT)
+        .max(theme::HEADER_HEIGHT);
     egui::Area::new(egui::Id::new("chaat-rings"))
-        .anchor(Align2::RIGHT_TOP, vec2(-16.0, theme::HEADER_HEIGHT + 8.0))
+        .anchor(Align2::RIGHT_TOP, vec2(-16.0, top + 8.0))
         .order(egui::Order::Foreground)
         .interactable(true)
         .show(ctx, |ui| {

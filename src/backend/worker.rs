@@ -526,7 +526,7 @@ impl Worker {
             } => self.add_members(chat, users, history),
             Command::LeaveChat(chat) => self.leave_chat(chat),
             Command::SetAvailability(availability) => self.set_availability(availability),
-            Command::SetStatusMessage(text) => self.set_status_message(text),
+            Command::SetStatusMessage { text, expires } => self.set_status_message(text, expires),
             Command::SetOutOfOffice(value) => self.set_out_of_office(value),
             Command::PresenceActive => self.presence_active(),
             Command::SignInBrowser(browser) => self.sign_in_browser = browser,
@@ -553,6 +553,11 @@ impl Worker {
                 on,
             } => self.react(conversation, message, emoji, on),
             Command::MarkRead(chat) => self.mark_read(chat),
+            Command::HideChat { chat, hide } => self.hide_chat(chat, hide),
+            Command::MarkChatUnread(chat) => self.mark_chat_unread(chat),
+            Command::PinMessage { chat, message } => self.pin_message(chat, message),
+            Command::UnpinMessage { chat, pin } => self.unpin_message(chat, pin),
+            Command::FindMeetingById(id) => self.find_meeting_by_id(id),
             Command::SaveRelayKey(key) => {
                 let secrets = Arc::clone(&self.secrets);
                 let out = self.out.clone();
@@ -1771,7 +1776,7 @@ impl Worker {
         });
     }
 
-    fn set_status_message(&mut self, text: String) {
+    fn set_status_message(&mut self, text: String, expires: Option<crate::model::Millis>) {
         let Some(account) = &self.account else { return };
         let graph = Arc::clone(&account.graph);
         let out = self.out.clone();
@@ -1783,7 +1788,7 @@ impl Worker {
             .unwrap_or_default()
             .to_owned();
         tokio::spawn(async move {
-            match graph.set_status_message(&me, &text).await {
+            match graph.set_status_message(&me, &text, expires).await {
                 Ok(()) => {
                     if let Ok(presence) = graph.my_presence().await {
                         out.send(Event::MyPresence(presence));
@@ -1954,6 +1959,114 @@ impl Worker {
             if let Err(error) = graph.mark_chat_read(&chat, &me, &tenant).await {
                 log::info!("could not mark a chat read: {error}");
             }
+        });
+    }
+
+    fn hide_chat(&mut self, chat: String, hide: bool) {
+        let Some(account) = &self.account else { return };
+        let graph = Arc::clone(&account.graph);
+        let store = Arc::clone(&account.store);
+        let out = self.out.clone();
+        let me = account
+            .record
+            .id
+            .split('.')
+            .next()
+            .unwrap_or_default()
+            .to_owned();
+        let tenant = account.record.tenant_id.clone();
+        tokio::spawn(async move {
+            match graph.hide_chat(&chat, &me, &tenant, hide).await {
+                Ok(()) => {
+                    {
+                        let store = store.lock().unwrap_or_else(|p| p.into_inner());
+                        if let Some(mut cached) = store
+                            .chats()
+                            .ok()
+                            .and_then(|chats| chats.into_iter().find(|c| c.id == chat))
+                        {
+                            cached.hidden = hide;
+                            let _ = store.upsert_chat(&cached);
+                        }
+                    }
+                    out.send(Event::ChatHidden {
+                        chat,
+                        hidden: hide,
+                        ok: true,
+                    });
+                }
+                Err(error) => {
+                    log::info!("hiding a chat failed: {error}");
+                    out.send(Event::ChatHidden {
+                        chat,
+                        hidden: hide,
+                        ok: false,
+                    });
+                }
+            }
+        });
+    }
+
+    fn mark_chat_unread(&mut self, chat: String) {
+        let Some(account) = &self.account else { return };
+        let graph = Arc::clone(&account.graph);
+        let out = self.out.clone();
+        let me = account
+            .record
+            .id
+            .split('.')
+            .next()
+            .unwrap_or_default()
+            .to_owned();
+        let tenant = account.record.tenant_id.clone();
+        tokio::spawn(async move {
+            if let Err(error) = graph.mark_chat_unread(&chat, &me, &tenant).await {
+                log::info!("could not mark a chat unread: {error}");
+                out.send(Event::MarkUnreadFailed(chat));
+            }
+        });
+    }
+
+    fn pin_message(&mut self, chat: String, message: String) {
+        let Some(account) = &self.account else { return };
+        let graph = Arc::clone(&account.graph);
+        let out = self.out.clone();
+        let internal = self.internal.clone();
+        tokio::spawn(async move {
+            if let Err(error) = graph.pin_message(&chat, &message).await {
+                out.error("Pinning", &error);
+            }
+            // Success or not, read the pins back so the banner is true.
+            let _ = internal.send(Internal::Confirm(Resource::Pins(chat)));
+        });
+    }
+
+    fn unpin_message(&mut self, chat: String, pin: String) {
+        let Some(account) = &self.account else { return };
+        let graph = Arc::clone(&account.graph);
+        let out = self.out.clone();
+        let internal = self.internal.clone();
+        tokio::spawn(async move {
+            if let Err(error) = graph.unpin_message(&chat, &pin).await {
+                out.error("Unpinning", &error);
+            }
+            let _ = internal.send(Internal::Confirm(Resource::Pins(chat)));
+        });
+    }
+
+    fn find_meeting_by_id(&mut self, id: String) {
+        let Some(account) = &self.account else { return };
+        let graph = Arc::clone(&account.graph);
+        let out = self.out.clone();
+        tokio::spawn(async move {
+            let join_url = match graph.meeting_join_url_by_id(&id).await {
+                Ok(url) => url,
+                Err(error) => {
+                    log::info!("meeting ID lookup failed: {error}");
+                    None
+                }
+            };
+            out.send(Event::MeetingById { id, join_url });
         });
     }
 
@@ -2291,6 +2404,7 @@ fn describe(resource: &Resource) -> &'static str {
         Resource::MyPresence => "Loading your status",
         Resource::OutOfOffice => "Loading your automatic replies",
         Resource::Members(_) => "Loading the people in this chat",
+        Resource::Pins(_) => "Loading the pinned messages",
     }
 }
 
@@ -2655,6 +2769,14 @@ async fn fetch_resource(
         Resource::MyPresence => {
             let presence = graph.my_presence().await?;
             out.send(Event::MyPresence(presence));
+        }
+        Resource::Pins(chat) => {
+            let me = record.id.split('.').next().unwrap_or_default();
+            let pins = graph.pinned_messages(chat, me).await?;
+            out.send(Event::Pins {
+                chat: chat.clone(),
+                pins,
+            });
         }
         Resource::Members(chat) => {
             let members: Vec<crate::model::Member> = graph

@@ -19,10 +19,10 @@ push notifications, on 17 October 2026. The completed checks are listed in
 ## Then
 
 - Encrypt the cache (SQLCipher with a key in the OS credential store).
-- Adaptive Cards (a native renderer for the common card elements).
+- Adaptive Cards: input fields and Submit (display of the common elements works; inputs and Submit open in Teams).
 - Lazy per-script fallback fonts (upstream in fastframe-fonts), about 29 MB
   less memory.
-- Pinned chats, chat muting.
+- Pinned chats in the list, chat muting.
 - Translations (fastframe-i18n).
 - Signed and notarized macOS builds, a Windows installer, Flatpak and AUR.
 

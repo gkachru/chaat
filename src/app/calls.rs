@@ -21,6 +21,12 @@ pub struct Docked {
     pub call: Placement,
 }
 
+/// A Teams meeting ID typed instead of a link: 9 to 15 digits, spaces ignored.
+pub fn meeting_id(text: &str) -> Option<String> {
+    let id: String = text.chars().filter(|c| *c != ' ').collect();
+    (id.chars().all(|c| c.is_ascii_digit()) && (9..=15).contains(&id.len())).then_some(id)
+}
+
 /// The smallest window Chaat allows, except while docked.
 const MIN_SIZE: egui::Vec2 = vec2(720.0, 480.0);
 
@@ -35,6 +41,11 @@ impl App {
         let open_in = self.settings.calls.open_in;
         let preferred = self.settings.calls.browser;
         Opener::resolve(open_in, preferred, self.call_browsers())
+    }
+
+    /// Whether `text` is a meeting ID (see `meeting_id`); for the join box.
+    pub fn is_meeting_id(text: &str) -> bool {
+        meeting_id(text).is_some()
     }
 
     /// The browser profile for an account, when each account has its own.
@@ -82,6 +93,12 @@ impl App {
     }
 
     pub(super) fn join_meeting(&mut self, url: String, ctx: &egui::Context) {
+        if let Some(id) = meeting_id(&url) {
+            if self.ensure_scope(crate::auth::ONLINE_MEETINGS_SCOPE) {
+                self.backend.send(Command::FindMeetingById(id));
+            }
+            return;
+        }
         if !crate::calling::is_teams_link(&url) {
             self.toast(ToastKind::Error, "That is not a Microsoft Teams link.");
             return;
@@ -282,6 +299,23 @@ impl App {
         if !self.hidden {
             self.section = Section::Chats;
             self.open_conversation(chat);
+        }
+    }
+
+    /// A meeting found by its meeting ID: joins it like a pasted link.
+    pub(super) fn on_meeting_by_id(
+        &mut self,
+        id: String,
+        join_url: Option<String>,
+        ctx: &egui::Context,
+    ) {
+        let _ = id;
+        match join_url {
+            Some(url) => self.join_meeting(url, ctx),
+            None => self.toast(
+                ToastKind::Error,
+                "No meeting found with that ID. Paste the meeting link instead.",
+            ),
         }
     }
 
@@ -985,6 +1019,72 @@ mod tests {
                 .iter()
                 .any(|c| c.id == "19:meeting_elsewhere@thread.v2")
         );
+    }
+
+    #[test]
+    fn nine_to_fifteen_digits_only() {
+        assert_eq!(
+            meeting_id("123 456 789 012"),
+            Some("123456789012".to_owned())
+        );
+        assert_eq!(meeting_id("123456789"), Some("123456789".to_owned()));
+        assert_eq!(meeting_id("12345678"), None);
+        assert!(meeting_id("123456789012345").is_some());
+        assert_eq!(meeting_id("1234567890123456"), None);
+        assert_eq!(meeting_id("12345678a"), None);
+        assert_eq!(meeting_id(""), None);
+        assert_eq!(meeting_id(UNKNOWN), None);
+    }
+
+    fn recording_app() -> (
+        App,
+        tempfile::TempDir,
+        tokio::sync::mpsc::UnboundedReceiver<Command>,
+    ) {
+        let (mut app, dir) = demo();
+        let (backend, commands) = crate::backend::Backend::recording();
+        app.backend = backend;
+        (app, dir, commands)
+    }
+
+    #[test]
+    fn id_needs_scope_then_sends_find() {
+        let (mut app, _dir, mut commands) = recording_app();
+        let ctx = egui::Context::default();
+        app.demo = false;
+        app.granted.clear();
+        app.join_meeting("123 456 789".into(), &ctx);
+        assert!(matches!(app.overlay, Some(Overlay::Consent(_))));
+        assert!(commands.try_recv().is_err());
+
+        app.overlay = None;
+        app.granted = crate::auth::ONLINE_MEETINGS_SCOPE.to_owned();
+        app.join_meeting("123 456 789".into(), &ctx);
+        assert!(app.overlay.is_none());
+        assert!(matches!(
+            commands.try_recv(),
+            Ok(Command::FindMeetingById(id)) if id == "123456789"
+        ));
+        assert!(app.call.is_none());
+    }
+
+    #[test]
+    fn found_id_joins_like_link() {
+        let (mut app, _dir) = demo();
+        let ctx = egui::Context::default();
+        app.on_meeting_by_id("123456789".into(), Some(UNKNOWN.into()), &ctx);
+        let call = app.call.as_ref().expect("a call");
+        assert_eq!(call.join_url(), Some(UNKNOWN));
+    }
+
+    #[test]
+    fn missing_id_toasts_paste_link() {
+        let (mut app, _dir) = demo();
+        let ctx = egui::Context::default();
+        app.on_meeting_by_id("123456789".into(), None, &ctx);
+        assert!(app.call.is_none());
+        assert!(app.toasts.iter().any(|t| t.kind == ToastKind::Error
+            && t.text == "No meeting found with that ID. Paste the meeting link instead."));
     }
 
     #[test]

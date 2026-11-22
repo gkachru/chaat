@@ -8,6 +8,7 @@ pub mod app;
 pub mod auth;
 pub mod backend;
 pub mod calling;
+pub mod cards;
 pub mod clipboard;
 pub mod compose_format;
 pub mod compose_style;

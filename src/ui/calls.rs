@@ -111,20 +111,33 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     ui.set_width(ui.available_width());
                     ui.label(egui::RichText::new("Join a meeting").font(theme::semibold(15.0)).color(palette.text));
                     ui.add_space(6.0);
-                    ui.horizontal(|ui| {
+                    // Narrow: the Join button goes under the field, which would
+                    // otherwise be too short to show its hint.
+                    let narrow = ui.available_width() < 320.0;
+                    let join_row = |ui: &mut egui::Ui| {
                         let field = egui::TextEdit::singleline(&mut link)
-                            .hint_text("Paste a Teams meeting link")
-                            .desired_width(ui.available_width() - 90.0)
+                            .hint_text(if narrow {
+                                "Meeting link or ID"
+                            } else {
+                                "Paste a Teams meeting link or meeting ID"
+                            })
+                            .desired_width(if narrow { ui.available_width() } else { ui.available_width() - 90.0 })
                             .margin(Margin::symmetric(8, 6));
                         let response = ui.add(field);
-                        let valid = crate::calling::is_teams_link(link.trim());
+                        let valid = crate::calling::is_teams_link(link.trim())
+                            || crate::app::App::is_meeting_id(link.trim());
                         let join = ui.add_enabled(valid, egui::Button::new("Join").min_size(vec2(72.0, 30.0)));
                         let enter = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                         if valid && (join.clicked() || enter) {
                             app.actions.push(Action::JoinMeeting(link.trim().to_owned()));
                             link.clear();
                         }
-                    });
+                    };
+                    if narrow {
+                        ui.vertical(join_row);
+                    } else {
+                        ui.horizontal(join_row);
+                    }
                 });
             ui.ctx().data_mut(|d| d.insert_temp(link_id, link));
             ui.add_space(18.0);

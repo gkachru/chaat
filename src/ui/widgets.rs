@@ -229,6 +229,33 @@ pub fn text_button(ui: &mut Ui, palette: &Palette, text: &str, font: egui::FontI
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
+/// A borderless button in the link color, with room around the text for an
+/// easy click (the Undo on a toast, which has seconds to be found).
+pub fn link_button(ui: &mut Ui, palette: &Palette, text: &str, font: egui::FontId) -> Response {
+    let galley = ui
+        .ctx()
+        .fonts_mut(|f| f.layout_no_wrap(text.to_owned(), font, palette.link));
+    let size = vec2(galley.size().x + 16.0, 28.0);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    if ui.is_rect_visible(rect) {
+        let radius = CornerRadius::same(6);
+        let hovered = response.hovered() || response.has_focus();
+        if hovered {
+            ui.painter()
+                .rect_filled(rect, radius, palette.surface_hover);
+        }
+        ui.painter().galley(
+            egui::pos2(
+                rect.center().x - galley.size().x / 2.0,
+                rect.center().y - galley.size().y / 2.0,
+            ),
+            galley,
+            palette.link,
+        );
+    }
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
 /// An outlined toggle chip (list filters such as Unread). Filled with the
 /// accent while on.
 pub fn chip(ui: &mut Ui, palette: &Palette, text: &str, on: bool) -> Response {
@@ -266,6 +293,44 @@ pub fn chip(ui: &mut Ui, palette: &Palette, text: &str, on: bool) -> Response {
             ),
             galley,
             fg,
+        );
+    }
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// Width of an `icon_chip`.
+pub const ICON_CHIP_WIDTH: f32 = 28.0;
+
+/// A `chip` that shows only an icon, for a filter that needs little room
+/// (the label belongs in a hover text).
+pub fn icon_chip(ui: &mut Ui, palette: &Palette, icon: Icon, on: bool) -> Response {
+    let (rect, response) = ui.allocate_exact_size(vec2(ICON_CHIP_WIDTH, 28.0), Sense::click());
+    if ui.is_rect_visible(rect) {
+        let radius = CornerRadius::same(14);
+        let tint = if on {
+            let fill = if response.hovered() {
+                palette.accent_hover
+            } else {
+                palette.accent
+            };
+            ui.painter().rect_filled(rect, radius, fill);
+            palette.on_accent
+        } else {
+            if response.hovered() {
+                ui.painter()
+                    .rect_filled(rect, radius, palette.surface_hover);
+            }
+            ui.painter().rect_stroke(
+                rect,
+                radius,
+                Stroke::new(1.0, palette.outline),
+                egui::StrokeKind::Inside,
+            );
+            palette.text
+        };
+        icon.image(tint, 16.0).paint_at(
+            ui,
+            egui::Rect::from_center_size(rect.center(), Vec2::splat(16.0)),
         );
     }
     response.on_hover_cursor(egui::CursorIcon::PointingHand)

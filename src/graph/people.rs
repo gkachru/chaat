@@ -169,10 +169,20 @@ impl Graph {
     }
 
     /// `setStatusMessage`; an empty text clears it (Presence.ReadWrite).
-    pub async fn set_status_message(&self, me: &str, text: &str) -> Result<(), GraphError> {
+    pub async fn set_status_message(
+        &self,
+        me: &str,
+        text: &str,
+        expires: Option<crate::model::Millis>,
+    ) -> Result<(), GraphError> {
+        let mut status = json!({ "message": { "content": text.trim(), "contentType": "text" } });
+        if let Some(at) = expires {
+            status["expiryDateTime"] =
+                json!({ "dateTime": crate::time::to_utc_civil(at), "timeZone": "UTC" });
+        }
         self.post_no_content(
             &format!("users/{}/presence/setStatusMessage", segment(me)),
-            &json!({ "statusMessage": { "message": { "content": text.trim(), "contentType": "text" } } }),
+            &json!({ "statusMessage": status }),
         )
         .await
     }
@@ -327,7 +337,7 @@ mod tests {
             .unwrap();
         graph.set_preferred_presence("u-me", None).await.unwrap();
         graph
-            .set_status_message("u-me", " Back at 3 ")
+            .set_status_message("u-me", " Back at 3 ", None)
             .await
             .unwrap();
         graph
@@ -436,5 +446,44 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(error, GraphError::Forbidden { .. }), "{error:?}");
+    }
+
+    #[tokio::test]
+    async fn status_with_expiry_sends_utc_civil() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/users/u-me/presence/setStatusMessage"))
+            .and(body_json(serde_json::json!({"statusMessage": {
+                "message": {"content": "Out", "contentType": "text"},
+                "expiryDateTime": {"dateTime": "1970-01-01T00:00:00", "timeZone": "UTC"}
+            }})))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+        graph(&server)
+            .await
+            .set_status_message("u-me", "Out", Some(0))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn status_without_expiry_omits_field() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/users/u-me/presence/setStatusMessage"))
+            .and(body_json(serde_json::json!({"statusMessage": {
+                "message": {"content": "Out", "contentType": "text"}
+            }})))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+        graph(&server)
+            .await
+            .set_status_message("u-me", "Out", None)
+            .await
+            .unwrap();
     }
 }

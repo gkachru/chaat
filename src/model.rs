@@ -216,7 +216,12 @@ pub struct Chat {
     /// A meeting chat's join link.
     pub join_url: Option<String>,
     /// Hidden from the list by the person (Graph `viewpoint.isHidden`).
+    #[serde(default)]
     pub hidden: bool,
+    /// Marked unread by the person (kept locally until it is opened or a
+    /// newer message arrives).
+    #[serde(default)]
+    pub marked_unread: bool,
 }
 
 /// The person's chat with themselves, Teams' notes. Graph serves its
@@ -281,6 +286,9 @@ impl Chat {
     /// Whether the newest message arrived after the person last read it and
     /// was written by someone else.
     pub fn is_unread(&self, me: &str) -> bool {
+        if self.marked_unread {
+            return true;
+        }
         let Some(preview) = &self.preview else {
             return false;
         };
@@ -356,6 +364,9 @@ pub struct Attachment {
     pub name: Option<String>,
     pub content_type: Option<String>,
     pub url: Option<String>,
+    /// A card's JSON (Graph `content`), for drawing it.
+    #[serde(default)]
+    pub content: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -392,6 +403,12 @@ pub struct Message {
     /// For a call or meeting starting or ending.
     #[serde(default)]
     pub call: Option<CallEvent>,
+    /// Graph's `webUrl` (a link to the message in Teams), when it has one.
+    #[serde(default)]
+    pub web_url: Option<String>,
+    /// A message was pinned or unpinned (system event).
+    #[serde(default)]
+    pub pin_event: bool,
     pub subject: Option<String>,
     pub importance_high: bool,
     pub body: RichText,
@@ -793,6 +810,24 @@ pub enum Action {
     SetAutomaticUpdates(bool),
     Navigate(Section),
     OpenConversation(ConversationId),
+    HideChat(String),
+    UnhideChat(String),
+    MarkChatUnread(String),
+    MarkChatRead(String),
+    PinMessage {
+        chat: String,
+        message: String,
+    },
+    UnpinMessage {
+        chat: String,
+        pin: String,
+    },
+    CopyMessageLink {
+        conversation: ConversationId,
+        message: String,
+    },
+    /// The person clicked the button of a toast (by toast id).
+    ToastAction(u64),
     /// Opens a conversation scrolled to a message (search, notifications).
     OpenMessage {
         conversation: ConversationId,
@@ -884,6 +919,8 @@ pub enum Action {
     /// Sets the signed-in person's availability; `None` resets it.
     SetAvailability(Option<Availability>),
     SetStatusMessage(String),
+    /// How long the status message lasts (the dialog's "Clear after").
+    SetStatusExpiry(StatusExpiry),
     OpenStatusMessage,
     /// Settings, on the Out of Office page, asking for the scope it needs.
     OpenOutOfOffice,
@@ -1081,11 +1118,41 @@ pub enum ToastKind {
     Error,
 }
 
+/// A button on a toast.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ToastAction {
+    /// Unhide the chat with this id.
+    UndoHide(String),
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Toast {
     pub id: u64,
     pub kind: ToastKind,
     pub text: String,
+    pub action: Option<ToastAction>,
+}
+
+/// A pinned message of a chat.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PinnedMessage {
+    /// The pin's own id (for unpinning).
+    pub id: String,
+    pub message_id: String,
+    pub author: String,
+    pub preview: String,
+    pub at: Millis,
+}
+
+/// How long a status message lasts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum StatusExpiry {
+    #[default]
+    Never,
+    Today,
+    OneHour,
+    FourHours,
+    ThisWeek,
 }
 
 /// A sign-in a plugin is waiting for: the person enters the code at the page.
@@ -1356,5 +1423,44 @@ mod tests {
     fn legacy_reactions_become_emoji() {
         assert_eq!(reaction_emoji("like"), "👍");
         assert_eq!(reaction_emoji("🎉"), "🎉");
+    }
+
+    #[test]
+    fn old_cache_chat_loads() {
+        let chat: Chat = serde_json::from_str(
+            r#"{"id":"c","kind":"Group","topic":null,"members":[],"preview":null,
+            "last_read":null,"updated":0,"web_url":null,"join_url":null}"#,
+        )
+        .unwrap();
+        assert!(!chat.hidden);
+        assert!(!chat.marked_unread);
+    }
+
+    #[test]
+    fn old_cache_attachment_loads() {
+        let attachment: Attachment = serde_json::from_str(
+            r#"{"id":"a","kind":"Card","name":null,"content_type":null,"url":null}"#,
+        )
+        .unwrap();
+        assert_eq!(attachment.content, None);
+    }
+
+    #[test]
+    fn marked_unread_is_unread() {
+        let chat = Chat {
+            preview: Some(Preview {
+                author_id: Some("me".into()),
+                at: 10,
+                ..Preview::default()
+            }),
+            last_read: Some(20),
+            ..Chat::default()
+        };
+        assert!(!chat.is_unread("me"));
+        let chat = Chat {
+            marked_unread: true,
+            ..chat
+        };
+        assert!(chat.is_unread("me"));
     }
 }

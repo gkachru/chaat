@@ -1864,6 +1864,7 @@ fn a_long_file_name_does_not_widen_the_history() {
             name: Some(format!("{}.mp4", "a-very-long-recording-name-".repeat(12))),
             content_type: None,
             url: Some("https://example.com/file".into()),
+            content: None,
         }],
         ..Default::default()
     };
@@ -6524,4 +6525,641 @@ fn escape_in_the_composer_cancels_a_reply() {
         h.app.drafts.get(&chat).is_none_or(|d| d.reply_to.is_none()),
         "Esc in the composer cancels the reply"
     );
+}
+
+// -- Chat actions: hide, mark unread, pins, links, cards, status, meeting IDs --
+
+/// The narrowest window Chaat allows (`with_min_inner_size` in main.rs) and a
+/// wide one.
+const CHAT_ACTION_WIDTHS: [f32; 2] = [720.0, 1600.0];
+
+const GRACE_CHAT: &str = "19:demo-grace@unq.gbl.spaces";
+const OFFSITE_CHAT: &str = "19:demo-offsite@thread.v2";
+
+fn themed(theme: &ThemeChoice, width: f32) -> Harness {
+    let mut h = Harness::new();
+    h.size.x = width;
+    h.app.settings.theme = theme.clone();
+    h.frames(3);
+    h
+}
+
+/// The center of the leftmost painted text equal to `wanted` (the sidebar
+/// paints before anything beside it).
+fn leftmost_text(h: &Harness, wanted: &str) -> Option<egui::Pos2> {
+    painted_shapes(h)
+        .into_iter()
+        .filter_map(|shape| match shape {
+            egui::epaint::Shape::Text(text) if text.galley.job.text == wanted => {
+                Some(text.pos + text.galley.rect.center().to_vec2())
+            }
+            _ => None,
+        })
+        .min_by(|a, b| a.x.total_cmp(&b.x))
+}
+
+fn right_click(h: &mut Harness, pos: egui::Pos2) {
+    let button = |pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Secondary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    h.frame_with(vec![egui::Event::PointerMoved(pos), button(true)]);
+    h.frame_with(vec![button(false)]);
+    h.frames(3);
+}
+
+fn right_click_on(h: &mut Harness, wanted: &str) {
+    let pos = leftmost_text(h, wanted).unwrap_or_else(|| panic!("{wanted} is painted"));
+    right_click(h, pos);
+}
+
+/// Opens the More menu of the lowest message bubble from someone else (clear
+/// of the floating cards at the top right on narrow windows).
+fn open_more_menu(h: &mut Harness) {
+    h.frames(3);
+    let bar = 6.0 * 32.0 + 28.0 + 9.0 + 2.0 * 28.0 + 6.0;
+    let (_, others) = bubbles(h);
+    let bubble = others
+        .into_iter()
+        .max_by(|a, b| a.bottom().total_cmp(&b.bottom()))
+        .expect("a bubble from someone else is on screen");
+    h.frame_with(vec![egui::Event::PointerMoved(bubble.center())]);
+    h.frames(25); // past the hover delay
+    // The bar is painted as a surface-filled rect of its own width; More is
+    // its last button.
+    let surface = h.app.palette.surface;
+    let bar_rect = painted_shapes(h)
+        .into_iter()
+        .filter_map(|shape| match shape {
+            egui::epaint::Shape::Rect(r)
+                if same_fill(r.fill, surface) && (r.rect.width() - bar).abs() < 4.0 =>
+            {
+                Some(r.rect)
+            }
+            _ => None,
+        })
+        .next()
+        .expect("the hover bar is painted");
+    h.click(egui::pos2(bar_rect.right() - 17.0, bar_rect.center().y));
+}
+
+#[test]
+fn chat_row_menu_hides_with_undo() {
+    for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+        for width in CHAT_ACTION_WIDTHS {
+            let mut h = themed(&theme, width);
+            let row = leftmost_text(&h, "Katherine Johnson").expect("the row is listed");
+            right_click(&mut h, row);
+            assert!(
+                has_text(&h, "Hide"),
+                "the menu offers Hide ({theme:?}, {width})"
+            );
+            // The menu is as wide as its items need, not as wide as the
+            // window (a context menu offers all of it as room).
+            let hide = text_rect(&h, "Hide").unwrap();
+            // The menu's frame and shadow are the narrowest wide rects
+            // under its first item (its fill is still fading in here).
+            let menu = painted_shapes(&h)
+                .into_iter()
+                .filter_map(|shape| match shape {
+                    egui::epaint::Shape::Rect(r)
+                        if r.rect.contains(hide.center()) && r.rect.width() >= 150.0 =>
+                    {
+                        Some(r.rect)
+                    }
+                    _ => None,
+                })
+                .min_by(|a, b| a.width().total_cmp(&b.width()))
+                .expect("the menu is painted");
+            assert!(
+                menu.width() < 260.0,
+                "the menu is narrow ({theme:?}, {width}): {menu:?}"
+            );
+            h.click(leftmost_text(&h, "Hide").unwrap());
+            let id = "19:demo-katherine@unq.gbl.spaces";
+            assert!(
+                h.app.chat(id).unwrap().hidden,
+                "hidden ({theme:?}, {width})"
+            );
+            assert!(
+                leftmost_text(&h, "Katherine Johnson").is_none(),
+                "the row leaves the list ({theme:?}, {width})"
+            );
+            assert!(has_text(&h, "Chat hidden"), "the toast shows");
+            // Undo stands out from the message: the link color.
+            let link = h.app.palette.link;
+            assert!(
+                painted_shapes(&h).into_iter().any(|shape| matches!(
+                    shape,
+                    egui::epaint::Shape::Text(t)
+                        if t.galley.job.text == "Undo"
+                            && t.galley.job.sections[0].format.color == link
+                )),
+                "Undo is in the link color ({theme:?}, {width})"
+            );
+            h.click(leftmost_text(&h, "Undo").expect("the toast offers Undo"));
+            assert!(
+                !h.app.chat(id).unwrap().hidden,
+                "Undo unhides ({theme:?}, {width})"
+            );
+            assert!(leftmost_text(&h, "Katherine Johnson").is_some());
+        }
+    }
+}
+
+#[test]
+fn undo_toast_holds_while_hovered() {
+    let mut h = themed(&ThemeChoice::Dark, 1280.0);
+    let id = "19:demo-katherine@unq.gbl.spaces";
+    h.act(Action::HideChat(id.into()));
+    let undo = leftmost_text(&h, "Undo").expect("the toast offers Undo");
+    let toast_shown = |h: &Harness| h.app.toasts.iter().any(|t| t.text == "Chat hidden");
+    assert!(toast_shown(&h));
+    h.frame_with(vec![egui::Event::PointerMoved(undo)]);
+    // Past the 6 s limit with the pointer on the toast: still there.
+    for _ in 0..4 {
+        h.time += 3.0;
+        h.frame_with(Vec::new());
+    }
+    assert!(toast_shown(&h), "the toast holds while hovered");
+    // Pointer away: it expires after its 6 s.
+    h.frame_with(vec![egui::Event::PointerMoved(egui::pos2(5.0, 5.0))]);
+    for _ in 0..4 {
+        h.time += 3.0;
+        h.frame_with(Vec::new());
+    }
+    h.frames(3);
+    assert!(!toast_shown(&h), "the toast leaves after the pointer does");
+}
+
+#[test]
+fn hidden_filter_lists_and_unhides() {
+    for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+        for width in CHAT_ACTION_WIDTHS {
+            let mut h = themed(&theme, width);
+            assert!(
+                leftmost_text(&h, "Offsite planning").is_none(),
+                "hidden chats stay out of the list ({theme:?}, {width})"
+            );
+            // At narrow widths the demo's floating sign-in card covers the chip.
+            dismiss_sign_in_card(&mut h);
+            h.click(hidden_chip_pos(&h));
+            assert!(h.app.hidden_only);
+            assert!(leftmost_text(&h, "Offsite planning").is_some());
+            assert!(leftmost_text(&h, "Launch crew").is_none());
+            right_click_on(&mut h, "Offsite planning");
+            assert!(has_text(&h, "Unhide"), "the menu offers Unhide");
+            h.click(leftmost_text(&h, "Unhide").unwrap());
+            assert!(!h.app.chat(OFFSITE_CHAT).unwrap().hidden);
+            assert!(
+                has_text(&h, "No hidden chats"),
+                "the empty state shows ({theme:?}, {width})"
+            );
+            h.click(hidden_chip_pos(&h));
+            // The chat is back in the full list; the oldest rows can sit
+            // below the fold, so filter to bring it into view.
+            h.app.chat_filter = "Offsite".into();
+            h.frames(3);
+            assert!(
+                leftmost_text(&h, "Offsite planning").is_some(),
+                "the chat is listed again ({theme:?}, {width})"
+            );
+        }
+    }
+}
+
+#[test]
+fn mark_unread_from_menu() {
+    for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+        for width in CHAT_ACTION_WIDTHS {
+            let mut h = themed(&theme, width);
+            let me = h.app.me().to_owned();
+            assert!(!h.app.chat(GRACE_CHAT).unwrap().is_unread(&me));
+            right_click_on(&mut h, "Grace Hopper");
+            h.click(leftmost_text(&h, "Mark as unread").expect("the menu offers it"));
+            let chat = h.app.chat(GRACE_CHAT).unwrap();
+            assert!(
+                chat.marked_unread && chat.is_unread(&me),
+                "({theme:?}, {width})"
+            );
+            right_click_on(&mut h, "Grace Hopper");
+            assert!(
+                has_text(&h, "Mark as read"),
+                "the label flips ({theme:?}, {width})"
+            );
+            h.click(leftmost_text(&h, "Mark as read").unwrap());
+            assert!(!h.app.chat(GRACE_CHAT).unwrap().is_unread(&me));
+        }
+    }
+}
+
+#[test]
+fn pin_banner_shows_and_unpins() {
+    for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+        for width in CHAT_ACTION_WIDTHS {
+            let mut h = themed(&theme, width);
+            h.act(Action::OpenConversation(ConversationId::Chat(
+                LAUNCH.into(),
+            )));
+            h.frames(3);
+            assert!(has_text(&h, "1 of 2"), "two pins ({theme:?}, {width})");
+            assert!(
+                painted_texts(&h)
+                    .iter()
+                    .any(|t| t.contains("I've drafted the rollback plan")),
+                "the banner shows the pin's preview"
+            );
+            for left in [2, 1] {
+                let unpin = banner_text(&h, "Unpin")
+                    .unwrap_or_else(|| panic!("the banner offers Unpin ({theme:?}, {width})"));
+                h.click(unpin.center());
+                h.frames(2);
+                assert_eq!(
+                    h.app.pins[LAUNCH].len(),
+                    left - 1,
+                    "a click on Unpin unpins ({theme:?}, {width})"
+                );
+            }
+            assert!(
+                leftmost_text(&h, "Unpin").is_none(),
+                "no banner without pins ({theme:?}, {width})"
+            );
+        }
+    }
+}
+
+/// The bounds of a painted text in the pin banner's row, under the header.
+fn banner_text(h: &Harness, wanted: &str) -> Option<egui::Rect> {
+    let band = chaat::theme::HEADER_HEIGHT..chaat::theme::HEADER_HEIGHT + 34.0;
+    painted_shapes(h).into_iter().find_map(|shape| match shape {
+        egui::epaint::Shape::Text(t) if t.galley.job.text == wanted => {
+            let rect = shape.visual_bounding_rect();
+            band.contains(&rect.center().y).then_some(rect)
+        }
+        _ => None,
+    })
+}
+
+/// The pin banner's author and preview label.
+fn banner_preview(h: &Harness) -> Option<egui::Rect> {
+    let band = chaat::theme::HEADER_HEIGHT..chaat::theme::HEADER_HEIGHT + 34.0;
+    painted_shapes(h).into_iter().find_map(|shape| match shape {
+        egui::epaint::Shape::Text(t) if t.galley.job.text.contains("I've drafted") => {
+            let rect = shape.visual_bounding_rect();
+            band.contains(&rect.center().y).then_some(rect)
+        }
+        _ => None,
+    })
+}
+
+#[test]
+fn a_click_on_the_painted_unpin_text_unpins_under_a_floating_card() {
+    // The demo shows the call-alerts sign-in card at the top right. It used
+    // to start right under the header and cover the banner's Unpin button,
+    // so a click on the text landed on the card.
+    for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+        for width in CHAT_ACTION_WIDTHS {
+            let mut h = themed(&theme, width);
+            h.act(Action::OpenConversation(ConversationId::Chat(
+                LAUNCH.into(),
+            )));
+            h.frames(3);
+            assert!(
+                has_text(&h, "Sign in for call alerts"),
+                "the floating card shows ({theme:?}, {width})"
+            );
+            let unpin = banner_text(&h, "Unpin").expect("the banner offers Unpin");
+            h.frame_with(vec![egui::Event::PointerMoved(unpin.center())]);
+            h.frames(2);
+            assert_eq!(
+                h.cursor,
+                egui::CursorIcon::PointingHand,
+                "the Unpin text is clickable ({theme:?}, {width})"
+            );
+            h.click(unpin.center());
+            h.frames(2);
+            assert_eq!(
+                h.app.pins[LAUNCH].len(),
+                1,
+                "a click on the Unpin text unpins ({theme:?}, {width})"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_filter_chips_keep_the_sidebar_at_its_set_width() {
+    // The Hidden filter is an icon after the kind chips, so all four chips
+    // sit in one row at the default 300 points (a wrapped row costs the list
+    // a line; a row that did not wrap widened the sidebar).
+    for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+        for width in CHAT_ACTION_WIDTHS {
+            let mut h = themed(&theme, width);
+            h.frames(3);
+            assert_eq!(h.app.settings.sidebar_width, 300.0, "({theme:?}, {width})");
+            let mut rows = Vec::new();
+            for chip in ["Unread", "Groups", "Meetings"] {
+                rows.push(text_rect(&h, chip).unwrap_or_else(|| panic!("the {chip} chip shows")));
+            }
+            let hidden = hidden_chip_pos(&h);
+            assert!(
+                rows.iter().all(|r| (r.center().y - hidden.y).abs() < 3.0),
+                "one row ({theme:?}, {width}): {rows:?} {hidden:?}"
+            );
+            assert!(
+                hidden.x + 14.0 <= 64.0 + 300.0,
+                "the icon stays in the sidebar"
+            );
+            // The icon toggles the filter (the demo's sign-in card floats over
+            // it at narrow widths, so remove that first).
+            dismiss_sign_in_card(&mut h);
+            h.click(hidden);
+            assert!(h.app.hidden_only, "the icon turns the filter on");
+            h.click(hidden);
+            assert!(!h.app.hidden_only, "and off again");
+            // Nothing hidden: no icon, and a click where it was does nothing.
+            for chat in &mut h.app.chats {
+                chat.hidden = false;
+            }
+            h.frames(3);
+            h.click(hidden);
+            assert!(
+                !h.app.hidden_only,
+                "no Hidden filter without hidden chats ({theme:?}, {width})"
+            );
+        }
+    }
+}
+
+/// Removes the demo's call-alerts sign-in card, which floats over the top
+/// right of a narrow window.
+fn dismiss_sign_in_card(h: &mut Harness) {
+    h.app
+        .plugins
+        .get_mut("demo-alerts")
+        .unwrap()
+        .sign_in
+        .clear();
+    h.frames(3);
+}
+
+/// The bounds of the leftmost painted text equal to `wanted`.
+fn text_rect(h: &Harness, wanted: &str) -> Option<egui::Rect> {
+    painted_shapes(h)
+        .into_iter()
+        .filter(
+            |shape| matches!(shape, egui::epaint::Shape::Text(t) if t.galley.job.text == wanted),
+        )
+        .map(|shape| shape.visual_bounding_rect())
+        .min_by(|a, b| a.left().total_cmp(&b.left()))
+}
+
+/// Where the Hidden icon chip is when it shows: after the Meetings chip.
+fn hidden_chip_pos(h: &Harness) -> egui::Pos2 {
+    let meetings = text_rect(h, "Meetings").expect("the Meetings chip shows");
+    // The chip pads its text by 12 on each side; the row spaces chips by 6.
+    egui::pos2(
+        meetings.right() + 12.0 + 6.0 + chaat::ui::widgets::ICON_CHIP_WIDTH / 2.0,
+        meetings.center().y,
+    )
+}
+
+#[test]
+fn pin_banner_preview_stops_before_its_controls() {
+    for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+        for width in [640.0, 720.0, 1600.0] {
+            let mut h = themed(&theme, width);
+            h.act(Action::OpenConversation(ConversationId::Chat(
+                LAUNCH.into(),
+            )));
+            h.frames(3);
+            let preview = banner_preview(&h).expect("the banner shows the preview");
+            let count = banner_text(&h, "1 of 2").expect("the banner shows the count");
+            let unpin = banner_text(&h, "Unpin").expect("the banner offers Unpin");
+            // The previous-pin arrow (24 points) sits left of the count.
+            assert!(
+                preview.right() <= count.left() - 24.0,
+                "the preview stops before the arrows ({theme:?}, {width}): {preview:?} {count:?}"
+            );
+            assert!(unpin.right() <= width, "Unpin stays in the window");
+        }
+    }
+}
+
+#[test]
+fn copy_link_in_more_menu() {
+    for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+        for width in CHAT_ACTION_WIDTHS {
+            let mut h = themed(&theme, width);
+            // The demo opens on Ada's chat, whose messages are wide enough.
+            open_more_menu(&mut h);
+            for item in ["Copy text", "Pin", "Copy link"] {
+                assert!(
+                    has_text(&h, item),
+                    "the menu offers {item} ({theme:?}, {width})"
+                );
+            }
+            h.click(leftmost_text(&h, "Copy link").unwrap());
+            assert!(has_text(&h, "Link copied"), "({theme:?}, {width})");
+        }
+    }
+}
+
+#[test]
+fn people_panel_shows_activity() {
+    for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+        // The people button shows its count (the test finds it by that text)
+        // unless the header would leave the title under 80 points; both
+        // widths here leave more, so the count shows.
+        for width in [900.0, 1600.0] {
+            let mut h = themed(&theme, width);
+            h.act(Action::OpenConversation(ConversationId::Chat(
+                "19:demo-oncall@thread.v2".into(),
+            )));
+            h.frames(5);
+            let button = header_text(&h, "4").expect("the people button shows the count");
+            h.click(button.center());
+            for expected in ["People (4)", "In a call"] {
+                assert!(
+                    has_text(&h, expected),
+                    "the panel shows {expected} ({theme:?}, {width})"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn status_dialog_clear_after() {
+    for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+        for width in CHAT_ACTION_WIDTHS {
+            let mut h = themed(&theme, width);
+            h.act(Action::OpenStatusMessage);
+            h.frames(3);
+            assert!(has_text(&h, "Clear after"), "({theme:?}, {width})");
+            for label in ["Never", "Today", "1 hour", "4 hours", "This week"] {
+                assert!(has_text(&h, label), "the dialog offers {label}");
+            }
+            // All five choices share one row, under their label.
+            let label = text_rect(&h, "Clear after").unwrap();
+            let rows: Vec<f32> = ["Never", "Today", "1 hour", "4 hours", "This week"]
+                .into_iter()
+                .map(|t| text_rect(&h, t).unwrap().center().y)
+                .collect();
+            assert!(
+                rows.iter().all(|y| (y - rows[0]).abs() < 3.0),
+                "one row of choices ({theme:?}, {width}): {rows:?}"
+            );
+            assert!(label.bottom() <= rows[0], "the label is above the choices");
+            h.click(leftmost_text(&h, "4 hours").unwrap());
+            h.click(leftmost_text(&h, "  Save  ").unwrap());
+            assert_eq!(
+                h.app.status_expiry,
+                chaat::model::StatusExpiry::FourHours,
+                "Save keeps the choice ({theme:?}, {width})"
+            );
+        }
+    }
+}
+
+#[test]
+fn join_box_accepts_meeting_id() {
+    use chaat::backend::Event;
+    for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+        for width in CHAT_ACTION_WIDTHS {
+            let mut h = themed(&theme, width);
+            h.act(Action::Navigate(Section::Calls));
+            h.frames(3);
+            // A narrow page stacks Join under the field and shortens the
+            // hint, so it is not cut off.
+            let hint = if width < 1000.0 {
+                "Meeting link or ID"
+            } else {
+                "Paste a Teams meeting link or meeting ID"
+            };
+            assert!(
+                has_text(&h, hint),
+                "the hint names meeting IDs ({theme:?}, {width})"
+            );
+            if width < 1000.0 {
+                let field = text_rect(&h, hint).unwrap();
+                let join = text_rect(&h, "Join").unwrap();
+                assert!(
+                    join.center().y > field.bottom(),
+                    "Join sits under the field"
+                );
+            }
+            assert!(App::is_meeting_id("123 456 789 012"));
+            assert!(!App::is_meeting_id("12 34"));
+            // A lookup that finds nothing says so and keeps the page.
+            let ctx = h.ctx.clone();
+            h.app.handle(
+                Event::MeetingById {
+                    id: "123456789012".into(),
+                    join_url: None,
+                },
+                &ctx,
+            );
+            h.frames(3);
+            assert!(
+                h.app
+                    .toasts
+                    .iter()
+                    .any(|t| t.text.starts_with("No meeting found")),
+                "({theme:?}, {width})"
+            );
+            assert!(h.app.call.is_none());
+        }
+    }
+}
+
+#[test]
+fn adaptive_card_renders() {
+    for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+        for width in CHAT_ACTION_WIDTHS {
+            let mut h = themed(&theme, width);
+            // The pin banner has its own test; keep it out of the width check.
+            h.app.pins.clear();
+            h.act(Action::OpenConversation(ConversationId::Chat(
+                LAUNCH.into(),
+            )));
+            h.frames(5);
+            for expected in [
+                "Launch readiness",
+                "Build",
+                "0.2 preview",
+                "Tests",
+                "Passing",
+                "Burndown chart",
+                "Open checklist",
+            ] {
+                assert!(
+                    has_text(&h, expected),
+                    "the card shows {expected} ({theme:?}, {width})"
+                );
+            }
+            assert!(
+                widest_text(&h) <= width,
+                "the card fits at {width}: {}",
+                widest_text(&h)
+            );
+        }
+    }
+}
+
+#[test]
+fn card_facts_keep_titles_whole_in_tight_rows() {
+    for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+        for width in CHAT_ACTION_WIDTHS {
+            let mut h = themed(&theme, width);
+            h.app.pins.clear();
+            open_launch(&mut h);
+            // A wrapping title in a grid column broke "Owner" into "Owne" and
+            // "r", and every row was a full control tall.
+            let build = text_rect(&h, "Build").expect("the first fact title shows");
+            let owner = text_rect(&h, "Owner").expect("the second fact title shows whole");
+            assert!(
+                owner.height() < 20.0,
+                "the title stays on one line ({theme:?}, {width}): {owner:?}"
+            );
+            assert!(
+                width < 1000.0 || owner.center().y - build.center().y < 30.0, // narrow: values wrap
+                "fact rows are tight ({theme:?}, {width}): {build:?} {owner:?}"
+            );
+            assert!(
+                has_text(&h, "Open image"),
+                "the image link says what it opens ({theme:?}, {width})"
+            );
+        }
+    }
+}
+
+#[test]
+fn pin_banner_shows_the_message_when_there_is_little_room() {
+    for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+        for (width, with_author) in [(640.0, false), (1600.0, true)] {
+            let mut h = themed(&theme, width);
+            open_launch(&mut h);
+            let band = chaat::theme::HEADER_HEIGHT..chaat::theme::HEADER_HEIGHT + 34.0;
+            let label = painted_shapes(&h)
+                .into_iter()
+                .find_map(|shape| match shape {
+                    egui::epaint::Shape::Text(t)
+                        if t.galley.job.text.contains("I've drafted")
+                            && band.contains(&shape.visual_bounding_rect().center().y) =>
+                    {
+                        Some(t.galley.job.text.clone())
+                    }
+                    _ => None,
+                })
+                .expect("the banner shows the pin");
+            assert_eq!(
+                label.starts_with("Grace Hopper"),
+                with_author,
+                "the author shows only with room ({theme:?}, {width}): {label}"
+            );
+        }
+    }
 }

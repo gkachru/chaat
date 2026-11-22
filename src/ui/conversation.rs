@@ -41,8 +41,175 @@ fn bubble_widths(width: f32) -> (f32, f32) {
 pub fn show(app: &mut App, ui: &mut egui::Ui, conversation: ConversationId) {
     header(app, ui, &conversation);
     find::show(app, ui, &conversation);
+    pin_banner(app, ui, &conversation);
     composer(app, ui, &conversation);
     history(app, ui, &conversation);
+}
+
+// -- Pin banner -----------------------------------------------------------------
+
+/// The icon of pinned messages.
+const PIN_ICON: Icon = Icon::Pin;
+
+/// The pin shown after stepping `delta` (1 or -1) from `index` among `len`.
+fn step_pin(index: usize, len: usize, delta: isize) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    (index.min(len - 1) as isize + delta).rem_euclid(len as isize) as usize
+}
+
+fn banner_bottom_id() -> egui::Id {
+    egui::Id::new("pin-banner-bottom")
+}
+
+/// The bottom edge of the pin banner when this frame drew one. Cards that
+/// float over the conversation's top right start below it, so they never
+/// cover its controls.
+pub fn pin_banner_bottom(ctx: &egui::Context) -> Option<f32> {
+    let pass = ctx.cumulative_pass_nr();
+    ctx.data(|d| d.get_temp::<(u64, f32)>(banner_bottom_id()))
+        .filter(|(drawn, _)| *drawn == pass)
+        .map(|(_, bottom)| bottom)
+}
+
+/// One line under the header for the open chat's pinned messages: the
+/// current pin, arrows to step through them, and Unpin.
+fn pin_banner(app: &mut App, ui: &mut egui::Ui, conversation: &ConversationId) {
+    let ConversationId::Chat(chat) = conversation else {
+        return;
+    };
+    let pins = app.pins.get(chat).cloned().unwrap_or_default();
+    if pins.is_empty() {
+        return;
+    }
+    let palette = app.palette;
+    let state = egui::Id::new(("pin-index", chat));
+    let index = ui
+        .data(|d| d.get_temp::<usize>(state))
+        .unwrap_or(0)
+        .min(pins.len() - 1);
+    let pin = &pins[index];
+    let mut actions = Vec::new();
+    let mut next_index = index;
+    let banner = egui::Panel::top(egui::Id::new(("pin-banner", chat)))
+        .exact_size(34.0)
+        .show_separator_line(false)
+        .frame(
+            Frame::new()
+                .fill(palette.window)
+                .inner_margin(Margin::symmetric(16, 0)),
+        )
+        .show(ui, |ui| {
+            let rect = ui.max_rect();
+            ui.painter().hline(
+                rect.x_range().expand(16.0),
+                rect.bottom(),
+                Stroke::new(1.0, palette.outline),
+            );
+            ui.horizontal_centered(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                let (icon, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
+                PIN_ICON.image(palette.secondary, 14.0).paint_at(ui, icon);
+                let mut jump = false;
+                // Right to left: Unpin, arrows and count, then the text takes
+                // the rest.
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    if widgets::text_button(ui, &palette, "Unpin", theme::regular(12.0)).clicked() {
+                        actions.push(Action::UnpinMessage {
+                            chat: chat.clone(),
+                            pin: pin.id.clone(),
+                        });
+                    }
+                    if pins.len() > 1 {
+                        let next = widgets::icon_button_sized(
+                            ui,
+                            &palette,
+                            Icon::ChevronRight,
+                            "Next pinned message",
+                            24.0,
+                            14.0,
+                            palette.secondary,
+                        );
+                        if next.clicked() {
+                            next_index = step_pin(index, pins.len(), 1);
+                        }
+                        ui.label(
+                            egui::RichText::new(format!("{} of {}", index + 1, pins.len()))
+                                .font(theme::regular(12.0))
+                                .color(palette.dim),
+                        );
+                        let prev = widgets::icon_button_sized(
+                            ui,
+                            &palette,
+                            Icon::ChevronLeft,
+                            "Previous pinned message",
+                            24.0,
+                            14.0,
+                            palette.secondary,
+                        );
+                        if prev.clicked() {
+                            next_index = step_pin(index, pins.len(), -1);
+                        }
+                    }
+                    // Author and preview as one label truncated to the room
+                    // the controls leave, so it never runs under them. (A
+                    // horizontal layout would make egui ignore the job's own
+                    // truncation.)
+                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                        let mut job = egui::text::LayoutJob::default();
+                        let format = |font, color| egui::TextFormat {
+                            font_id: font,
+                            color,
+                            ..Default::default()
+                        };
+                        // With little room the author would take all of it and
+                        // hide the message; then only the message shows.
+                        let author_width = ui
+                            .painter()
+                            .layout_no_wrap(pin.author.clone(), theme::semibold(12.0), palette.text)
+                            .size()
+                            .x;
+                        let with_author = ui.available_width() >= author_width + 6.0 + 90.0;
+                        if with_author {
+                            job.append(
+                                &pin.author,
+                                0.0,
+                                format(theme::semibold(12.0), palette.text),
+                            );
+                        }
+                        job.append(
+                            &pin.preview.replace('\n', " "),
+                            if with_author { 6.0 } else { 0.0 },
+                            format(theme::regular(12.0), palette.secondary),
+                        );
+                        let text = ui
+                            .add(
+                                egui::Label::new(job)
+                                    .truncate()
+                                    .selectable(false)
+                                    .sense(Sense::click()),
+                            )
+                            .on_hover_text(format!("{}: {}", pin.author, pin.preview))
+                            .on_hover_cursor(egui::CursorIcon::PointingHand);
+                        jump = text.clicked();
+                    });
+                });
+                if jump {
+                    actions.push(Action::OpenMessage {
+                        conversation: conversation.clone(),
+                        message: pin.message_id.clone(),
+                    });
+                }
+            });
+        });
+    let pass = ui.ctx().cumulative_pass_nr();
+    ui.data_mut(|d| d.insert_temp(banner_bottom_id(), (pass, banner.response.rect.bottom())));
+    if next_index != index {
+        ui.data_mut(|d| d.insert_temp(state, next_index));
+    }
+    app.actions.extend(actions);
 }
 
 // -- Header -------------------------------------------------------------------
@@ -330,11 +497,28 @@ fn people_button(ui: &mut egui::Ui, app: &mut App, chat: &str, count: usize, com
                             );
                         }
                         let name = if mine { "You" } else { &member.display_name };
-                        ui.label(
-                            egui::RichText::new(name)
-                                .font(theme::regular(13.0))
-                                .color(palette.text),
-                        );
+                        let activity = (!mine)
+                            .then(|| app.presence.get(&member.user_id))
+                            .flatten()
+                            .filter(|p| p.activity.is_some())
+                            .map(|p| p.describe());
+                        let name = egui::RichText::new(name)
+                            .font(theme::regular(13.0))
+                            .color(palette.text);
+                        if let Some(activity) = activity {
+                            ui.vertical(|ui| {
+                                ui.spacing_mut().item_spacing.y = 0.0;
+                                ui.label(name);
+                                ui.label(
+                                    egui::RichText::new(activity)
+                                        .font(theme::regular(12.0))
+                                        .color(palette.dim),
+                                );
+                            });
+                        } else {
+                            // Centered on the avatar, as before activity lines.
+                            ui.label(name);
+                        }
                         if app
                             .adding
                             .contains(&(chat.to_owned(), member.user_id.clone()))
@@ -378,6 +562,16 @@ fn estimate(message: &Message, width: f32, grouped: bool) -> f32 {
         height += 54.0;
     }
     height += message.body.images().count() as f32 * 180.0;
+    for attachment in &message.attachments {
+        if attachment.kind == AttachmentKind::Card {
+            height += match attachment.content.as_deref().and_then(crate::cards::parse) {
+                Some(card) => {
+                    40.0 + 24.0 * card.body.len() as f32 + 32.0 * card.actions.len() as f32
+                }
+                None => 24.0,
+            };
+        }
+    }
     height
 }
 
@@ -1259,6 +1453,10 @@ fn body(
         match &attachment.kind {
             AttachmentKind::File => file_chip(ui, app, attachment, actions),
             AttachmentKind::Card => {
+                if let Some(card) = attachment.content.as_deref().and_then(crate::cards::parse) {
+                    super::cards::show(ui, palette, &card, width, actions);
+                    continue;
+                }
                 ui.label(
                     egui::RichText::new(
                         "A card Chaat can't show yet. Open the message in Teams to see it.",
@@ -1673,6 +1871,47 @@ fn hover_toolbar(
                             && let Some(message) = message
                         {
                             actions.push(Action::CopyText(message.body.to_plain()));
+                        }
+                        if let ConversationId::Chat(chat) = conversation
+                            && message.is_some_and(|m| !m.system)
+                        {
+                            let pin = app
+                                .pins
+                                .get(chat)
+                                .and_then(|pins| pins.iter().find(|p| p.message_id == id));
+                            match pin {
+                                Some(pin) => {
+                                    if menu_item(ui, palette, PIN_ICON, "Unpin") {
+                                        actions.push(Action::UnpinMessage {
+                                            chat: chat.clone(),
+                                            pin: pin.id.clone(),
+                                        });
+                                    }
+                                }
+                                None => {
+                                    if menu_item(ui, palette, PIN_ICON, "Pin") {
+                                        actions.push(Action::PinMessage {
+                                            chat: chat.clone(),
+                                            message: id.to_owned(),
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                        if let Some(message) = message
+                            && !message.system
+                            && crate::app::message_link(
+                                conversation,
+                                id,
+                                message.web_url.as_deref(),
+                            )
+                            .is_some()
+                            && menu_item(ui, palette, Icon::Link, "Copy link")
+                        {
+                            actions.push(Action::CopyMessageLink {
+                                conversation: conversation.clone(),
+                                message: id.to_owned(),
+                            });
                         }
                     });
                 });
@@ -2788,6 +3027,20 @@ fn stamp(at: i64, now: i64) -> String {
             crate::time::short_label(at, now),
             crate::time::clock(at)
         )
+    }
+}
+
+#[cfg(test)]
+mod pin_tests {
+    use super::step_pin;
+
+    #[test]
+    fn pin_index_wraps_both_ways() {
+        assert_eq!(step_pin(0, 3, 1), 1);
+        assert_eq!(step_pin(2, 3, 1), 0);
+        assert_eq!(step_pin(0, 3, -1), 2);
+        assert_eq!(step_pin(5, 3, 1), 0);
+        assert_eq!(step_pin(0, 0, 1), 0);
     }
 }
 
