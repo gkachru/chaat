@@ -277,18 +277,26 @@ fn row(ui: &mut egui::Ui, app: &App, chat: &Chat, me: &str, now: i64) -> egui::R
         }
     });
     let preview_width = (inner.right() - text_left - if unread { 28.0 } else { 10.0 }).max(20.0);
-    let preview_galley = elided_styled(
-        ui,
-        preview.as_deref().unwrap_or(""),
-        theme::regular(13.0),
-        if unread {
-            palette.text
-        } else {
-            palette.secondary
-        },
-        preview_width,
-        system,
-    );
+    // An unsent draft stands in for the last message, except in the chat
+    // that is open.
+    let draft = (app.open != Some(crate::model::ConversationId::Chat(chat.id.clone())))
+        .then(|| app.draft_preview(&chat.id))
+        .flatten();
+    let preview_galley = match &draft {
+        Some(text) => draft_galley(ui, text, palette, preview_width),
+        None => elided_styled(
+            ui,
+            preview.as_deref().unwrap_or(""),
+            theme::regular(13.0),
+            if unread {
+                palette.text
+            } else {
+                palette.secondary
+            },
+            preview_width,
+            system,
+        ),
+    };
     ui.painter().galley(
         egui::pos2(text_left, inner.top() + 31.0),
         preview_galley,
@@ -313,6 +321,34 @@ pub fn elided(
     width: f32,
 ) -> std::sync::Arc<egui::Galley> {
     elided_styled(ui, text, font, color, width, false)
+}
+
+/// The preview line of a chat with an unsent draft: "Draft: " in the accent
+/// color, then the text, cut to `width`.
+fn draft_galley(
+    ui: &egui::Ui,
+    text: &str,
+    palette: &crate::theme::Palette,
+    width: f32,
+) -> std::sync::Arc<egui::Galley> {
+    let mut job = draft_job(text, palette);
+    job.wrap = egui::text::TextWrapping::truncate_at_width(width);
+    ui.ctx().fonts_mut(|f| f.layout_job(job))
+}
+
+fn draft_job(text: &str, palette: &crate::theme::Palette) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::default();
+    job.append(
+        "Draft: ",
+        0.0,
+        egui::TextFormat::simple(theme::regular(13.0), palette.accent),
+    );
+    job.append(
+        &text.replace('\n', " "),
+        0.0,
+        egui::TextFormat::simple(theme::regular(13.0), palette.secondary),
+    );
+    job
 }
 
 /// `elided`, optionally in italics (system events in the chat list).
@@ -341,6 +377,24 @@ fn elided_styled(
 mod tests {
     use super::*;
     use crate::model::Member;
+
+    #[test]
+    fn draft_line_leads_with_an_accent_prefix() {
+        let palette = crate::theme::Palette::dark();
+        let job = draft_job(
+            "see you
+later",
+            &palette,
+        );
+        assert_eq!(job.text, "Draft: see you later");
+        assert_eq!(job.sections.len(), 2);
+        assert_eq!(job.sections[0].format.color, palette.accent);
+        assert_eq!(job.sections[1].format.color, palette.secondary);
+        assert_eq!(
+            &job.text[job.sections[0].byte_range.start.0..job.sections[0].byte_range.end.0],
+            "Draft: "
+        );
+    }
 
     #[test]
     fn filter_matches_titles_and_members() {

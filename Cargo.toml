@@ -42,6 +42,10 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 # Rasterizes the SVG logo for the window, tray and dock icons. Already
 # compiled for egui_extras' SVG support, so it adds no code to the build.
 resvg = { version = "0.45", default-features = false }
+# Emoji names, groups and GitHub shortcodes for the emoji picker and for
+# :shortcode: conversion in the composer. Static tables only (its one dependency, phf,
+# is already in the tree). License: MIT OR Apache-2.0 AND Unicode-3.0.
+emojis = "0.9.1"
 
 # Shared foundation of the crmne egui apps (github.com/crmne/fastframe).
 # Keep every crate on the same revision, including internal dependencies.

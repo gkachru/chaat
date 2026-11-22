@@ -22,7 +22,7 @@ push notifications, on 17 October 2026. The completed checks are listed in
 - Adaptive Cards (a native renderer for the common card elements).
 - Lazy per-script fallback fonts (upstream in fastframe-fonts), about 29 MB
   less memory.
-- "Jump to latest", pinned chats, chat muting.
+- Pinned chats, chat muting.
 - Translations (fastframe-i18n).
 - Signed and notarized macOS builds, a Windows installer, Flatpak and AUR.
 

@@ -19,7 +19,7 @@ use crate::auth::{self, AuthConfig, CHANNEL_READ_SCOPE, IdClaims, loopback::Loop
 use crate::graph::api::Outgoing;
 use crate::graph::files::SharedFile;
 use crate::graph::{Graph, GraphError};
-use crate::model::{Access, ConversationId, Message};
+use crate::model::{Access, ConversationId, Message, SearchHit};
 use crate::paths::AppDirs;
 use crate::realtime::{self, Notice, PushStatus};
 use crate::secrets::SecretStore;
@@ -91,6 +91,8 @@ enum Internal {
         people: People,
         trigger: Trigger,
     },
+    /// A resend that found no copy of the message: post it.
+    Post(crate::outbox::OutboxEntry),
 }
 
 tokio::task_local! {
@@ -229,6 +231,14 @@ struct Worker {
     expired: Option<AccountRecord>,
     cancel_sign_in: Option<watch::Sender<bool>>,
     freshness: Freshness,
+    /// Conversations whose newest page was checked for a resent message
+    /// since the account started; resends take turns.
+    resend_checked: Arc<tokio::sync::Mutex<std::collections::HashSet<ConversationId>>>,
+    /// The open account's cache, kept while its session is expired so drafts
+    /// and unsent messages still save.
+    store: Option<Arc<Mutex<Store>>>,
+    /// Draft saves waiting to be written; the latest per conversation wins.
+    drafts: Arc<DraftQueue>,
     presence_seen: HashMap<String, Instant>,
     /// Contacts whose presence Graph said changed, waiting for one fetch.
     presence_pushed: std::collections::HashSet<String>,
@@ -317,6 +327,9 @@ pub(super) async fn run(
         expired: None,
         cancel_sign_in: None,
         freshness: Freshness::default(),
+        resend_checked: Arc::default(),
+        store: None,
+        drafts: Arc::default(),
         presence_seen: HashMap::new(),
         presence_pushed: std::collections::HashSet::new(),
         contacts: watch::channel(Vec::new()).0,
@@ -473,6 +486,37 @@ impl Worker {
                 files,
                 recipients,
             ),
+            Command::SaveDraft {
+                conversation,
+                draft,
+            } => {
+                if let Some(store) = &self.store {
+                    self.drafts.push(store, conversation, draft);
+                }
+            }
+            Command::SaveOutbox(entry) => {
+                if let Some(store) = &self.store {
+                    let store = Arc::clone(store);
+                    let _ = tokio::task::spawn_blocking(move || {
+                        let store = store.lock().unwrap_or_else(|p| p.into_inner());
+                        if let Err(error) = store.save_outbox(&entry) {
+                            log::warn!("could not save an unsent message: {error}");
+                        }
+                    })
+                    .await;
+                }
+            }
+            Command::DropOutbox(local_id) => {
+                if let Some(store) = &self.store {
+                    forget_outbox(store, &local_id).await;
+                }
+            }
+            Command::Resend(entry) => self.resend(entry),
+            Command::SearchIn {
+                conversation,
+                query,
+                remote,
+            } => self.search_in(conversation, query, remote),
             Command::SearchPeople(query) => self.search_people(query),
             Command::CreateChat { others, topic } => self.create_chat(others, topic),
             Command::AddMembers {
@@ -686,6 +730,19 @@ impl Worker {
                 self.out.send(Event::Auth(AuthStatus::Failed(reason)));
             }
             Internal::FetchFailed(resource) => self.freshness.forget(&resource),
+            Internal::Post(entry) => self.send(
+                entry.conversation,
+                entry.local_id,
+                Outgoing {
+                    html: entry.html,
+                    mentions: entry.mentions,
+                    files: Vec::new(),
+                    images: entry.images,
+                },
+                entry.reply_to,
+                entry.files,
+                entry.recipients,
+            ),
             Internal::Refetch(conversation) => {
                 self.fetch(Resource::Messages(conversation), Trigger::AfterAction)
             }
@@ -758,6 +815,7 @@ impl Worker {
             return;
         }
         self.account = None;
+        self.store = None;
         self.expired = None;
         let Some(id) = account else {
             self.out.send(Event::Auth(AuthStatus::SignedOut));
@@ -780,7 +838,10 @@ impl Worker {
                 }
             }
         };
+        self.store = Some(Arc::clone(&store));
         emit_cache(&store, &self.out).await;
+        self.resend_checked.lock().await.clear();
+        let restored_from = Arc::clone(&store);
         match Session::restore(
             &record,
             config,
@@ -808,6 +869,7 @@ impl Worker {
                     name: record.display_name.clone(),
                     username: record.username.clone(),
                 }));
+                emit_restored(&restored_from, &self.out).await;
                 self.restart_push().await;
             }
             Ok(None) => {
@@ -815,6 +877,7 @@ impl Worker {
                     username: record.username.clone(),
                     reason: "Sign in again to get new messages.".into(),
                 }));
+                emit_restored(&restored_from, &self.out).await;
                 self.expired = Some(record);
             }
             Err(error) => {
@@ -822,6 +885,7 @@ impl Worker {
                     username: record.username.clone(),
                     reason: format!("Chaat could not read its saved session: {error}."),
                 }));
+                emit_restored(&restored_from, &self.out).await;
                 self.expired = Some(record);
             }
         }
@@ -943,6 +1007,7 @@ impl Worker {
             record: record.clone(),
             store: Arc::clone(&store),
         });
+        self.store = Some(Arc::clone(&store));
         self.expired = None;
         self.freshness.clear();
         emit_cache(&store, &self.out).await;
@@ -1167,6 +1232,7 @@ impl Worker {
     async fn sign_out(&mut self) {
         self.stop_push().await;
         self.end_presence_session().await;
+        self.store = None;
         let Some(account) = self.account.take() else {
             self.out.send(Event::Auth(AuthStatus::SignedOut));
             return;
@@ -1452,6 +1518,7 @@ impl Worker {
                     if message.reply_to.is_none() {
                         save(&store, &conversation, std::slice::from_ref(&message)).await;
                     }
+                    forget_outbox(&store, &local_id).await;
                     out.send(Event::Sent {
                         conversation,
                         local_id,
@@ -1465,6 +1532,78 @@ impl Worker {
                         local_id,
                         reason: error.to_string(),
                     });
+                }
+            }
+        });
+    }
+
+    /// Sends a kept message again, unless the conversation already shows it.
+    fn resend(&mut self, entry: crate::outbox::OutboxEntry) {
+        let Some(account) = &self.account else {
+            self.out.send(Event::SendFailed {
+                conversation: entry.conversation,
+                local_id: entry.local_id,
+                reason: "Not signed in".into(),
+            });
+            return;
+        };
+        let resource = Resource::Messages(entry.conversation.clone());
+        let claimed = self
+            .freshness
+            .claim(resource.clone(), Trigger::Start, Instant::now());
+        let graph = Arc::clone(&account.graph);
+        let store = Arc::clone(&account.store);
+        let out = self.out.clone();
+        let internal = self.internal.clone();
+        let record = account.record.clone();
+        let links = Arc::clone(&self.older_links);
+        let checked = Arc::clone(&self.resend_checked);
+        tokio::spawn(async move {
+            let mut checked = checked.lock().await;
+            if !checked.contains(&entry.conversation) {
+                // Without a fresh look there is no telling whether Graph
+                // took the message, so it is not sent blind.
+                let fetched = claimed
+                    && fetch_resource(&graph, &store, &out, &resource, &record, &links)
+                        .await
+                        .is_ok();
+                if !fetched {
+                    if claimed {
+                        let _ = internal.send(Internal::FetchFailed(resource));
+                    }
+                    out.send(Event::SendFailed {
+                        conversation: entry.conversation,
+                        local_id: entry.local_id,
+                        reason: "Chaat could not check whether it was sent. Retry to send it."
+                            .into(),
+                    });
+                    return;
+                }
+                checked.insert(entry.conversation.clone());
+            }
+            drop(checked);
+            let me = record.id.split('.').next().unwrap_or_default().to_owned();
+            let recent = {
+                let key = entry.conversation.clone();
+                let store = Arc::clone(&store);
+                tokio::task::spawn_blocking(move || {
+                    let store = store.lock().unwrap_or_else(|p| p.into_inner());
+                    store.messages(&key, CACHED_MESSAGES).unwrap_or_default()
+                })
+                .await
+                .unwrap_or_default()
+            };
+            match crate::outbox::already_sent(&entry, &recent, &me) {
+                Some(message) => {
+                    forget_outbox(&store, &entry.local_id).await;
+                    out.send(Event::Sent {
+                        conversation: entry.conversation,
+                        local_id: entry.local_id,
+                        message: Box::new(message),
+                    });
+                }
+                None => {
+                    let _ = internal.send(Internal::Post(entry));
                 }
             }
         });
@@ -2034,6 +2173,47 @@ impl Worker {
         });
     }
 
+    fn search_in(&mut self, conversation: ConversationId, query: String, remote: bool) {
+        let Some(account) = &self.account else { return };
+        let store = Arc::clone(&account.store);
+        let graph = Arc::clone(&account.graph);
+        let out = self.out.clone();
+        tokio::spawn(async move {
+            let local = {
+                let store = Arc::clone(&store);
+                let conversation = conversation.clone();
+                let query = query.clone();
+                tokio::task::spawn_blocking(move || {
+                    let store = store.lock().unwrap_or_else(|p| p.into_inner());
+                    store
+                        .search_in(&conversation, &query, 200)
+                        .unwrap_or_default()
+                })
+                .await
+                .unwrap_or_default()
+            };
+            if !remote {
+                out.send(Event::ConversationHits {
+                    conversation,
+                    query,
+                    hits: local,
+                });
+                return;
+            }
+            if query.trim().chars().count() < 3 {
+                return;
+            }
+            match graph.search_messages(&query).await {
+                Ok(remote) => out.send(Event::ConversationHits {
+                    hits: conversation_hits(&conversation, &local, remote),
+                    conversation,
+                    query,
+                }),
+                Err(error) => log::info!("Microsoft Search unavailable: {error}"),
+            }
+        });
+    }
+
     fn search(&mut self, query: String) {
         let Some(account) = &self.account else { return };
         let store = Arc::clone(&account.store);
@@ -2062,6 +2242,24 @@ impl Worker {
             }
         });
     }
+}
+
+/// What a conversation's find bar shows from Microsoft Search: only hits in
+/// that conversation, and none already found locally.
+fn conversation_hits(
+    conversation: &ConversationId,
+    local: &[SearchHit],
+    remote: Vec<SearchHit>,
+) -> Vec<SearchHit> {
+    let mut hits = local.to_vec();
+    for hit in remote {
+        if &hit.conversation == conversation
+            && !hits.iter().any(|known| known.message_id == hit.message_id)
+        {
+            hits.push(hit);
+        }
+    }
+    hits
 }
 
 fn channel_access(session: &Session) -> Access {
@@ -2191,6 +2389,33 @@ async fn emit_cache(store: &Arc<Mutex<Store>>, out: &Outbox) {
         meetings,
         cached: true,
     });
+}
+
+/// Drops a confirmed message from the outbox.
+async fn forget_outbox(store: &Arc<Mutex<Store>>, local_id: &str) {
+    let store = Arc::clone(store);
+    let local_id = local_id.to_owned();
+    let _ = tokio::task::spawn_blocking(move || {
+        let store = store.lock().unwrap_or_else(|p| p.into_inner());
+        let _ = store.delete_outbox(&local_id);
+    })
+    .await;
+}
+
+/// The drafts and unconfirmed messages saved before the last exit.
+async fn emit_restored(store: &Arc<Mutex<Store>>, out: &Outbox) {
+    let store = Arc::clone(store);
+    let saved = tokio::task::spawn_blocking(move || {
+        let store = store.lock().unwrap_or_else(|p| p.into_inner());
+        (
+            store.drafts().unwrap_or_default(),
+            store.outbox().unwrap_or_default(),
+        )
+    })
+    .await;
+    if let Ok((drafts, outbox)) = saved {
+        out.send(Event::Restored { drafts, outbox });
+    }
 }
 
 async fn save(store: &Arc<Mutex<Store>>, conversation: &ConversationId, messages: &[Message]) {
@@ -3269,5 +3494,88 @@ mod tests {
         let people = people_to_follow(&chats, "me", "t-1");
         assert_eq!(people.all, ["partner", "ada", "guest", "unknown", "grace"]);
         assert_eq!(people.followable, ["ada", "unknown", "grace"]);
+    }
+}
+
+/// Draft saves waiting for the disk. Typing queues a save per frame; they
+/// collapse to the latest one per conversation, and one blocking task writes
+/// them, so the command loop never waits on SQLite.
+type PendingDraft = (Arc<Mutex<Store>>, Option<crate::outbox::StoredDraft>);
+
+#[derive(Default)]
+struct DraftQueue {
+    pending: Mutex<HashMap<ConversationId, PendingDraft>>,
+    running: std::sync::atomic::AtomicBool,
+}
+
+impl DraftQueue {
+    fn push(
+        self: &Arc<Self>,
+        store: &Arc<Mutex<Store>>,
+        conversation: ConversationId,
+        draft: Option<crate::outbox::StoredDraft>,
+    ) {
+        self.pending
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(conversation, (Arc::clone(store), draft));
+        if !self.running.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            let queue = Arc::clone(self);
+            tokio::task::spawn_blocking(move || queue.flush());
+        }
+    }
+
+    fn flush(&self) {
+        loop {
+            let batch = {
+                let mut pending = self.pending.lock().unwrap_or_else(|p| p.into_inner());
+                if pending.is_empty() {
+                    // Cleared under the lock, so a push cannot slip between.
+                    self.running
+                        .store(false, std::sync::atomic::Ordering::SeqCst);
+                    return;
+                }
+                std::mem::take(&mut *pending)
+            };
+            for (conversation, (store, draft)) in batch {
+                let store = store.lock().unwrap_or_else(|p| p.into_inner());
+                if let Err(error) = store.save_draft(&conversation, draft.as_ref()) {
+                    log::warn!("could not save a draft: {error}");
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod draft_queue_tests {
+    use super::*;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn latest_draft_per_conversation_wins() {
+        let store = Arc::new(Mutex::new(Store::in_memory().unwrap()));
+        let queue = Arc::new(DraftQueue::default());
+        let chat = ConversationId::Chat("19:a".into());
+        for n in 0..200 {
+            queue.push(
+                &store,
+                chat.clone(),
+                Some(crate::outbox::StoredDraft {
+                    text: format!("t{n}"),
+                    ..Default::default()
+                }),
+            );
+        }
+        while queue.running.load(std::sync::atomic::Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let drafts = store.lock().unwrap().drafts().unwrap();
+        assert_eq!(drafts.len(), 1);
+        assert_eq!(drafts[0].1.text, "t199");
+        queue.push(&store, chat, None);
+        while queue.running.load(std::sync::atomic::Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(store.lock().unwrap().drafts().unwrap().is_empty());
     }
 }

@@ -199,6 +199,29 @@ pub struct Draft {
     pub paste_cursor: Option<usize>,
 }
 
+impl Draft {
+    /// What is saved of the composer: text, quote and mentions. `None` for
+    /// an empty composer; files, images and an edit in progress are not kept.
+    fn persisted(&self) -> Option<crate::outbox::StoredDraft> {
+        (!self.text.trim().is_empty() && self.editing.is_none()).then(|| {
+            crate::outbox::StoredDraft {
+                text: self.text.clone(),
+                reply_to: self.reply_to.clone(),
+                mentions: self.mentions.clone(),
+            }
+        })
+    }
+
+    /// Whether the saved copy already holds what the composer shows.
+    fn is_saved(&self, saved: Option<&crate::outbox::StoredDraft>) -> bool {
+        match (self.persisted(), saved) {
+            (None, None) => true,
+            (Some(own), Some(saved)) => own == *saved,
+            _ => false,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Overlay {
     Switcher,
@@ -368,6 +391,8 @@ pub struct Account {
     pub no_mailbox: bool,
 
     pending_sends: HashMap<String, PendingSend>,
+    /// What the backend holds of each conversation's draft.
+    saved_drafts: HashMap<ConversationId, crate::outbox::StoredDraft>,
     next_local: u64,
     reminded: HashSet<String>,
     recent_conversations: VecDeque<ConversationId>,
@@ -410,6 +435,7 @@ impl Account {
             push: crate::realtime::PushStatus::Off,
             browser_profile: format!("Chaat {}", crate::auth::random_token(4)),
             pending_sends: HashMap::new(),
+            saved_drafts: HashMap::new(),
             next_local: 0,
             reminded: HashSet::new(),
             recent_conversations: VecDeque::new(),
@@ -624,6 +650,11 @@ pub struct App {
     pub people: People,
     /// A message to scroll to once its conversation is drawn.
     pub jump_to: Option<String>,
+    /// Find in the open conversation, while its bar is open.
+    pub find: Option<crate::model::FindState>,
+    /// The Microsoft Search half of find, waiting for typing to pause: the
+    /// conversation, the query and when it is due. Never more than one.
+    find_remote: Option<(ConversationId, String, Instant)>,
     pub toasts: Vec<Toast>,
     /// Ringing calls the call-alerts plugin reported, newest last.
     pub rings: Vec<Ring>,
@@ -797,6 +828,8 @@ impl App {
             add_people: AddPeople::default(),
             people: People::default(),
             jump_to: None,
+            find: None,
+            find_remote: None,
             toasts: Vec::new(),
             rings: Vec::new(),
             ring_raises: calls::RingRaises::default(),
@@ -1549,6 +1582,12 @@ impl App {
                 set,
                 ok,
             } => self.on_plugin_secret_saved(&plugin, &instance, option, set, ok),
+            Event::Restored { drafts, outbox } => self.on_restored(drafts, outbox),
+            Event::ConversationHits {
+                conversation,
+                query,
+                hits,
+            } => self.on_conversation_hits(conversation, query, hits),
         }
     }
 
@@ -1813,12 +1852,291 @@ impl App {
         self.trim_conversations();
     }
 
+    /// Drafts and unsent messages from before the last exit. Young unsent
+    /// messages go out again (after the backend checks they were not
+    /// delivered); older ones show as failed with Retry and Delete.
+    fn on_restored(
+        &mut self,
+        drafts: Vec<(ConversationId, crate::outbox::StoredDraft)>,
+        outbox: Vec<crate::outbox::OutboxEntry>,
+    ) {
+        for (conversation, saved) in drafts {
+            let empty = self
+                .drafts
+                .get(&conversation)
+                .is_none_or(|d| d.text.trim().is_empty());
+            if empty {
+                self.drafts.insert(
+                    conversation.clone(),
+                    Draft {
+                        text: saved.text.clone(),
+                        reply_to: saved.reply_to.clone(),
+                        mentions: saved.mentions.clone(),
+                        ..Default::default()
+                    },
+                );
+            }
+            self.saved_drafts.insert(conversation, saved);
+        }
+        let now = crate::time::now();
+        for entry in outbox {
+            if self.pending_sends.contains_key(&entry.local_id) {
+                // The same start reported twice: it is already shown and in
+                // flight, and sending it again could post it twice.
+                continue;
+            }
+            if let Some(number) = entry
+                .local_id
+                .strip_prefix("local-")
+                .and_then(|n| n.parse::<u64>().ok())
+            {
+                self.next_local = self.next_local.max(number);
+            }
+            let conversation = entry.conversation.clone();
+            let channel_reply = conversation.is_channel() && entry.reply_to.is_some();
+            // The duplicate check reads the conversation's top-level
+            // messages, which cannot show a thread reply: those are not sent
+            // again on their own.
+            let resend = entry.resendable(now) && !channel_reply;
+            let known = self.conversations.contains_key(&conversation);
+            let mut preview_html = entry.html.clone();
+            for image in &entry.images {
+                preview_html.push_str(&format!(
+                    "<img src=\"{}\" width=\"{}\" height=\"{}\">",
+                    image.uri(),
+                    image.width,
+                    image.height
+                ));
+                self.media.insert(image.uri(), Image::Ready(image.uri()));
+            }
+            let mut message = Message {
+                id: entry.local_id.clone(),
+                conversation: Some(conversation.clone()),
+                reply_to: if channel_reply {
+                    entry.reply_to.clone()
+                } else {
+                    None
+                },
+                author_id: Some(self.me().to_owned()),
+                author: self
+                    .profile
+                    .as_ref()
+                    .map(|p| p.display_name.clone())
+                    .unwrap_or_else(|| "You".into()),
+                created: entry.created,
+                modified: entry.created,
+                body: html::parse(&preview_html),
+                delivery: if resend {
+                    Delivery::Sending
+                } else {
+                    Delivery::Failed
+                },
+                ..Default::default()
+            };
+            for path in &entry.files {
+                message.attachments.push(crate::model::Attachment {
+                    id: path.display().to_string(),
+                    kind: crate::model::AttachmentKind::File,
+                    name: path.file_name().map(|n| n.to_string_lossy().into_owned()),
+                    content_type: Some("reference".into()),
+                    url: None,
+                });
+            }
+            let view = self.conversations.entry(conversation.clone()).or_default();
+            view.layout.invalidate();
+            let root = channel_reply
+                .then(|| {
+                    view.messages
+                        .iter()
+                        .position(|m| Some(&m.id) == entry.reply_to.as_ref())
+                })
+                .flatten();
+            if let Some(root) = root {
+                if view.find(&entry.local_id).is_none() {
+                    view.messages[root].replies.push(message);
+                }
+            } else if view.find(&entry.local_id).is_none() {
+                // A reply whose thread root is not loaded yet shows as its own
+                // row, so a failed one can still be retried or deleted.
+                message.reply_to = None;
+                view.messages.push(message);
+                view.messages.sort_by(|a, b| {
+                    (a.delivery != Delivery::Sent, a.created, &a.id).cmp(&(
+                        b.delivery != Delivery::Sent,
+                        b.created,
+                        &b.id,
+                    ))
+                });
+            }
+            if !known && !self.demo {
+                // Opening later would skip the cache for a view that exists.
+                self.backend.send(Command::CachedMessages(conversation));
+            }
+            self.pending_sends.insert(
+                entry.local_id.clone(),
+                PendingSend {
+                    html: entry.html.clone(),
+                    reply_to: entry.reply_to.clone(),
+                    mentions: entry.mentions.clone(),
+                    files: entry.files.clone(),
+                    images: entry.images.clone(),
+                    recipients: entry.recipients.clone(),
+                },
+            );
+            if resend && !self.demo {
+                self.backend.send(Command::Resend(entry));
+            }
+        }
+    }
+
+    /// Hits for the find bar. Hits for an older query, or for a conversation
+    /// that is no longer open, are dropped.
+    fn on_conversation_hits(
+        &mut self,
+        conversation: ConversationId,
+        query: String,
+        mut hits: Vec<SearchHit>,
+    ) {
+        if self.hidden || self.open.as_ref() != Some(&conversation) {
+            return;
+        }
+        let Some(find) = &mut self.find else { return };
+        if query != find.searched {
+            return;
+        }
+        hits.retain(|hit| hit.conversation == conversation);
+        hits.sort_by_key(|hit| std::cmp::Reverse(hit.at));
+        let shown = find.hits.get(find.current).map(|h| h.message_id.clone());
+        let first = find.hits.is_empty();
+        find.current = shown
+            .and_then(|id| hits.iter().position(|h| h.message_id == id))
+            .unwrap_or(0);
+        find.hits = hits;
+        if first && let Some(hit) = find.hits.first() {
+            self.jump_to = Some(hit.message_id.clone());
+        }
+    }
+
+    /// How long the find query stays unchanged before Microsoft Search runs.
+    const FIND_REMOTE_DELAY: Duration = Duration::from_millis(500);
+
+    /// Opens or updates find. A query of two characters or more searches the
+    /// local cache at once; Microsoft Search (three or more) waits until the
+    /// query has been still for `FIND_REMOTE_DELAY` or Enter is pressed.
+    fn find_query(&mut self, query: String) {
+        let Some(conversation) = self.open.clone() else {
+            return;
+        };
+        let find = self.find.get_or_insert_with(Default::default);
+        find.query = query.clone();
+        if find.searched == query {
+            return;
+        }
+        find.searched = query.clone();
+        find.hits.clear();
+        find.current = 0;
+        self.find_remote = None;
+        if query.trim().chars().count() >= 2 && !self.demo {
+            if query.trim().chars().count() >= 3 {
+                self.find_remote = Some((
+                    conversation.clone(),
+                    query.clone(),
+                    Instant::now() + Self::FIND_REMOTE_DELAY,
+                ));
+            }
+            self.backend.send(Command::SearchIn {
+                conversation,
+                query,
+                remote: false,
+            });
+        }
+    }
+
+    /// Sends the waiting Microsoft Search once it is due (`now` at or past
+    /// its deadline). Drops it when find closed, the
+    /// conversation changed or the query moved on. While it waits, asks for
+    /// one repaint at its deadline, so the frame that sends it runs.
+    fn send_due_find_search(&mut self, now: Instant, ctx: &egui::Context) {
+        let Some((conversation, query, due)) = self.find_remote.take() else {
+            return;
+        };
+        let current = self.open.as_ref() == Some(&conversation)
+            && self
+                .find
+                .as_ref()
+                .is_some_and(|find| find.searched == query);
+        if !current {
+            return;
+        }
+        if now < due {
+            ctx.request_repaint_after(due - now);
+            self.find_remote = Some((conversation, query, due));
+            return;
+        }
+        self.backend.send(Command::SearchIn {
+            conversation,
+            query,
+            remote: true,
+        });
+    }
+
+    /// Enter in the find bar: Microsoft Search for the query now, if it is
+    /// still waiting.
+    fn find_remote_now(&mut self, ctx: &egui::Context) {
+        if let Some((_, _, due)) = &mut self.find_remote {
+            *due = Instant::now();
+        }
+        self.send_due_find_search(Instant::now(), ctx);
+    }
+
+    /// Saves the drafts that changed since the last call: at most one
+    /// `SaveDraft` per conversation, none when nothing changed.
+    pub fn sync_drafts(&mut self) {
+        if self.demo {
+            return;
+        }
+        let mut changed: Vec<ConversationId> = Vec::new();
+        for (conversation, draft) in &self.drafts {
+            // An edit in progress leaves the saved draft alone.
+            if draft.editing.is_none() && !draft.is_saved(self.saved_drafts.get(conversation)) {
+                changed.push(conversation.clone());
+            }
+        }
+        for conversation in self.saved_drafts.keys() {
+            if !self.drafts.contains_key(conversation) && !changed.contains(conversation) {
+                changed.push(conversation.clone());
+            }
+        }
+        for conversation in changed {
+            let persisted = self.drafts.get(&conversation).and_then(Draft::persisted);
+            match &persisted {
+                Some(draft) => self
+                    .saved_drafts
+                    .insert(conversation.clone(), draft.clone()),
+                None => self.saved_drafts.remove(&conversation),
+            };
+            self.backend.send(Command::SaveDraft {
+                conversation,
+                draft: persisted,
+            });
+        }
+    }
+
+    /// The chat list's line for a chat with an unsent draft: its text on one
+    /// line.
+    pub fn draft_preview(&self, chat: &str) -> Option<String> {
+        let draft = self.drafts.get(&ConversationId::Chat(chat.to_owned()))?;
+        let text = draft.text.split_whitespace().collect::<Vec<_>>().join(" ");
+        (!text.is_empty()).then(|| text.chars().take(140).collect())
+    }
+
     fn on_sent(&mut self, conversation: ConversationId, local_id: String, message: Message) {
         self.pending_sends.remove(&local_id);
         let entry = self.conversations.entry(conversation.clone()).or_default();
         if let Some(reply_to) = &message.reply_to
             && conversation.is_channel()
         {
+            entry.messages.retain(|m| m.id != local_id);
             if let Some(root) = entry.messages.iter_mut().find(|m| &m.id == reply_to) {
                 root.replies.retain(|r| r.id != local_id);
                 entry.heights.remove(reply_to);
@@ -1860,6 +2178,8 @@ impl App {
                 self.apply(action, ctx);
             }
         }
+        self.sync_drafts();
+        self.send_due_find_search(Instant::now(), ctx);
     }
 
     pub fn apply(&mut self, action: Action, ctx: &egui::Context) {
@@ -1890,11 +2210,13 @@ impl App {
             Action::InstallUpdate => {
                 let unsent = self.accounts.iter().any(|account| {
                     !account.pending_sends.is_empty()
-                        || account.drafts.values().any(|draft| {
-                            !draft.text.is_empty()
-                                || !draft.files.is_empty()
+                        || account.drafts.iter().any(|(conversation, draft)| {
+                            // Text the backend has saved survives a restart.
+                            !draft.files.is_empty()
                                 || !draft.images.is_empty()
                                 || draft.pending_pastes > 0
+                                || (draft.editing.is_some() && !draft.text.is_empty())
+                                || !draft.is_saved(account.saved_drafts.get(conversation))
                         })
                 });
                 if unsent {
@@ -2110,6 +2432,40 @@ impl App {
                         images: pending.images,
                         recipients: pending.recipients,
                     });
+                }
+            }
+            Action::Find(Some(query)) => self.find_query(query),
+            Action::Find(None) => {
+                self.find = None;
+                self.find_remote = None;
+            }
+            Action::FindNext(step) => {
+                self.find_remote_now(ctx);
+                if let Some(find) = &mut self.find
+                    && !find.hits.is_empty()
+                {
+                    let count = find.hits.len() as i64;
+                    find.current =
+                        (find.current as i64 + i64::from(step)).rem_euclid(count) as usize;
+                    self.jump_to = Some(find.hits[find.current].message_id.clone());
+                }
+            }
+            Action::JumpToLatest => self.scroll_to_end = 4,
+            Action::DeleteFailed {
+                conversation,
+                local_id,
+            } => {
+                if let Some(entry) = self.conversations.get_mut(&conversation) {
+                    entry.layout.invalidate();
+                    entry.heights.remove(&local_id);
+                    entry.messages.retain(|m| m.id != local_id);
+                    for message in &mut entry.messages {
+                        message.replies.retain(|r| r.id != local_id);
+                    }
+                }
+                self.pending_sends.remove(&local_id);
+                if !self.demo {
+                    self.backend.send(Command::DropOutbox(local_id));
                 }
             }
             Action::AttachFiles => {
@@ -2678,6 +3034,9 @@ impl App {
         if let ConversationId::Channel { team, .. } = &conversation {
             self.expanded_teams.insert(team.clone());
         }
+        if self.open.as_ref() != Some(&conversation) {
+            self.find = None;
+        }
         self.open = Some(conversation.clone());
         self.trim_conversations();
         if needs_cache && !self.demo {
@@ -2975,6 +3334,19 @@ impl App {
                     recipients: recipients.clone(),
                 },
             );
+            self.backend
+                .send(Command::SaveOutbox(crate::outbox::OutboxEntry {
+                    local_id: local_id.clone(),
+                    conversation: conversation.clone(),
+                    created: message.created,
+                    html: html.clone(),
+                    text: html::parse(&html).to_plain(),
+                    reply_to: reply_to.clone(),
+                    mentions: mentions.clone(),
+                    files: files.clone(),
+                    images: images.clone(),
+                    recipients: recipients.clone(),
+                }));
             self.backend.send(Command::Send {
                 conversation,
                 local_id,
@@ -3390,6 +3762,16 @@ mod tests {
             username: "me@contoso.com".into(),
         };
         (app, commands)
+    }
+
+    /// The next command, skipping the outbox copy a send saves first.
+    fn next_command(commands: &mut tokio::sync::mpsc::UnboundedReceiver<Command>) -> Command {
+        loop {
+            match commands.try_recv().unwrap() {
+                Command::SaveOutbox(_) => continue,
+                other => return other,
+            }
+        }
     }
 
     fn ring(id: &str, caller: &str) -> crate::calling::RingAlert {
@@ -4849,7 +5231,7 @@ mod tests {
         );
         let Command::Send {
             local_id, images, ..
-        } = commands.try_recv().unwrap()
+        } = next_command(&mut commands)
         else {
             panic!("send expected")
         };
@@ -5071,7 +5453,7 @@ mod tests {
         );
         let shown = &app.conversations[&chat].messages[0];
         assert_eq!(shown.delivery, Delivery::Sending);
-        let Ok(Command::Send { local_id, html, .. }) = commands.try_recv() else {
+        let Command::Send { local_id, html, .. } = next_command(&mut commands) else {
             panic!("send command expected");
         };
         assert_eq!(html, "<p><strong>hi</strong></p>");
@@ -5251,13 +5633,13 @@ mod tests {
             },
             &ctx,
         );
-        let Ok(Command::Send {
+        let Command::Send {
             html,
             mentions,
             files,
             recipients,
             ..
-        }) = commands.try_recv()
+        } = next_command(&mut commands)
         else {
             panic!("send command expected");
         };
@@ -6071,5 +6453,488 @@ mod tests {
             stopped(&mut app, "light", "third");
             assert!(app.toasts.iter().any(|t| t.text.ends_with(": third")));
         }
+    }
+
+    fn drain(commands: &mut tokio::sync::mpsc::UnboundedReceiver<Command>) -> Vec<Command> {
+        std::iter::from_fn(|| commands.try_recv().ok()).collect()
+    }
+
+    fn entry(local_id: &str, text: &str, created: i64) -> crate::outbox::OutboxEntry {
+        crate::outbox::OutboxEntry {
+            local_id: local_id.into(),
+            conversation: ConversationId::Chat("19:a".into()),
+            created,
+            html: html::compose(text),
+            text: text.into(),
+            reply_to: None,
+            mentions: Vec::new(),
+            files: Vec::new(),
+            images: Vec::new(),
+            recipients: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn draft_saved_on_change() {
+        let (mut app, mut commands) = app();
+        let chat = ConversationId::Chat("19:a".into());
+        app.sync_drafts();
+        assert!(drain(&mut commands).is_empty(), "no drafts, nothing saved");
+        app.drafts.entry(chat.clone()).or_default().text = "hel".into();
+        app.sync_drafts();
+        app.sync_drafts();
+        let saved = drain(&mut commands);
+        assert_eq!(saved.len(), 1, "one save, none when unchanged");
+        assert!(
+            matches!(&saved[0], Command::SaveDraft { conversation, draft: Some(d) }
+            if conversation == &chat && d.text == "hel")
+        );
+        app.drafts.entry(chat.clone()).or_default().text = "hello".into();
+        app.sync_drafts();
+        assert_eq!(drain(&mut commands).len(), 1);
+        // Files and images are not saved: a draft holding only them is empty.
+        app.drafts.get_mut(&chat).unwrap().text.clear();
+        app.drafts
+            .get_mut(&chat)
+            .unwrap()
+            .files
+            .push("x.txt".into());
+        app.sync_drafts();
+        assert!(matches!(
+            drain(&mut commands).as_slice(),
+            [Command::SaveDraft { draft: None, .. }]
+        ));
+        // An edit in progress does not touch the saved draft.
+        app.drafts.get_mut(&chat).unwrap().editing = Some("m1".into());
+        app.drafts.get_mut(&chat).unwrap().text = "edited".into();
+        app.sync_drafts();
+        assert!(drain(&mut commands).is_empty());
+    }
+
+    #[test]
+    fn cleared_on_send() {
+        let (mut app, mut commands) = app();
+        let ctx = egui::Context::default();
+        let chat = ConversationId::Chat("19:a".into());
+        app.drafts.entry(chat.clone()).or_default().text = "hi".into();
+        app.sync_drafts();
+        drain(&mut commands);
+        app.actions.push(Action::Send {
+            conversation: chat.clone(),
+            text: "hi".into(),
+            reply_to: None,
+            mentions: Vec::new(),
+            files: Vec::new(),
+            images: Vec::new(),
+        });
+        app.apply_actions(&ctx);
+        let sent = drain(&mut commands);
+        assert!(matches!(sent[0], Command::SaveOutbox(_)));
+        assert!(matches!(sent[1], Command::Send { .. }));
+        assert!(matches!(
+            sent.last(),
+            Some(Command::SaveDraft { draft: None, .. })
+        ));
+    }
+
+    #[test]
+    fn restart_restores() {
+        let (mut app, mut commands) = app();
+        let ctx = egui::Context::default();
+        let chat = ConversationId::Chat("19:a".into());
+        let now = crate::time::now();
+        let draft = crate::outbox::StoredDraft {
+            text: "see you\nlater".into(),
+            reply_to: Some("m1".into()),
+            mentions: Vec::new(),
+        };
+        app.handle(
+            Event::Restored {
+                drafts: vec![(chat.clone(), draft.clone())],
+                outbox: vec![
+                    entry("local-7", "young", now - 1_000),
+                    entry("local-3", "old", now - 700_000),
+                ],
+            },
+            &ctx,
+        );
+        assert_eq!(app.drafts[&chat].text, "see you\nlater");
+        assert_eq!(app.drafts[&chat].reply_to.as_deref(), Some("m1"));
+        assert_eq!(app.draft_preview("19:a").as_deref(), Some("see you later"));
+        assert_eq!(app.draft_preview("19:none"), None);
+        let shown = &app.conversations[&chat].messages;
+        let state = |id: &str| shown.iter().find(|m| m.id == id).unwrap().delivery;
+        assert_eq!(state("local-7"), Delivery::Sending);
+        assert_eq!(state("local-3"), Delivery::Failed);
+        let sent = drain(&mut commands);
+        let resent: Vec<&str> = sent
+            .iter()
+            .filter_map(|c| match c {
+                Command::Resend(e) => Some(e.local_id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(resent, ["local-7"], "only the young entry resends");
+        assert!(sent.iter().any(|c| matches!(c, Command::CachedMessages(_))));
+        // The restored draft is already saved: nothing is written back.
+        app.sync_drafts();
+        assert!(drain(&mut commands).is_empty());
+        // Retry works for the failed one, and new ids do not collide.
+        app.apply(
+            Action::RetrySend {
+                conversation: chat.clone(),
+                local_id: "local-3".into(),
+            },
+            &ctx,
+        );
+        assert!(matches!(
+            drain(&mut commands).as_slice(),
+            [Command::Send { local_id, .. }] if local_id == "local-3"
+        ));
+        app.apply(
+            Action::Send {
+                conversation: chat,
+                text: "new".into(),
+                reply_to: None,
+                mentions: Vec::new(),
+                files: Vec::new(),
+                images: Vec::new(),
+            },
+            &ctx,
+        );
+        let Command::Send { local_id, .. } = next_command(&mut commands) else {
+            panic!("send expected")
+        };
+        assert_eq!(local_id, "local-8");
+    }
+
+    #[test]
+    fn a_draft_typed_before_restore_is_kept() {
+        let (mut app, _) = app();
+        let chat = ConversationId::Chat("19:a".into());
+        app.drafts.entry(chat.clone()).or_default().text = "typing".into();
+        app.handle(
+            Event::Restored {
+                drafts: vec![(
+                    chat.clone(),
+                    crate::outbox::StoredDraft {
+                        text: "old".into(),
+                        ..Default::default()
+                    },
+                )],
+                outbox: Vec::new(),
+            },
+            &egui::Context::default(),
+        );
+        assert_eq!(app.drafts[&chat].text, "typing");
+    }
+
+    #[test]
+    fn delete_failed() {
+        let (mut app, mut commands) = app();
+        let ctx = egui::Context::default();
+        let chat = ConversationId::Chat("19:a".into());
+        app.handle(
+            Event::Restored {
+                drafts: Vec::new(),
+                outbox: vec![entry("local-3", "old", 5)],
+            },
+            &ctx,
+        );
+        drain(&mut commands);
+        assert_eq!(app.conversations[&chat].messages.len(), 1);
+        app.apply(
+            Action::DeleteFailed {
+                conversation: chat.clone(),
+                local_id: "local-3".into(),
+            },
+            &ctx,
+        );
+        assert!(app.conversations[&chat].messages.is_empty());
+        assert!(app.pending_sends.is_empty());
+        assert!(matches!(
+            drain(&mut commands).as_slice(),
+            [Command::DropOutbox(id)] if id == "local-3"
+        ));
+    }
+
+    #[test]
+    fn update_gate() {
+        let (mut app, _) = app();
+        let (service, mut commands) = Backend::recording();
+        app.service = service;
+        let ctx = egui::Context::default();
+        let prepared = fastframe_update::Prepared::sample(
+            fastframe_update::Installation {
+                executable: PathBuf::from("/tmp/chaat"),
+                kind: fastframe_update::Kind::Portable,
+            },
+            "0.1.1",
+        );
+        app.handle(
+            Event::Update(crate::updates::Event::Status(
+                crate::updates::Status::Ready(Box::new(prepared)),
+            )),
+            &ctx,
+        );
+        let chat = ConversationId::Chat("19:draft".into());
+        app.drafts.entry(chat.clone()).or_default().text = "Unsent".into();
+        app.apply(Action::InstallUpdate, &ctx);
+        assert!(commands.try_recv().is_err(), "unsaved text blocks");
+        app.sync_drafts();
+        app.pending_sends.insert(
+            "local-1".into(),
+            PendingSend {
+                html: String::new(),
+                reply_to: None,
+                mentions: Vec::new(),
+                files: Vec::new(),
+                images: Vec::new(),
+                recipients: Vec::new(),
+            },
+        );
+        app.apply(Action::InstallUpdate, &ctx);
+        assert!(commands.try_recv().is_err(), "pending sends still block");
+        app.pending_sends.clear();
+        app.apply(Action::InstallUpdate, &ctx);
+        assert!(
+            matches!(commands.try_recv(), Ok(Command::InstallUpdate(_))),
+            "a saved text draft no longer blocks"
+        );
+    }
+
+    fn hit(chat: &str, id: &str, at: i64) -> SearchHit {
+        SearchHit {
+            conversation: ConversationId::Chat(chat.into()),
+            message_id: id.into(),
+            author: "Ada".into(),
+            snippet: "lunch".into(),
+            at,
+        }
+    }
+
+    fn finding(query: &str) -> (App, tokio::sync::mpsc::UnboundedReceiver<Command>) {
+        let (mut app, mut commands) = app();
+        app.open = Some(ConversationId::Chat("19:a".into()));
+        app.apply(Action::Find(Some(query.into())), &egui::Context::default());
+        drain(&mut commands);
+        (app, commands)
+    }
+
+    #[test]
+    fn find_asks_the_backend_for_two_characters_or_more() {
+        let (mut app, mut commands) = app();
+        let ctx = egui::Context::default();
+        let chat = ConversationId::Chat("19:a".into());
+        app.apply(Action::Find(Some("lunch".into())), &ctx);
+        assert!(commands.try_recv().is_err(), "nothing open, nothing sent");
+        app.open = Some(chat.clone());
+        app.apply(Action::Find(Some("l".into())), &ctx);
+        assert!(commands.try_recv().is_err(), "one character sends nothing");
+        app.apply(Action::Find(Some("lu".into())), &ctx);
+        assert!(matches!(
+            commands.try_recv(),
+            Ok(Command::SearchIn { conversation, query, remote: false }) if conversation == chat && query == "lu"
+        ));
+        app.apply(Action::Find(Some("lu".into())), &ctx);
+        assert!(
+            commands.try_recv().is_err(),
+            "an unchanged query is not asked twice"
+        );
+        app.apply(Action::Find(None), &ctx);
+        assert!(app.find.is_none());
+    }
+
+    #[test]
+    fn find_waits_for_a_pause_before_microsoft_search() {
+        let (mut app, mut commands) = app();
+        let ctx = egui::Context::default();
+        let chat = ConversationId::Chat("19:a".into());
+        app.open = Some(chat.clone());
+        let mut typed = String::new();
+        for letter in "lunch".chars() {
+            typed.push(letter);
+            app.apply(Action::Find(Some(typed.clone())), &ctx);
+            app.send_due_find_search(Instant::now(), &ctx);
+        }
+        let mut sent = Vec::new();
+        while let Ok(command) = commands.try_recv() {
+            sent.push(command);
+        }
+        assert_eq!(sent.len(), 4, "local searches for lu, lun, lunc, lunch");
+        assert!(
+            sent.iter()
+                .all(|c| matches!(c, Command::SearchIn { remote: false, .. })),
+            "typing sends local searches only"
+        );
+        // Not yet due: still nothing.
+        app.send_due_find_search(Instant::now(), &ctx);
+        assert!(commands.try_recv().is_err());
+        // Typing paused for 500 ms: one Microsoft Search, for the last query.
+        let later = Instant::now() + Duration::from_millis(500);
+        app.send_due_find_search(later, &ctx);
+        assert!(matches!(
+            commands.try_recv(),
+            Ok(Command::SearchIn { conversation, query, remote: true })
+                if conversation == chat && query == "lunch"
+        ));
+        app.send_due_find_search(later, &ctx);
+        assert!(commands.try_recv().is_err(), "never sent twice");
+    }
+
+    #[test]
+    fn find_enter_sends_microsoft_search_at_once() {
+        let (mut app, mut commands) = finding("lunch");
+        let ctx = egui::Context::default();
+        app.apply(Action::FindNext(1), &ctx);
+        assert!(matches!(
+            commands.try_recv(),
+            Ok(Command::SearchIn { query, remote: true, .. }) if query == "lunch"
+        ));
+        app.apply(Action::FindNext(1), &ctx);
+        app.send_due_find_search(Instant::now() + Duration::from_secs(1), &ctx);
+        assert!(commands.try_recv().is_err(), "once per query");
+    }
+
+    #[test]
+    fn find_closed_or_moved_on_sends_no_microsoft_search() {
+        let later = Instant::now() + Duration::from_secs(1);
+        let ctx = egui::Context::default();
+        let (mut app, mut commands) = finding("lunch");
+        app.apply(Action::Find(None), &ctx);
+        app.send_due_find_search(later, &ctx);
+        assert!(commands.try_recv().is_err(), "closed before 500 ms");
+        // Enter on a closed bar finds nothing to send either.
+        app.apply(Action::FindNext(1), &ctx);
+        assert!(commands.try_recv().is_err());
+
+        let (mut app, mut commands) = finding("lunch");
+        app.open = Some(ConversationId::Chat("19:b".into()));
+        app.send_due_find_search(later, &ctx);
+        assert!(commands.try_recv().is_err(), "another conversation");
+
+        let (mut app, mut commands) = finding("lunch");
+        app.apply(Action::Find(Some("lu".into())), &ctx);
+        drain(&mut commands);
+        app.send_due_find_search(later, &ctx);
+        assert!(commands.try_recv().is_err(), "two characters stay local");
+    }
+
+    #[test]
+    fn stale_hits_ignored() {
+        let (mut app, _) = finding("lunch");
+        let ctx = egui::Context::default();
+        let chat = ConversationId::Chat("19:a".into());
+        app.handle(
+            Event::ConversationHits {
+                conversation: chat.clone(),
+                query: "lun".into(),
+                hits: vec![hit("19:a", "old", 1)],
+            },
+            &ctx,
+        );
+        app.handle(
+            Event::ConversationHits {
+                conversation: ConversationId::Chat("19:b".into()),
+                query: "lunch".into(),
+                hits: vec![hit("19:b", "other", 1)],
+            },
+            &ctx,
+        );
+        assert!(app.find.as_ref().unwrap().hits.is_empty());
+        // Hits for another chat inside the right event are dropped too.
+        app.handle(
+            Event::ConversationHits {
+                conversation: chat,
+                query: "lunch".into(),
+                hits: vec![hit("19:a", "a1", 1), hit("19:b", "stray", 2)],
+            },
+            &ctx,
+        );
+        let ids: Vec<_> = app
+            .find
+            .as_ref()
+            .unwrap()
+            .hits
+            .iter()
+            .map(|h| h.message_id.as_str())
+            .collect();
+        assert_eq!(ids, ["a1"]);
+        // A query typed since the search leaves its hits behind.
+        app.apply(Action::Find(Some("lunches".into())), &ctx);
+        assert!(app.find.as_ref().unwrap().hits.is_empty());
+    }
+
+    #[test]
+    fn find_next_wraps() {
+        let (mut app, _) = finding("lunch");
+        let ctx = egui::Context::default();
+        app.handle(
+            Event::ConversationHits {
+                conversation: ConversationId::Chat("19:a".into()),
+                query: "lunch".into(),
+                hits: vec![
+                    hit("19:a", "a", 1),
+                    hit("19:a", "c", 3),
+                    hit("19:a", "b", 2),
+                ],
+            },
+            &ctx,
+        );
+        // Newest first; the first hits bring the newest into view.
+        assert_eq!(app.jump_to.as_deref(), Some("c"));
+        assert_eq!(app.find.as_ref().unwrap().current, 0);
+        app.apply(Action::FindNext(1), &ctx);
+        assert_eq!(app.find.as_ref().unwrap().current, 1);
+        app.apply(Action::FindNext(1), &ctx);
+        app.apply(Action::FindNext(1), &ctx);
+        assert_eq!(app.find.as_ref().unwrap().current, 0, "wraps forward");
+        app.apply(Action::FindNext(-1), &ctx);
+        assert_eq!(app.find.as_ref().unwrap().current, 2, "wraps back");
+    }
+
+    #[test]
+    fn jump_sets_jump_to() {
+        let (mut app, _) = finding("lunch");
+        let ctx = egui::Context::default();
+        app.handle(
+            Event::ConversationHits {
+                conversation: ConversationId::Chat("19:a".into()),
+                query: "lunch".into(),
+                hits: vec![hit("19:a", "new", 2), hit("19:a", "old", 1)],
+            },
+            &ctx,
+        );
+        app.jump_to = None;
+        app.apply(Action::FindNext(1), &ctx);
+        assert_eq!(app.jump_to.as_deref(), Some("old"));
+        // A later batch (Microsoft Search) keeps the hit being shown.
+        app.handle(
+            Event::ConversationHits {
+                conversation: ConversationId::Chat("19:a".into()),
+                query: "lunch".into(),
+                hits: vec![
+                    hit("19:a", "newest", 3),
+                    hit("19:a", "new", 2),
+                    hit("19:a", "old", 1),
+                ],
+            },
+            &ctx,
+        );
+        let find = app.find.as_ref().unwrap();
+        assert_eq!(find.hits[find.current].message_id, "old");
+        app.scroll_to_end = 0;
+        app.apply(Action::JumpToLatest, &ctx);
+        assert!(app.scroll_to_end > 0);
+    }
+
+    #[test]
+    fn opening_another_conversation_closes_find() {
+        let (mut app, _) = finding("lunch");
+        app.apply(
+            Action::OpenConversation(ConversationId::Chat("19:b".into())),
+            &egui::Context::default(),
+        );
+        assert!(app.find.is_none());
     }
 }

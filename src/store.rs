@@ -15,6 +15,7 @@ use std::path::Path;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::model::{Channel, Chat, ConversationId, Meeting, Message, SearchHit, Team};
+use crate::outbox::{OutboxEntry, StoredDraft};
 
 const SCHEMA_VERSION: i32 = 1;
 const MEDIA_BUDGET: usize = 128 * 1024 * 1024;
@@ -108,7 +109,11 @@ impl Store {
             "CREATE TABLE IF NOT EXISTS media (
                 url TEXT PRIMARY KEY, bytes BLOB NOT NULL, last_used INTEGER NOT NULL
              );
-             CREATE INDEX IF NOT EXISTS media_by_use ON media(last_used);",
+             CREATE INDEX IF NOT EXISTS media_by_use ON media(last_used);
+             CREATE TABLE IF NOT EXISTS drafts (conversation TEXT PRIMARY KEY, json TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS outbox (
+                local_id TEXT PRIMARY KEY, created INTEGER NOT NULL, json TEXT NOT NULL
+             );",
         )?;
         Ok(())
     }
@@ -404,6 +409,102 @@ impl Store {
             .collect())
     }
 
+    /// Local search inside one conversation, newest first.
+    pub fn search_in(
+        &self,
+        conversation: &ConversationId,
+        query: &str,
+        limit: usize,
+    ) -> rusqlite::Result<Vec<SearchHit>> {
+        let Some(expression) = fts_query(query) else {
+            return Ok(Vec::new());
+        };
+        let mut statement = self.db.prepare(
+            "SELECT f.conversation, f.id, f.author, snippet(messages_fts, 0, '', '', '…', 12), m.created
+             FROM messages_fts f JOIN messages m ON m.conversation = f.conversation AND m.id = f.id
+             WHERE messages_fts MATCH ?1 AND f.conversation = ?2 ORDER BY m.created DESC LIMIT ?3",
+        )?;
+        let rows = statement.query_map(
+            params![expression, conversation.key(), limit as i64],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                ))
+            },
+        )?;
+        Ok(rows
+            .filter_map(Result::ok)
+            .filter_map(|(conversation, id, author, snippet, at)| {
+                Some(SearchHit {
+                    conversation: ConversationId::from_key(&conversation)?,
+                    message_id: id,
+                    author,
+                    snippet: snippet.replace('\n', " "),
+                    at,
+                })
+            })
+            .collect())
+    }
+
+    /// Saves a conversation's draft; `None` removes it.
+    pub fn save_draft(
+        &self,
+        conversation: &ConversationId,
+        draft: Option<&StoredDraft>,
+    ) -> rusqlite::Result<()> {
+        match draft {
+            Some(draft) => self.db.execute(
+                "INSERT INTO drafts (conversation, json) VALUES (?1, ?2)
+                 ON CONFLICT(conversation) DO UPDATE SET json = excluded.json",
+                params![conversation.key(), to_json(draft)],
+            )?,
+            None => self.db.execute(
+                "DELETE FROM drafts WHERE conversation = ?1",
+                [conversation.key()],
+            )?,
+        };
+        Ok(())
+    }
+
+    pub fn drafts(&self) -> rusqlite::Result<Vec<(ConversationId, StoredDraft)>> {
+        let mut query = self.db.prepare("SELECT conversation, json FROM drafts")?;
+        let rows = query.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        Ok(rows
+            .filter_map(Result::ok)
+            .filter_map(|(key, json)| Some((ConversationId::from_key(&key)?, from_json(&json)?)))
+            .collect())
+    }
+
+    pub fn save_outbox(&self, entry: &OutboxEntry) -> rusqlite::Result<()> {
+        self.db.execute(
+            "INSERT INTO outbox (local_id, created, json) VALUES (?1, ?2, ?3)
+             ON CONFLICT(local_id) DO UPDATE SET created = excluded.created, json = excluded.json",
+            params![entry.local_id, entry.created, to_json(entry)],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_outbox(&self, local_id: &str) -> rusqlite::Result<()> {
+        self.db
+            .execute("DELETE FROM outbox WHERE local_id = ?1", [local_id])?;
+        Ok(())
+    }
+
+    /// Unconfirmed messages, oldest first.
+    pub fn outbox(&self) -> rusqlite::Result<Vec<OutboxEntry>> {
+        let mut query = self
+            .db
+            .prepare("SELECT json FROM outbox ORDER BY created ASC, rowid ASC")?;
+        let rows = query.query_map([], |row| row.get::<_, String>(0))?;
+        Ok(rows.filter_map(|json| from_json(&json.ok()?)).collect())
+    }
+
     pub fn save_meetings(&mut self, meetings: &[Meeting]) -> rusqlite::Result<()> {
         let tx = self.db.transaction()?;
         tx.execute("DELETE FROM meetings", [])?;
@@ -641,5 +742,108 @@ mod tests {
         let store = Store::open(&path).unwrap();
         assert_eq!(store.media("a").unwrap(), Some(b"aaaa".to_vec()));
         assert_eq!(store.media("c").unwrap(), Some(b"cccc".to_vec()));
+    }
+
+    #[test]
+    fn drafts_round_trip_and_none_deletes() {
+        let store = Store::in_memory().unwrap();
+        let chat = ConversationId::Chat("19:a".into());
+        let draft = StoredDraft {
+            text: "hi".into(),
+            reply_to: Some("m1".into()),
+            mentions: vec![crate::model::MentionRef {
+                user_id: "u".into(),
+                name: "U".into(),
+            }],
+        };
+        store.save_draft(&chat, Some(&draft)).unwrap();
+        store.save_draft(&chat, Some(&draft)).unwrap();
+        assert_eq!(store.drafts().unwrap(), vec![(chat.clone(), draft)]);
+        store.save_draft(&chat, None).unwrap();
+        assert!(store.drafts().unwrap().is_empty());
+    }
+
+    fn entry(local_id: &str, created: i64) -> OutboxEntry {
+        OutboxEntry {
+            local_id: local_id.into(),
+            conversation: ConversationId::Chat("19:a".into()),
+            created,
+            html: "<p>hi</p>".into(),
+            text: "hi".into(),
+            reply_to: None,
+            mentions: vec![],
+            files: vec![],
+            images: vec![],
+            recipients: vec![],
+        }
+    }
+
+    #[test]
+    fn outbox_newest_last_and_delete() {
+        let store = Store::in_memory().unwrap();
+        store.save_outbox(&entry("b", 20)).unwrap();
+        store.save_outbox(&entry("a", 10)).unwrap();
+        let ids: Vec<_> = store
+            .outbox()
+            .unwrap()
+            .into_iter()
+            .map(|e| e.local_id)
+            .collect();
+        assert_eq!(ids, ["a", "b"]);
+        store.delete_outbox("a").unwrap();
+        assert_eq!(store.outbox().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn images_round_trip() {
+        let store = Store::in_memory().unwrap();
+        let image = crate::clipboard::encode_rgba(2, 2, &[255; 16]).unwrap();
+        let mut e = entry("a", 10);
+        e.images = vec![image.clone()];
+        e.files = vec!["C:/x/y.txt".into()];
+        store.save_outbox(&e).unwrap();
+        let back = store.outbox().unwrap().remove(0);
+        assert_eq!(back.images, vec![image]);
+        assert_eq!(back, e);
+    }
+
+    #[test]
+    fn migration_keeps_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("old.db");
+        let chat = ConversationId::Chat("19:a".into());
+        {
+            let mut store = Store::open(&path).unwrap();
+            store
+                .save_messages(&chat, &[message("1", 1, "hello")])
+                .unwrap();
+            store
+                .db
+                .execute_batch("DROP TABLE drafts; DROP TABLE outbox;")
+                .unwrap();
+        }
+        let store = Store::open(&path).unwrap();
+        assert_eq!(store.messages(&chat, 10).unwrap().len(), 1);
+        store
+            .save_draft(&chat, Some(&StoredDraft::default()))
+            .unwrap();
+        assert!(store.outbox().unwrap().is_empty());
+    }
+
+    #[test]
+    fn search_in_scoped() {
+        let mut store = Store::in_memory().unwrap();
+        let a = ConversationId::Chat("19:a".into());
+        let b = ConversationId::Chat("19:b".into());
+        store
+            .save_messages(&a, &[message("1", 1, "lunch at noon")])
+            .unwrap();
+        store
+            .save_messages(&b, &[message("2", 2, "lunch later")])
+            .unwrap();
+        let hits = store.search_in(&a, "lunch", 10).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].conversation, a);
+        assert!(store.search_in(&a, "", 10).unwrap().is_empty());
     }
 }

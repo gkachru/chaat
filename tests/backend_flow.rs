@@ -696,3 +696,284 @@ async fn leave_without_my_membership_fails() {
     });
     assert!(!admin);
 }
+
+// -- Drafts and the outbox -----------------------------------------------------
+
+fn outbox_entry(local_id: &str, text: &str, created: i64) -> chaat::outbox::OutboxEntry {
+    chaat::outbox::OutboxEntry {
+        local_id: local_id.into(),
+        conversation: ConversationId::Chat(CHAT.into()),
+        created,
+        html: chaat::html::compose(text),
+        text: text.into(),
+        reply_to: None,
+        mentions: Vec::new(),
+        files: Vec::new(),
+        images: Vec::new(),
+        recipients: Vec::new(),
+    }
+}
+
+async fn requests(server: &MockServer, verb: &str) -> usize {
+    server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| {
+            r.method.as_str() == verb && r.url.path() == format!("/v1.0/chats/{CHAT}/messages")
+        })
+        .count()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn resend_checks_first() {
+    let server = mock_server(false).await;
+    let session = signed_in(&server).await;
+    // "Build is green" (1690, mine) was created at 2026-10-11T09:50:00Z.
+    let entry = outbox_entry("local-9", "Build is green", 1_791_712_201_000);
+    session.backend.send(Command::SaveOutbox(entry.clone()));
+    session.backend.send(Command::Resend(entry));
+    let found = wait_for(&session.backend, 10, |e| match e {
+        Event::Sent {
+            local_id, message, ..
+        } => Some((local_id, message)),
+        Event::SendFailed { reason, .. } => panic!("resend failed: {reason}"),
+        _ => None,
+    });
+    assert_eq!(found.0, "local-9");
+    assert_eq!(found.1.id, "1690");
+    assert_eq!(requests(&server, "GET").await, 1, "one newest page");
+    assert_eq!(requests(&server, "POST").await, 0, "nothing posted");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn resend_posts_when_absent() {
+    let server = mock_server(true).await;
+    let session = signed_in(&server).await;
+    let entry = outbox_entry("local-4", "Shipping **today**", chaat::time::now());
+    session.backend.send(Command::SaveOutbox(entry.clone()));
+    session.backend.send(Command::Resend(entry));
+    let sent = wait_for(&session.backend, 10, |e| match e {
+        Event::Sent {
+            local_id, message, ..
+        } => Some((local_id, message)),
+        Event::SendFailed { reason, .. } => panic!("resend failed: {reason}"),
+        _ => None,
+    });
+    assert_eq!(sent.0, "local-4");
+    assert_eq!(sent.1.id, "1701");
+    assert_eq!(requests(&server, "POST").await, 1);
+    // Confirmed: the outbox row is gone after a restart.
+    let Session {
+        backend,
+        dirs,
+        options,
+        account,
+        _dir,
+    } = session;
+    drop(backend);
+    PENDING.with_borrow_mut(Vec::clear);
+    let backend = Backend::spawn_with(dirs, Waker::default(), options);
+    backend.send(Command::Start {
+        client_id: CLIENT.into(),
+        tenant: "organizations".into(),
+        account: Some(account),
+    });
+    let outbox = wait_for(&backend, 10, |e| match e {
+        Event::Restored { outbox, .. } => Some(outbox),
+        _ => None,
+    });
+    assert!(outbox.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn restored_after_chats() {
+    let server = mock_server(false).await;
+    let session = signed_in(&server).await;
+    let conversation = ConversationId::Chat(CHAT.into());
+    let draft = chaat::outbox::StoredDraft {
+        text: "half a thought".into(),
+        reply_to: None,
+        mentions: Vec::new(),
+    };
+    session.backend.send(Command::SaveDraft {
+        conversation: conversation.clone(),
+        draft: Some(draft.clone()),
+    });
+    session
+        .backend
+        .send(Command::SaveOutbox(outbox_entry("local-2", "unsent", 5)));
+    let Session {
+        backend,
+        dirs,
+        options,
+        account,
+        _dir,
+    } = session;
+    drop(backend);
+    PENDING.with_borrow_mut(Vec::clear);
+    let backend = Backend::spawn_with(dirs, Waker::default(), options);
+    backend.send(Command::Start {
+        client_id: CLIENT.into(),
+        tenant: "organizations".into(),
+        account: Some(account.clone()),
+    });
+    // Chats first: Restored would be skipped by this wait if it came earlier.
+    wait_for(&backend, 5, |e| {
+        matches!(e, Event::Chats { cached: true, .. }).then_some(())
+    });
+    let (drafts, outbox) = wait_for(&backend, 10, |e| match e {
+        Event::Restored { drafts, outbox } => Some((drafts, outbox)),
+        _ => None,
+    });
+    assert_eq!(drafts, vec![(conversation, draft)]);
+    assert_eq!(outbox.len(), 1);
+    assert_eq!(outbox[0].local_id, "local-2");
+    // Once per start: saving the same registration again does not repeat it.
+    backend.send(Command::Start {
+        client_id: CLIENT.into(),
+        tenant: "organizations".into(),
+        account: Some(account),
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        !backend
+            .poll()
+            .iter()
+            .any(|e| matches!(e, Event::Restored { .. }))
+    );
+}
+
+// -- Find in a conversation ------------------------------------------------------
+
+fn remote_hit(id: &str, chat: &str) -> serde_json::Value {
+    serde_json::json!({
+        "hitId": id, "summary": "a <c0>build</c0> note",
+        "resource": {"@odata.type": "#microsoft.graph.chatMessage", "id": id, "chatId": chat,
+            "createdDateTime": "2026-10-11T10:00:00Z", "from": {"emailAddress": {"name": "Ada"}}}
+    })
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn find_local_first_then_microsoft_search_filtered() {
+    let server = mock_server(false).await;
+    Mock::given(method("POST"))
+        .and(path("/v1.0/search/query"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "value": [{"hitsContainers": [{"hits": [
+                remote_hit("9001", CHAT),
+                remote_hit("9002", "19:other@thread.v2"),
+            ]}]}]
+        })))
+        .mount(&server)
+        .await;
+    let session = signed_in(&server).await;
+    let conversation = ConversationId::Chat(CHAT.into());
+    session.backend.send(Command::Fetch {
+        resource: Resource::Messages(conversation.clone()),
+        trigger: Trigger::Opened,
+    });
+    wait_for(&session.backend, 10, |e| {
+        matches!(e, Event::Messages { cached: false, .. }).then_some(())
+    });
+    session.backend.send(Command::SearchIn {
+        conversation: conversation.clone(),
+        query: "build".into(),
+        remote: false,
+    });
+    session.backend.send(Command::SearchIn {
+        conversation: conversation.clone(),
+        query: "build".into(),
+        remote: true,
+    });
+    let mut batches = Vec::new();
+    for _ in 0..2 {
+        let hits = wait_for(&session.backend, 10, |e| match e {
+            Event::ConversationHits {
+                conversation: c,
+                query,
+                hits,
+            } if c == conversation && query == "build" => Some(hits),
+            _ => None,
+        });
+        batches.push(hits);
+    }
+    let ids = |hits: &[chaat::model::SearchHit]| {
+        hits.iter()
+            .map(|h| h.message_id.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(ids(&batches[0]), ["1690"], "local hits come first");
+    assert_eq!(
+        ids(&batches[1]),
+        ["1690", "9001"],
+        "other chats are dropped"
+    );
+    // Two letters search locally only.
+    session.backend.send(Command::SearchIn {
+        conversation: conversation.clone(),
+        query: "bu".into(),
+        remote: false,
+    });
+    wait_for(&session.backend, 10, |e| match e {
+        Event::ConversationHits { query, .. } if query == "bu" => Some(()),
+        _ => None,
+    });
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn drafts_save_while_the_session_is_expired() {
+    let server = mock_server(false).await;
+    let session = signed_in(&server).await;
+    let conversation = ConversationId::Chat(CHAT.into());
+    let Session {
+        backend,
+        dirs,
+        options,
+        account,
+        _dir,
+    } = session;
+    drop(backend);
+    // A new credential store has no tokens: the stored session cannot restore.
+    let expired = BackendOptions {
+        secrets: Arc::new(MemoryStore::default()),
+        ..options
+    };
+    let start = |backend: &Backend| {
+        backend.send(Command::Start {
+            client_id: CLIENT.into(),
+            tenant: "organizations".into(),
+            account: Some(account.clone()),
+        });
+    };
+    PENDING.with_borrow_mut(Vec::clear);
+    let backend = Backend::spawn_with(dirs.clone(), Waker::default(), expired.clone());
+    start(&backend);
+    wait_for(&backend, 10, |e| {
+        matches!(e, Event::Auth(AuthStatus::Expired { .. })).then_some(())
+    });
+    // Typed quickly, only the last one needs to survive.
+    for text in ["h", "he", "hel", "help"] {
+        backend.send(Command::SaveDraft {
+            conversation: conversation.clone(),
+            draft: Some(chaat::outbox::StoredDraft {
+                text: text.into(),
+                ..Default::default()
+            }),
+        });
+    }
+    backend.send(Command::SaveOutbox(outbox_entry("local-5", "kept", 5)));
+    backend.send(Command::DropOutbox("local-5".into()));
+    drop(backend);
+    PENDING.with_borrow_mut(Vec::clear);
+    let backend = Backend::spawn_with(dirs, Waker::default(), expired);
+    start(&backend);
+    let (drafts, outbox) = wait_for(&backend, 10, |e| match e {
+        Event::Restored { drafts, outbox } => Some((drafts, outbox)),
+        _ => None,
+    });
+    assert_eq!(drafts.len(), 1);
+    assert_eq!(drafts[0].1.text, "help");
+    assert!(outbox.is_empty(), "the dropped entry stays dropped");
+}

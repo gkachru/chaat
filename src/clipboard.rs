@@ -7,8 +7,9 @@ use std::sync::Arc;
 pub const MAX_BYTES: usize = 3 * 1024 * 1024 - 64 * 1024;
 const MAX_PIXELS: usize = 16 * 1024 * 1024;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct InlineImage {
+    #[serde(with = "png_base64")]
     pub png: Arc<[u8]>,
     pub width: u32,
     pub height: u32,
@@ -18,6 +19,26 @@ pub struct InlineImage {
 impl InlineImage {
     pub fn uri(&self) -> String {
         self.uri.clone()
+    }
+}
+
+/// PNG bytes as base64 text, so a saved outbox entry keeps the image.
+mod png_base64 {
+    use std::sync::Arc;
+
+    use base64::Engine;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(png: &Arc<[u8]>, out: S) -> Result<S::Ok, S::Error> {
+        out.serialize_str(&base64::engine::general_purpose::STANDARD.encode(png))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(input: D) -> Result<Arc<[u8]>, D::Error> {
+        let text = String::deserialize(input)?;
+        base64::engine::general_purpose::STANDARD
+            .decode(text)
+            .map(Into::into)
+            .map_err(serde::de::Error::custom)
     }
 }
 

@@ -125,6 +125,18 @@ pub enum Command {
         /// Who to share the files with (the chat's members' addresses).
         recipients: Vec<String>,
     },
+    /// Saves (or with `None` removes) the draft of one conversation.
+    SaveDraft {
+        conversation: ConversationId,
+        draft: Option<crate::outbox::StoredDraft>,
+    },
+    /// Keeps a message until Graph confirms it, so a restart can resend it.
+    SaveOutbox(crate::outbox::OutboxEntry),
+    /// Forgets an unsent message (by its local id).
+    DropOutbox(String),
+    /// Sends a kept message again after a restart, once the conversation's
+    /// newest page shows Graph did not already take it.
+    Resend(crate::outbox::OutboxEntry),
     SearchPeople(String),
     /// Adds people to a group chat, one request each; `history` lets them
     /// see the messages from before they joined.
@@ -187,6 +199,14 @@ pub enum Command {
     UserName(String),
     Media(String),
     Search(String),
+    /// Find in one open conversation. Without `remote`, local hits only.
+    /// With it (the query has paused), the local hits merged with Microsoft
+    /// Search hits for the same conversation, in one event.
+    SearchIn {
+        conversation: ConversationId,
+        query: String,
+        remote: bool,
+    },
     /// Launch (or relaunch) one plugin of the plugin list. Replaces only the
     /// host with this id.
     StartPlugin {
@@ -315,6 +335,12 @@ pub enum Event {
         local_id: String,
         reason: String,
     },
+    /// Drafts and unconfirmed messages saved before the last exit, once per
+    /// account start, after the cached chats.
+    Restored {
+        drafts: Vec<(ConversationId, crate::outbox::StoredDraft)>,
+        outbox: Vec<crate::outbox::OutboxEntry>,
+    },
     Deleted {
         conversation: ConversationId,
         message: String,
@@ -342,6 +368,13 @@ pub enum Event {
         query: String,
         hits: Vec<SearchHit>,
         remote: bool,
+    },
+    /// Hits of `Command::SearchIn`. Each event holds every hit known so far
+    /// (a later event replaces an earlier one), all in `conversation`.
+    ConversationHits {
+        conversation: ConversationId,
+        query: String,
+        hits: Vec<SearchHit>,
     },
     /// A fetch started (`true`) or ended.
     Loading(Resource, bool),

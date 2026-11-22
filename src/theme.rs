@@ -45,6 +45,7 @@ fastframe_icons::icons! {
         Alert => lucide "circle-alert",
         Check => lucide "check",
         ChevronDown => lucide "chevron-down",
+        ChevronUp => lucide "chevron-up",
         ChevronRight => lucide "chevron-right",
         Plus => lucide "plus",
         ExternalLink => lucide "external-link",
@@ -64,6 +65,16 @@ fastframe_icons::icons! {
         Loader => "loader-circle",
         Sidebar => lucide "panel-left",
         Clock => lucide "clock",
+        Typography => "type",
+        Bold => "bold",
+        Italic => "italic",
+        Underline => "underline",
+        Strikethrough => "strikethrough",
+        Code => "code",
+        CodeBlock => "square-code",
+        Quote => "quote",
+        List => "list",
+        ListOrdered => "list-ordered",
     }
 }
 

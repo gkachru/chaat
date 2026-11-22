@@ -1789,7 +1789,7 @@ fn the_hover_bar_keeps_edit_delete_and_copy_in_a_menu() {
     assert!(!texts.iter().any(|t| t == "Edit"), "Edit waits in the menu");
     // The bar sits on the bubble's top edge from its left end (wider than
     // the bar here), its More button last.
-    let bar = 6.0 * 32.0 + 9.0 + 2.0 * 28.0 + 6.0;
+    let bar = 6.0 * 32.0 + 28.0 + 9.0 + 2.0 * 28.0 + 6.0;
     assert!(bubble.width() > bar);
     h.click(egui::pos2(bubble.left() + bar - 17.0, bubble.top() - 16.0));
     let texts = painted_texts(&h);
@@ -5906,4 +5906,503 @@ fn new_plugin_files_keep_to_the_type_scale_and_never_repaint_at_once() {
             }
         }
     }
+}
+
+// -- Local composer, reading and navigation ------------------------------------
+//
+// Each test runs in both themes and at a narrow (760) and a wide (1400) window.
+
+/// Runs `check` on a fresh harness for each theme and width.
+fn each_view(mut check: impl FnMut(&mut Harness)) {
+    for width in [760.0, 1400.0] {
+        for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+            let mut h = Harness::new();
+            h.size.x = width;
+            h.app.settings.theme = theme;
+            h.frames(3);
+            check(&mut h);
+        }
+    }
+}
+
+fn ada() -> ConversationId {
+    ConversationId::Chat("19:demo-ada@unq.gbl.spaces".into())
+}
+
+/// The first one-on-one chat, the one the demo opens.
+fn first_chat(h: &Harness) -> ConversationId {
+    let chat = h
+        .app
+        .chats
+        .iter()
+        .find(|c| c.kind == chaat::model::ChatKind::OneOnOne)
+        .expect("the demo has a one-on-one chat");
+    ConversationId::Chat(chat.id.clone())
+}
+
+fn key_with(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
+    egui::Event::Key {
+        key,
+        physical_key: Some(key),
+        pressed: true,
+        repeat: false,
+        modifiers,
+    }
+}
+
+/// Opens a chat, puts `text` in its composer with the caret at `caret` (in
+/// chars), and focuses it.
+fn compose_in(h: &mut Harness, chat: &ConversationId, text: &str, caret: usize) {
+    h.act(Action::OpenConversation(chat.clone()));
+    let draft = h.app.drafts.entry(chat.clone()).or_default();
+    draft.text = text.into();
+    draft.paste_cursor = Some(caret);
+    h.app.focus_composer = true;
+    h.frames(4);
+}
+
+/// The composer's box: the lowest large surface-filled rectangle on the
+/// conversation side.
+fn composer_box(h: &Harness) -> egui::Rect {
+    let pane = h.app.settings.sidebar_width;
+    painted_shapes(h)
+        .into_iter()
+        .filter_map(|shape| match shape {
+            egui::epaint::Shape::Rect(rect)
+                if rect.fill == h.app.palette.surface
+                    && rect.rect.left() > pane
+                    && rect.rect.width() > 250.0
+                    && rect.stroke.width > 0.0 =>
+            {
+                Some(rect.rect)
+            }
+            _ => None,
+        })
+        .max_by(|a, b| a.bottom().total_cmp(&b.bottom()))
+        .expect("the composer box is painted")
+}
+
+/// Where the composer's right-hand buttons are, counted from the right:
+/// 0 is Send, 1 Attach, 2 Emoji, 3 Formatting. Valid for a one-line editor.
+fn composer_button(boxed: egui::Rect, from_right: usize) -> egui::Pos2 {
+    // 1 point of stroke and 8 of margin, then 30-point buttons 2 apart.
+    let right = boxed.right() - 9.0;
+    egui::pos2(right - 15.0 - from_right as f32 * 32.0, boxed.center().y)
+}
+
+fn text_center(h: &Harness, wanted: &str) -> Option<egui::Pos2> {
+    painted_shapes(h)
+        .into_iter()
+        .filter_map(|shape| match shape {
+            egui::epaint::Shape::Text(text) if text.galley.job.text == wanted => {
+                Some(text.pos + text.galley.size() / 2.0)
+            }
+            _ => None,
+        })
+        // The lowest one: a picker's grid sits below its tabs.
+        .max_by(|a, b| a.y.total_cmp(&b.y))
+}
+
+fn has_text(h: &Harness, wanted: &str) -> bool {
+    painted_texts(h).iter().any(|t| t == wanted)
+}
+
+#[test]
+fn the_formatting_toggle_shows_and_hides_the_toolbar_inside_the_composer() {
+    each_view(|h| {
+        compose_in(h, &ada(), "", 0);
+        // At the end of the history, where the newest message is in view.
+        h.frame_with(vec![
+            egui::Event::PointerMoved(egui::pos2(h.size.x * 0.7, 300.0)),
+            egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, -5000.0),
+                modifiers: egui::Modifiers::NONE,
+                phase: egui::TouchPhase::Move,
+            },
+        ]);
+        h.frames(30);
+        let off = composer_box(h);
+        assert!(!chaat::ui::composer_tools::format_on(&h.ctx));
+
+        let lowest_bubble = |h: &Harness| {
+            let (own, others) = bubbles(h);
+            own.iter()
+                .chain(&others)
+                .map(|r| r.bottom())
+                .fold(0.0, f32::max)
+        };
+        let gap_off = off.top() - lowest_bubble(h);
+        let toggle = composer_button(off, 3);
+        h.click(toggle);
+        assert!(chaat::ui::composer_tools::format_on(&h.ctx));
+        h.frames(10);
+        let on = composer_box(h);
+        assert!(
+            on.height() > off.height() + 20.0,
+            "the toolbar row adds height inside the box: {off:?} then {on:?}"
+        );
+        assert!(
+            (on.bottom() - off.bottom()).abs() < 1.0,
+            "the box grows upward"
+        );
+        // The history follows the box: its newest bubble keeps its distance
+        // and nothing is resized.
+        let gap_on = on.top() - lowest_bubble(h);
+        assert!(
+            (gap_on - gap_off).abs() < 1.0,
+            "the history keeps its distance to the box: {gap_off} then {gap_on} (width {})",
+            h.size.x
+        );
+
+        // The same spot turns it off again.
+        h.click(composer_button(on, 3));
+        assert!(!chaat::ui::composer_tools::format_on(&h.ctx));
+        let back = composer_box(h);
+        assert!((back.height() - off.height()).abs() < 1.0);
+    });
+}
+
+#[test]
+fn ctrl_b_wraps_the_selection_with_or_without_the_toolbar() {
+    for toolbar in [false, true] {
+        each_view(|h| {
+            chaat::ui::composer_tools::set_format_on(&h.ctx, toolbar);
+            compose_in(h, &ada(), "make bold", 9);
+            h.frame_with(vec![key_with(egui::Key::A, egui::Modifiers::COMMAND)]);
+            h.frame_with(vec![key_with(egui::Key::B, egui::Modifiers::COMMAND)]);
+            h.frames(2);
+            assert_eq!(
+                h.app.drafts[&ada()].text,
+                "**make bold**",
+                "toolbar {toolbar}"
+            );
+        });
+    }
+}
+
+#[test]
+fn the_emoji_picker_opens_from_the_composer_and_inserts_at_the_caret() {
+    each_view(|h| {
+        compose_in(h, &ada(), "ab", 1);
+        let boxed = composer_box(h);
+        h.click(composer_button(boxed, 2));
+        assert!(has_text(h, "Search emoji"), "the picker is open");
+        let first = text_center(h, "\u{1F600}").expect("the first emoji is drawn");
+        h.click(first);
+        h.frames(3);
+        assert_eq!(h.app.drafts[&ada()].text, "a\u{1F600}b");
+    });
+}
+
+#[test]
+fn more_reactions_opens_the_same_picker() {
+    each_view(|h| {
+        h.act(Action::OpenConversation(ada()));
+        h.frames(5);
+        let (own, _) = bubbles(h);
+        let bubble = *own.last().expect("an own bubble is on screen");
+        h.frame_with(vec![egui::Event::PointerMoved(bubble.center())]);
+        h.frames(27);
+        assert!(!has_text(h, "Search emoji"));
+        // The sixth quick reaction (angry face) is the last before the More
+        // button, which sits half a reaction and half a button further on.
+        let sixth = text_center(h, "\u{1F621}").expect("the hover bar shows");
+        h.click(egui::pos2(sixth.x + 16.0 + 14.0, sixth.y));
+        assert!(has_text(h, "Search emoji"), "the picker is open");
+    });
+}
+
+#[test]
+fn shortcodes_convert_as_typed_and_an_emoticon_converts_on_send() {
+    each_view(|h| {
+        compose_in(h, &ada(), "", 0);
+        h.frame_with(vec![egui::Event::Text(":smile:".into())]);
+        h.frames(2);
+        assert_eq!(h.app.drafts[&ada()].text, "\u{1F604}");
+
+        // An emoticon waits for its space, or for Enter.
+        h.app.drafts.get_mut(&ada()).unwrap().text.clear();
+        h.frames(2);
+        h.frame_with(vec![egui::Event::Text("ok :)".into())]);
+        h.frames(2);
+        assert_eq!(h.app.drafts[&ada()].text, "ok :)");
+        let count = h.app.conversations[&ada()].messages.len();
+        h.frame_with(vec![key_with(egui::Key::Enter, egui::Modifiers::NONE)]);
+        h.frames(3);
+        let messages = &h.app.conversations[&ada()].messages;
+        assert_eq!(messages.len(), count + 1);
+        assert_eq!(messages.last().unwrap().body.to_plain(), "ok \u{1F642}");
+    });
+}
+
+/// Hits for `query` in a chat's messages, newest first.
+fn hits_for(h: &Harness, id: &ConversationId, query: &str) -> Vec<chaat::model::SearchHit> {
+    h.app
+        .conversation(id)
+        .unwrap()
+        .messages
+        .iter()
+        .rev()
+        .filter(|m| m.body.to_plain().to_lowercase().contains(query))
+        .map(|m| chaat::model::SearchHit {
+            conversation: id.clone(),
+            message_id: m.id.clone(),
+            author: m.author.clone(),
+            snippet: m.body.summary(60),
+            at: m.created,
+        })
+        .collect()
+}
+
+#[test]
+fn find_opens_with_ctrl_f_counts_hits_and_closes_with_escape() {
+    each_view(|h| {
+        let chat = first_chat(h);
+        h.act(Action::OpenConversation(chat.clone()));
+        h.frames(3);
+        h.frame_with(vec![key_with(egui::Key::F, egui::Modifiers::COMMAND)]);
+        h.frames(3);
+        assert!(h.app.find.is_some(), "Ctrl+F opens the bar");
+        assert_eq!(h.app.overlay, None, "and not the switcher");
+        assert!(has_text(h, "Find in this conversation"));
+
+        // Escape closes it from the field.
+        assert_eq!(
+            h.ctx.memory(|m| m.focused()),
+            Some(egui::Id::new("chaat-find-field")),
+            "the field has the keyboard"
+        );
+        press(h, egui::Key::Escape);
+        assert!(h.app.find.is_none(), "Esc closes the bar");
+
+        // Hits: the demo does not search, so answer the query here.
+        let hits = hits_for(h, &chat, "the");
+        assert!(hits.len() >= 2, "the demo chat has two matches");
+        let count = hits.len();
+        h.app.find = Some(chaat::model::FindState {
+            query: "the".into(),
+            hits: hits.clone(),
+            current: 0,
+            searched: "the".into(),
+        });
+        h.frames(3);
+        assert!(has_text(h, &format!("1 of {count}")));
+        h.app.apply(Action::FindNext(1), &h.ctx);
+        assert_eq!(h.app.jump_to.as_deref(), Some(hits[1].message_id.as_str()));
+        h.frames(3);
+        assert!(has_text(h, &format!("2 of {count}")));
+
+        h.app.find = Some(chaat::model::FindState {
+            query: "zzzqqq".into(),
+            hits: Vec::new(),
+            current: 0,
+            searched: "zzzqqq".into(),
+        });
+        h.frames(3);
+        assert!(has_text(h, "No matches"));
+    });
+}
+
+#[test]
+fn ctrl_f_without_a_conversation_still_opens_the_switcher() {
+    each_view(|h| {
+        h.act(Action::Navigate(Section::Calendar));
+        h.frames(2);
+        h.frame_with(vec![key_with(egui::Key::F, egui::Modifiers::COMMAND)]);
+        h.frames(3);
+        assert_eq!(h.app.overlay, Some(Overlay::Switcher));
+        assert!(h.app.find.is_none());
+    });
+}
+
+/// How many "jump to latest" buttons are painted: a 36-point round button.
+fn jump_buttons(h: &Harness) -> usize {
+    painted_shapes(h)
+        .into_iter()
+        .filter(|shape| {
+            matches!(shape, egui::epaint::Shape::Circle(c)
+                if (c.radius - 18.0).abs() < 0.1
+                    && (c.fill == h.app.palette.surface || c.fill == h.app.palette.surface_hover))
+        })
+        .count()
+}
+
+#[test]
+fn jump_to_latest_shows_when_scrolled_up_and_returns_to_the_end() {
+    each_view(|h| {
+        let chat = first_chat(h);
+        h.act(Action::OpenConversation(chat.clone()));
+        h.frames(3);
+        let entry = h.app.conversations.get_mut(&chat).unwrap();
+        let template = entry.messages.last().unwrap().clone();
+        let count = 120;
+        let mut all: Vec<_> = (0..count)
+            .map(|i| {
+                let mut m = template.clone();
+                m.id = format!("long-{i}");
+                m.created = template.created - (count - i) as i64 * 60_000;
+                m
+            })
+            .collect();
+        all.append(&mut entry.messages);
+        entry.messages = all;
+        entry.layout.invalidate();
+        h.app.scroll_to_end = 4;
+        h.frames(8);
+        assert_eq!(jump_buttons(h), 0, "hidden at the bottom");
+
+        let at = egui::pos2(h.size.x * 0.7, 300.0);
+        let mut events = vec![egui::Event::PointerMoved(at)];
+        for _ in 0..6 {
+            events.push(egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, 700.0),
+                modifiers: egui::Modifiers::NONE,
+                phase: egui::TouchPhase::Move,
+            });
+        }
+        h.frame_with(events);
+        h.frames(40);
+        assert_eq!(jump_buttons(h), 1, "shown after scrolling up a screen");
+
+        let button = painted_shapes(h)
+            .into_iter()
+            .find_map(|shape| match shape {
+                egui::epaint::Shape::Circle(c) if (c.radius - 18.0).abs() < 0.1 => Some(c.center),
+                _ => None,
+            })
+            .unwrap();
+        h.click(button);
+        h.frames(10);
+        assert_eq!(jump_buttons(h), 0, "back at the end, the button is gone");
+    });
+}
+
+#[test]
+fn a_draft_previews_in_its_chat_row_but_not_in_the_open_chat() {
+    each_view(|h| {
+        let other = ConversationId::Chat("19:demo-grace@unq.gbl.spaces".into());
+        h.app.drafts.insert(
+            other.clone(),
+            chaat::app::Draft {
+                text: "Can we move the review?".into(),
+                ..Default::default()
+            },
+        );
+        h.act(Action::OpenConversation(ada()));
+        h.frames(3);
+        assert!(has_text(h, "Draft: Can we move the review?"));
+        h.act(Action::OpenConversation(other));
+        h.frames(3);
+        assert!(
+            !painted_texts(h).iter().any(|t| t.starts_with("Draft: ")),
+            "the open chat shows its draft in the composer instead"
+        );
+    });
+}
+
+/// A copy of the newest message from someone else, with `html` as its body.
+fn injected(h: &Harness, id: &ConversationId, key: &str, html: &str) -> chaat::model::Message {
+    let me = h.app.me().to_owned();
+    let mut message = h
+        .app
+        .conversation(id)
+        .unwrap()
+        .messages
+        .iter()
+        .rev()
+        .find(|m| !m.is_from(&me) && !m.system)
+        .unwrap()
+        .clone();
+    message.id = format!("test-{key}");
+    message.created += 1_000;
+    message.reactions.clear();
+    message.attachments.clear();
+    message.body = chaat::html::parse(html);
+    message
+}
+
+fn push_message(h: &mut Harness, id: &ConversationId, message: chaat::model::Message) {
+    let entry = h.app.conversations.get_mut(id).unwrap();
+    entry.messages.push(message);
+    entry.layout.invalidate();
+    h.app.scroll_to_end = 4;
+    h.frames(6);
+}
+
+#[test]
+fn a_failed_send_offers_retry_and_delete() {
+    each_view(|h| {
+        let chat = first_chat(h);
+        h.act(Action::OpenConversation(chat.clone()));
+        h.frames(3);
+        let mut message = injected(h, &chat, "failed", "<p>This one did not go out</p>");
+        message.author_id = Some(h.app.me().to_owned());
+        message.delivery = chaat::model::Delivery::Failed;
+        push_message(h, &chat, message);
+        for word in ["Not sent.", "Retry", "Delete"] {
+            assert!(has_text(h, word), "{word} is shown");
+        }
+        let delete = text_center(h, "Delete").unwrap();
+        h.click(delete);
+        h.frames(3);
+        assert!(
+            !h.app.conversations[&chat]
+                .messages
+                .iter()
+                .any(|m| m.id == "test-failed"),
+            "Delete removes the message"
+        );
+        assert!(!has_text(h, "Not sent."));
+    });
+}
+
+#[test]
+fn a_rich_message_draws_code_tables_sup_sub_and_sizes() {
+    let html = concat!(
+        "<p>Here is the fix, and the numbers:</p>",
+        "<codeblock class=\"language-rust\"><code>fn main() {\n    println!(\"hi\");\n}</code></codeblock>",
+        "<table><thead><tr><th>Name</th><th>Total</th></tr></thead>",
+        "<tbody><tr><td>North</td><td>52</td></tr></tbody></table>",
+        "<p>E = mc<sup>2</sup> and H<sub>2</sub>O, then <span style=\"font-size:24px\">big text</span> and normal again.</p>",
+    );
+    each_view(|h| {
+        let chat = first_chat(h);
+        h.act(Action::OpenConversation(chat.clone()));
+        h.frames(3);
+        let message = injected(h, &chat, "rich", html);
+        push_message(h, &chat, message);
+        assert!(has_text(h, "Rust"), "the code block names its language");
+        assert!(has_text(h, "North"), "the table's cells are drawn");
+    });
+}
+
+#[test]
+fn escape_in_the_composer_cancels_a_reply() {
+    let mut h = Harness::new();
+    h.app.focus_composer = true;
+    h.frames(3);
+    let chat = h.app.open.clone().unwrap();
+    let first = h.app.conversations[&chat].messages[0].id.clone();
+    h.act(Action::StartReply(first));
+    h.frames(3);
+    let editor = h
+        .ctx
+        .memory(|m| m.focused())
+        .expect("the composer has focus");
+    assert!(h.app.drafts[&chat].reply_to.is_some());
+    h.frame_with(vec![egui::Event::Key {
+        key: egui::Key::Escape,
+        physical_key: Some(egui::Key::Escape),
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    }]);
+    h.frames(3);
+    let _ = editor;
+    assert!(
+        h.app.drafts.get(&chat).is_none_or(|d| d.reply_to.is_none()),
+        "Esc in the composer cancels the reply"
+    );
 }

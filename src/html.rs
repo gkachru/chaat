@@ -22,6 +22,53 @@ pub struct Style {
     pub code: bool,
     pub mention: bool,
     pub link: Option<String>,
+    /// Font size in points, snapped to the type scale (`font-size` on a span).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u8>,
+    /// Raised or lowered text (`<sup>`, `<sub>`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub script: Option<Script>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Script {
+    Sup,
+    Sub,
+}
+
+/// The type scale of `AGENTS.md`; message sizes snap to it.
+const TYPE_SCALE: [u8; 9] = [11, 12, 13, 14, 15, 18, 20, 24, 30];
+
+/// The scale step nearest to `size` (px treated as points); ties go down.
+fn snap_size(size: f32) -> Option<u8> {
+    if !size.is_finite() || size <= 0.0 {
+        return None;
+    }
+    let mut best = TYPE_SCALE[0];
+    let mut best_gap = f32::MAX;
+    for step in TYPE_SCALE {
+        let gap = (f32::from(step) - size).abs();
+        if gap < best_gap {
+            best = step;
+            best_gap = gap;
+        }
+    }
+    Some(best)
+}
+
+/// The `font-size` of an inline `style` attribute, snapped.
+fn font_size(style: &str) -> Option<u8> {
+    style.split(';').find_map(|declaration| {
+        let (name, value) = declaration.split_once(':')?;
+        if !name.trim().eq_ignore_ascii_case("font-size") {
+            return None;
+        }
+        let value = value.trim().to_ascii_lowercase();
+        let number = value
+            .strip_suffix("px")
+            .or_else(|| value.strip_suffix("pt"))?;
+        snap_size(number.trim().parse::<f32>().ok()?)
+    })
 }
 
 impl Style {
@@ -47,7 +94,19 @@ pub enum Block {
         ordered: Option<u32>,
         spans: Vec<Span>,
     },
+    /// Old cached code blocks; new parses give [`Block::Snippet`].
     Code(String),
+    /// A code block with the language Teams wrote, if any.
+    Snippet {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        language: Option<String>,
+        text: String,
+    },
+    /// Rows of cells; `header` marks the first row as a header.
+    Table {
+        header: bool,
+        rows: Vec<Vec<Vec<Span>>>,
+    },
     Image {
         src: String,
         alt: Option<String>,
@@ -82,7 +141,11 @@ impl RichText {
             | Block::Heading(spans)
             | Block::Quote(spans)
             | Block::Item { spans, .. } => spans.iter().all(|span| span.text.trim().is_empty()),
-            Block::Code(text) => text.trim().is_empty(),
+            Block::Code(text) | Block::Snippet { text, .. } => text.trim().is_empty(),
+            Block::Table { rows, .. } => rows.iter().all(|row| {
+                row.iter()
+                    .all(|cell| cell.iter().all(|s| s.text.trim().is_empty()))
+            }),
             Block::Image { .. } | Block::Rule => false,
         })
     }
@@ -109,6 +172,20 @@ impl RichText {
                     push_spans(&mut out, spans);
                 }
                 Block::Code(code) => out.push_str(code),
+                Block::Snippet { text, .. } => out.push_str(text),
+                Block::Table { rows, .. } => {
+                    for (index, row) in rows.iter().enumerate() {
+                        if index > 0 {
+                            out.push('\n');
+                        }
+                        for (cell_index, cell) in row.iter().enumerate() {
+                            if cell_index > 0 {
+                                out.push_str(" | ");
+                            }
+                            push_spans(&mut out, cell);
+                        }
+                    }
+                }
                 Block::Image { alt, .. } => out.push_str(
                     alt.as_deref()
                         .filter(|a| !a.is_empty())
@@ -302,6 +379,15 @@ fn parse_attrs(mut rest: &str) -> Vec<(String, String)> {
     attrs
 }
 
+/// The `language-xxx` class on a `<codeblock>`, `<pre>` or `<code>`.
+fn language_of(attrs: &[(String, String)]) -> Option<String> {
+    attr(attrs, "class")?
+        .split_whitespace()
+        .find_map(|class| class.strip_prefix("language-"))
+        .filter(|language| !language.is_empty())
+        .map(str::to_ascii_lowercase)
+}
+
 fn attr<'a>(attrs: &'a [(String, String)], name: &str) -> Option<&'a str> {
     attrs
         .iter()
@@ -391,13 +477,64 @@ struct Builder {
     list: Vec<Option<u32>>,
     in_item: Option<Option<u32>>,
     pre: Option<String>,
+    /// The language class of the open code block.
+    pre_language: Option<String>,
+    table: Option<TableBuilder>,
+    /// Table nesting; inner tables flatten to text.
+    table_depth: usize,
     /// Inside an `<emoji>` or Skype emoji span: its alt text has been used.
     skip_text: usize,
     /// Inside a `<style>` or `<script>` element.
     hidden: usize,
 }
 
+#[derive(Default)]
+struct TableBuilder {
+    rows: Vec<Vec<Vec<Span>>>,
+    row: Vec<Vec<Span>>,
+    row_has_th: bool,
+    header: bool,
+    in_cell: bool,
+}
+
+impl TableBuilder {
+    fn end_row(&mut self) {
+        if self.row.is_empty() {
+            return;
+        }
+        if self.rows.is_empty() && self.row_has_th {
+            self.header = true;
+        }
+        self.rows.push(std::mem::take(&mut self.row));
+        self.row_has_th = false;
+    }
+}
+
+/// Trims a run of spans the way a finished block is.
+fn trim_spans(spans: &mut Vec<Span>) {
+    if let Some(last) = spans.last_mut() {
+        let trimmed = last.text.trim_end().len();
+        last.text.truncate(trimmed);
+    }
+    if let Some(first) = spans.first_mut() {
+        first.text = first.text.trim_start().to_owned();
+    }
+    spans.retain(|span| !span.text.is_empty());
+}
+
 impl Builder {
+    /// Ends the open table cell, keeping its spans.
+    fn end_cell(&mut self) {
+        let mut spans = std::mem::take(&mut self.spans);
+        if let Some(table) = &mut self.table {
+            if table.in_cell {
+                trim_spans(&mut spans);
+                table.row.push(spans);
+            }
+            table.in_cell = false;
+        }
+    }
+
     fn style(&self) -> Style {
         self.styles
             .last()
@@ -470,15 +607,16 @@ impl Builder {
 
     /// Ends the current block of inline text, if it has any.
     fn flush(&mut self) {
+        if self.table.is_some() {
+            // Inside a table a block break is only a space between words.
+            if self.spans.last().is_some_and(|s| !s.text.ends_with(' ')) {
+                let style = self.style();
+                self.push_text(" ".into(), style);
+            }
+            return;
+        }
         let mut spans = std::mem::take(&mut self.spans);
-        if let Some(last) = spans.last_mut() {
-            let trimmed = last.text.trim_end().len();
-            last.text.truncate(trimmed);
-        }
-        if let Some(first) = spans.first_mut() {
-            first.text = first.text.trim_start().to_owned();
-        }
-        spans.retain(|span| !span.text.is_empty());
+        trim_spans(&mut spans);
         if spans.is_empty() {
             return;
         }
@@ -508,6 +646,13 @@ impl Builder {
             "u" | "ins" => self.push_style(name, |s| s.underline = true),
             "s" | "strike" | "del" => self.push_style(name, |s| s.strike = true),
             "code" if self.pre.is_none() => self.push_style(name, |s| s.code = true),
+            "code" => {
+                if self.pre_language.is_none() {
+                    self.pre_language = language_of(attrs);
+                }
+            }
+            "sup" => self.push_style(name, |s| s.script = Some(Script::Sup)),
+            "sub" => self.push_style(name, |s| s.script = Some(Script::Sub)),
             "a" => {
                 let href = attr(attrs, "href").map(str::to_owned);
                 self.push_style(name, |s| s.link = href);
@@ -521,7 +666,12 @@ impl Builder {
                     // The <img> inside carries the emoji in its alt.
                     self.push_style(name, |_| {});
                 } else {
-                    self.push_style(name, |_| {});
+                    let size = attr(attrs, "style").and_then(font_size);
+                    self.push_style(name, |s| {
+                        if size.is_some() {
+                            s.size = size;
+                        }
+                    });
                 }
             }
             "emoji" => {
@@ -534,7 +684,34 @@ impl Builder {
                 }
             }
             "br" => self.line_break(),
-            "p" | "div" | "tr" | "section" | "article" | "header" | "footer" | "table" => {
+            "table" => {
+                self.flush();
+                self.table_depth += 1;
+                if self.table_depth == 1 {
+                    self.table = Some(TableBuilder::default());
+                }
+            }
+            "tr" => {
+                if self.table_depth == 1 {
+                    self.end_cell();
+                    if let Some(table) = &mut self.table {
+                        table.end_row();
+                    }
+                    self.spans.clear();
+                } else {
+                    self.flush();
+                }
+            }
+            "td" | "th" if self.table_depth == 1 => {
+                self.end_cell();
+                // Text between cells belongs to no cell.
+                self.spans.clear();
+                if let Some(table) = &mut self.table {
+                    table.in_cell = true;
+                    table.row_has_th |= name == "th";
+                }
+            }
+            "p" | "div" | "section" | "article" | "header" | "footer" => {
                 self.flush();
             }
             "td" | "th" => {
@@ -554,6 +731,7 @@ impl Builder {
             "pre" | "codeblock" => {
                 self.flush();
                 self.pre = Some(String::new());
+                self.pre_language = language_of(attrs);
             }
             "ul" => {
                 self.flush();
@@ -616,6 +794,31 @@ impl Builder {
         });
     }
 
+    fn finish_pre(&mut self) {
+        let language = self.pre_language.take();
+        if let Some(code) = self.pre.take() {
+            let text = code.trim_matches('\n').to_owned();
+            if !text.is_empty() {
+                self.blocks.push(Block::Snippet { language, text });
+            }
+        }
+    }
+
+    fn finish_table(&mut self) {
+        self.end_cell();
+        self.table_depth = 0;
+        if let Some(mut table) = self.table.take() {
+            table.end_row();
+            if !table.rows.is_empty() {
+                self.blocks.push(Block::Table {
+                    header: table.header,
+                    rows: table.rows,
+                });
+            }
+        }
+        self.spans.clear();
+    }
+
     fn close(&mut self, name: &str) {
         if self.hidden > 0 {
             if matches!(name, "style" | "script" | "title" | "head") {
@@ -625,12 +828,27 @@ impl Builder {
         }
         match name {
             "b" | "strong" | "i" | "em" | "u" | "ins" | "s" | "strike" | "del" | "a" | "at"
-            | "span" => self.pop_style(name),
+            | "span" | "sup" | "sub" => self.pop_style(name),
             "code" if self.pre.is_none() => self.pop_style(name),
             "emoji" => self.skip_text = self.skip_text.saturating_sub(1),
-            "p" | "div" | "tr" | "section" | "article" | "header" | "footer" | "table" => {
-                self.flush()
+            "tr" if self.table_depth == 1 => {
+                self.end_cell();
+                if let Some(table) = &mut self.table {
+                    table.end_row();
+                }
             }
+            "td" | "th" if self.table_depth == 1 => self.end_cell(),
+            "table" => {
+                if self.table_depth == 1 {
+                    self.finish_table();
+                } else if self.table_depth > 1 {
+                    self.table_depth -= 1;
+                    self.flush();
+                } else {
+                    self.flush();
+                }
+            }
+            "p" | "div" | "tr" | "section" | "article" | "header" | "footer" => self.flush(),
             "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
                 self.flush();
                 self.heading = false;
@@ -640,12 +858,7 @@ impl Builder {
                 self.quote_depth = self.quote_depth.saturating_sub(1);
             }
             "pre" | "codeblock" => {
-                if let Some(code) = self.pre.take() {
-                    let code = code.trim_matches('\n').to_owned();
-                    if !code.is_empty() {
-                        self.blocks.push(Block::Code(code));
-                    }
-                }
+                self.finish_pre();
             }
             "li" => {
                 self.flush();
@@ -675,10 +888,11 @@ pub fn parse(html: &str) -> RichText {
             Token::Close(name) => builder.close(&name),
         }
     }
-    if let Some(code) = builder.pre.take()
-        && !code.trim().is_empty()
-    {
-        builder.blocks.push(Block::Code(code));
+    if builder.pre.is_some() {
+        builder.finish_pre();
+    }
+    if builder.table.is_some() {
+        builder.finish_table();
     }
     builder.flush();
     RichText {
@@ -853,7 +1067,13 @@ fn inline(line: &str) -> String {
 fn emphasis(text: &str) -> String {
     let linked = autolink(text);
     let mut out = linked;
-    for (marker, tag) in [("**", "strong"), ("~~", "s"), ("*", "em"), ("_", "em")] {
+    for (marker, tag) in [
+        ("**", "strong"),
+        ("++", "u"),
+        ("~~", "s"),
+        ("*", "em"),
+        ("_", "em"),
+    ] {
         out = wrap_pairs(&out, marker, tag);
     }
     out
@@ -957,7 +1177,13 @@ mod tests {
     fn whitespace_collapses_but_code_keeps_it() {
         let rich = parse("<div>a   \n  b</div><pre>x  =  1\n  y</pre>");
         assert_eq!(rich.blocks[0], Block::Paragraph(spans("a b")));
-        assert_eq!(rich.blocks[1], Block::Code("x  =  1\n  y".into()));
+        assert_eq!(
+            rich.blocks[1],
+            Block::Snippet {
+                language: None,
+                text: "x  =  1\n  y".into()
+            }
+        );
     }
 
     #[test]
@@ -1118,6 +1344,175 @@ mod tests {
         let (plain, none) = compose_with_mentions("no mentions", &[]);
         assert_eq!(plain, "<p>no mentions</p>");
         assert!(none.is_empty());
+    }
+
+    #[test]
+    fn old_cache_json() {
+        let block: Block = serde_json::from_str(r#"{"Code":"x"}"#).unwrap();
+        assert_eq!(block, Block::Code("x".into()));
+        let span: Span = serde_json::from_str(
+            r#"{"text":"a","style":{"bold":true,"italic":false,"underline":false,"strike":false,"code":false,"mention":false,"link":null}}"#,
+        )
+        .unwrap();
+        assert!(span.style.bold && span.style.size.is_none() && span.style.script.is_none());
+        let rich = RichText {
+            blocks: vec![Block::Snippet {
+                language: Some("rust".into()),
+                text: "x".into(),
+            }],
+        };
+        let back: RichText = serde_json::from_str(&serde_json::to_string(&rich).unwrap()).unwrap();
+        assert_eq!(back, rich);
+    }
+
+    #[test]
+    fn snippet_languages() {
+        let rich = parse("<codeblock class=\"language-rust\"><code>fn a()</code></codeblock>");
+        assert_eq!(
+            rich.blocks,
+            vec![Block::Snippet {
+                language: Some("rust".into()),
+                text: "fn a()".into()
+            }]
+        );
+        let rich = parse("<pre><code class=\"language-Python\">x = 1\n</code></pre><pre>y</pre>");
+        assert_eq!(
+            rich.blocks[0],
+            Block::Snippet {
+                language: Some("python".into()),
+                text: "x = 1".into()
+            }
+        );
+        assert_eq!(
+            rich.blocks[1],
+            Block::Snippet {
+                language: None,
+                text: "y".into()
+            }
+        );
+        // Unclosed block at the end still becomes a snippet.
+        assert_eq!(parse("<pre>open").blocks.len(), 1);
+    }
+
+    #[test]
+    fn size_snaps() {
+        for (px, want) in [(16, 15), (21, 20), (40, 30), (24, 24), (1, 11)] {
+            let rich = parse(&format!(
+                "<p><span style=\"font-size:{px}px\">big</span></p>"
+            ));
+            let Block::Paragraph(spans) = &rich.blocks[0] else {
+                panic!("paragraph expected");
+            };
+            assert_eq!(spans[0].style.size, Some(want), "{px}px");
+        }
+        let rich = parse("<span style=\"color:red; font-size: 18pt\">x</span>y");
+        let Block::Paragraph(spans) = &rich.blocks[0] else {
+            panic!()
+        };
+        assert_eq!(spans[0].style.size, Some(18));
+        assert_eq!(spans[1].style.size, None);
+        assert_eq!(font_size("font-size:NaNpx"), None);
+        assert_eq!(font_size("font-size:1.5em"), None);
+    }
+
+    #[test]
+    fn sup_sub() {
+        let rich = parse("<p>x<sup>2</sup> H<sub>2</sub>O</p>");
+        let Block::Paragraph(spans) = &rich.blocks[0] else {
+            panic!()
+        };
+        assert_eq!(spans[1].style.script, Some(Script::Sup));
+        assert_eq!(spans[3].style.script, Some(Script::Sub));
+        assert_eq!(spans[4].style.script, None);
+        assert_eq!(rich.to_plain(), "x2 H2O");
+    }
+
+    #[test]
+    fn table_rows() {
+        let rich = parse(
+            "<p>before</p><table><thead><tr><th>A</th><th>B</th></tr></thead><tbody><tr><td>1</td><td><b>2</b></td></tr><tr><td>3</td></tr></tbody></table><p>after</p>",
+        );
+        assert_eq!(rich.blocks.len(), 3);
+        let Block::Table { header, rows } = &rich.blocks[1] else {
+            panic!("table expected");
+        };
+        assert!(*header);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0][1][0].text, "B");
+        assert!(rows[1][1][0].style.bold);
+        assert_eq!(rows[2].len(), 1);
+        assert_eq!(rich.to_plain(), "before\nA | B\n1 | 2\n3\nafter");
+        let plain = parse("<table><tr><td>x</td></tr></table>");
+        assert!(matches!(
+            &plain.blocks[0],
+            Block::Table { header: false, .. }
+        ));
+    }
+
+    #[test]
+    fn nested_table() {
+        let rich = parse(
+            "<table><tr><td>out<table><tr><td>a</td><td>b</td></tr><tr><td>c</td></tr></table>tail</td><td>z</td></tr></table>after",
+        );
+        assert_eq!(rich.blocks.len(), 2);
+        let Block::Table { rows, .. } = &rich.blocks[0] else {
+            panic!("table expected");
+        };
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].len(), 2);
+        let first: String = rows[0][0].iter().map(|s| s.text.as_str()).collect();
+        assert!(first.starts_with("out") && first.contains('a') && first.contains('c'));
+        assert!(first.ends_with("tail"));
+        assert_eq!(rows[0][1][0].text, "z");
+        assert_eq!(rich.blocks[1].clone(), Block::Paragraph(spans("after")));
+    }
+
+    #[test]
+    fn malformed_tables_and_blocks() {
+        for input in [
+            "<table>",
+            "<table><tr>",
+            "<table><tr><td>ü",
+            "</table></td></tr>x",
+            "<table><table></table>",
+            "<td>a</td>",
+            "<pre><code class='language-",
+            "<codeblock class=\"language-\">é",
+            "<span style=\"font-size:\">x</span>",
+            "<span style=\"font-size:é\">x</span>",
+        ] {
+            let _ = parse(input).to_plain();
+        }
+        assert_eq!(parse("<table>").blocks.len(), 0);
+        assert_eq!(parse("<table><tr><td>a").blocks.len(), 1);
+    }
+
+    #[test]
+    fn new_style_fields_stay_out_of_stored_json() {
+        let rich = parse("<p>plain <b>bold</b></p><pre>x</pre>");
+        let json = serde_json::to_string(&rich).unwrap();
+        assert!(
+            !json.contains("size") && !json.contains("script") && !json.contains("language"),
+            "{json}"
+        );
+        let sup = parse("<p>a<sup>2</sup></p>");
+        let back: RichText = serde_json::from_str(&serde_json::to_string(&sup).unwrap()).unwrap();
+        assert_eq!(back, sup);
+    }
+
+    #[test]
+    fn sup_inside_code_and_deep_nesting() {
+        let _ = parse("<pre>a<sup>2</sup>b</pre>");
+        let _ = parse("<code>x<sup>é</sup></code>");
+        let deep = "<table><tr><td>".repeat(50) + "x" + &"</td></tr></table>".repeat(50);
+        assert_eq!(parse(&deep).blocks.len(), 1);
+        let _ = parse(&"<sup>".repeat(200));
+    }
+
+    #[test]
+    fn compose_underline() {
+        assert_eq!(compose("++u++"), "<p><u>u</u></p>");
+        assert_eq!(compose("i++ and j++"), "<p>i++ and j++</p>");
     }
 
     #[test]

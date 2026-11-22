@@ -8,7 +8,7 @@ use std::ops::Range;
 use egui::{Align, Color32, CornerRadius, Margin, Sense, Stroke, Ui, vec2};
 
 use crate::app::{App, Image};
-use crate::html::{Block, RichText, Span};
+use crate::html::{Block, RichText, Script, Span};
 use crate::model::Action;
 use crate::theme::{self, Palette};
 
@@ -31,6 +31,15 @@ impl Look {
 
 /// The sizes the interface uses (see AGENTS.md).
 const TYPE_SCALE: [f32; 9] = [11.0, 12.0, 13.0, 14.0, 15.0, 18.0, 20.0, 24.0, 30.0];
+
+/// One step down the type scale, for raised and lowered text.
+fn step_down(size: f32) -> f32 {
+    TYPE_SCALE
+        .into_iter()
+        .rev()
+        .find(|s| *s < size)
+        .unwrap_or(size)
+}
 
 /// Emoji draw one step up the type scale from the text around them, as
 /// Teams does, so they read at the same weight as letters.
@@ -182,24 +191,79 @@ pub fn emoji_runs(text: &str) -> Vec<(Range<usize>, bool)> {
     runs
 }
 
+/// How far superscript rises and subscript drops, in ems of the text around.
+const RAISE: f32 = 0.25;
+const DROP: f32 = 0.2;
+/// A font's ascent in ems (close enough across the interface fonts).
+const ASCENT: f32 = 0.95;
+
+/// The line height that puts a script section's baseline off the text's.
+///
+/// The text layout puts a glyph's baseline at its ascent plus the row height
+/// minus its own line height (bottom aligned, the default), whatever else is
+/// in the row. So a section with a smaller line height sits lower and one
+/// with a larger line height higher, in a row of any height. Plain text has
+/// `base * 1.42`; a script of font size `size` needs that, corrected for its
+/// smaller ascent, plus the rise (or minus the drop). Raising grows the row
+/// by a pixel or two: nothing sits above a row's top.
+fn script_line_height(base: f32, size: f32, script: Script) -> f32 {
+    let shift = match script {
+        Script::Sup => RAISE * base,
+        Script::Sub => -DROP * base,
+    };
+    (base * 1.42 + ASCENT * (size - base) + shift).max(size)
+}
+
+/// Appends `text`, with the occurrences of the find query marked.
+fn append_marked(
+    job: &mut LayoutJob,
+    text: &str,
+    format: &TextFormat,
+    query: &str,
+    palette: &Palette,
+) {
+    let mut at = 0;
+    for range in super::find::matches(text, query) {
+        if range.start > at {
+            job.append(&text[at..range.start], 0.0, format.clone());
+        }
+        let marked = TextFormat {
+            background: super::find::highlight_color(palette),
+            ..format.clone()
+        };
+        job.append(&text[range.clone()], 0.0, marked);
+        at = range.end;
+    }
+    if at < text.len() {
+        job.append(&text[at..], 0.0, format.clone());
+    }
+}
+
 /// Lays out spans into a job, returning the link of each character range.
 fn job(
     spans: &[Span],
     look: &Look,
     palette: &Palette,
     width: f32,
+    find: Option<&str>,
 ) -> (LayoutJob, Vec<(usize, usize, String)>) {
     let mut job = LayoutJob::default();
     let mut links = Vec::new();
     let mut chars = 0;
     for span in spans {
         let style = &span.style;
-        let font = if style.code {
-            theme::mono(look.size - 1.0)
-        } else if style.bold || style.mention {
-            theme::semibold(look.size)
+        let base = style.size.map_or(look.size, f32::from);
+        let size = if style.script.is_some() {
+            step_down(base)
         } else {
-            theme::regular(look.size)
+            base
+        };
+        let font = if style.code {
+            theme::mono(size - 1.0)
+        } else if style.bold || style.mention {
+            theme::semibold(size)
+        } else {
+            theme::regular(size)
         };
         let color = if style.link.is_some() {
             palette.link
@@ -229,7 +293,10 @@ fn job(
             } else {
                 Color32::TRANSPARENT
             },
-            line_height: Some(look.size * 1.42),
+            line_height: Some(match style.script {
+                Some(script) => script_line_height(base, size, script),
+                None => base * 1.42,
+            }),
             ..Default::default()
         };
         let count = span.text.chars().count();
@@ -237,16 +304,16 @@ fn job(
             links.push((chars, chars + count, link.clone()));
         }
         chars += count;
-        let size = if look.jumbo {
+        let emoji_px = if look.jumbo {
             JUMBO_EMOJI
         } else {
-            emoji_size(look.size)
+            emoji_size(base)
         };
         let emoji_format = TextFormat {
-            font_id: egui::FontId::new(size, format.font_id.family.clone()),
+            font_id: egui::FontId::new(emoji_px, format.font_id.family.clone()),
             valign: Align::Center,
             line_height: if look.jumbo {
-                Some(size * 1.2)
+                Some(emoji_px * 1.2)
             } else {
                 format.line_height
             },
@@ -254,7 +321,11 @@ fn job(
         };
         for (range, emoji) in emoji_runs(&span.text) {
             let format = if emoji { &emoji_format } else { &format };
-            job.append(&span.text[range], 0.0, format.clone());
+            let text = &span.text[range];
+            match find.filter(|_| !emoji) {
+                Some(query) => append_marked(&mut job, text, format, query, palette),
+                None => job.append(text, 0.0, format.clone()),
+            }
         }
     }
     job.wrap = TextWrapping {
@@ -264,7 +335,15 @@ fn job(
     (job, links)
 }
 
-/// One paragraph: selectable text with clickable links.
+thread_local! {
+    /// While [`show`] draws: the widest paragraph seen in the last frame
+    /// (what paragraphs stretch to) and in this one.
+    static WIDEST: std::cell::Cell<(f32, f32)> = const { std::cell::Cell::new((0.0, 0.0)) };
+}
+
+/// One paragraph: selectable text with clickable links. It stretches to the
+/// widest paragraph of the message, so a drag that ends beside a short line
+/// still selects it, while the message keeps the width its text gave it.
 fn paragraph(
     ui: &mut Ui,
     spans: &[Span],
@@ -273,19 +352,50 @@ fn paragraph(
     width: f32,
     actions: &mut Vec<Action>,
 ) {
-    let (job, links) = job(spans, look, palette, width);
+    paragraph_in(ui, spans, look, palette, width, true, actions);
+}
+
+fn paragraph_in(
+    ui: &mut Ui,
+    spans: &[Span],
+    look: &Look,
+    palette: &Palette,
+    width: f32,
+    fill: bool,
+    actions: &mut Vec<Action>,
+) -> egui::Response {
+    let find = super::find::active_query(ui.ctx());
+    let (job, links) = job(spans, look, palette, width, find.as_deref());
     let galley = ui.ctx().fonts_mut(|f| f.layout_job(job));
-    let response = ui.add(
-        egui::Label::new(galley.clone())
-            .selectable(true)
-            .sense(Sense::click()),
-    );
+    let label = egui::Label::new(galley.clone())
+        .selectable(true)
+        .sense(Sense::click());
+    let response = if fill {
+        let (previous, widest) = WIDEST.get();
+        WIDEST.set((previous, widest.max(galley.size().x)));
+        let stretch = previous.min(width).max(galley.size().x);
+        ui.allocate_ui_with_layout(
+            vec2(stretch, 0.0),
+            egui::Layout::top_down_justified(Align::Min),
+            |ui| ui.add(label),
+        )
+        .inner
+    } else {
+        ui.add(label)
+    };
     if links.is_empty() {
-        return;
+        return response;
     }
     let Some(pointer) = response.hover_pos() else {
-        return;
+        return response;
     };
+    // Beside the text there is no link.
+    if !galley
+        .rect
+        .contains((pointer - response.rect.min).to_pos2())
+    {
+        return response;
+    }
     let cursor = galley.cursor_from_pos(pointer - response.rect.min);
     let index = cursor.index.0;
     // The character under the pointer, not the gap after it.
@@ -305,6 +415,46 @@ fn paragraph(
             actions.push(Action::OpenUrl(link.clone()));
         }
     }
+    response
+}
+
+/// What dragging over the whole message and copying gives: the text of each
+/// block on its own line. Bullets, numbers and quote marks are drawn apart
+/// from the text, so they are left out as they are in a drag.
+pub fn selectable_text(text: &RichText) -> String {
+    let join = |spans: &[Span]| spans.iter().map(|s| s.text.as_str()).collect::<String>();
+    let lines: Vec<String> = text
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            Block::Paragraph(spans)
+            | Block::Heading(spans)
+            | Block::Quote(spans)
+            | Block::Item { spans, .. } => Some(join(spans)),
+            Block::Code(code) | Block::Snippet { text: code, .. } => Some(code.clone()),
+            Block::Table { rows, .. } => Some(
+                rows.iter()
+                    .map(|row| row.iter().map(|c| join(c)).collect::<Vec<_>>().join(" | "))
+                    .collect::<Vec<_>>()
+                    .join(
+                        "
+",
+                    ),
+            ),
+            Block::Image { .. } | Block::Rule => None,
+        })
+        .collect();
+    lines.join(
+        "
+",
+    )
+}
+
+fn content_hash(text: &RichText) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    selectable_text(text).hash(&mut hasher);
+    hasher.finish()
 }
 
 /// Draws a message body within `width`.
@@ -316,9 +466,35 @@ pub fn show(
     width: f32,
     actions: &mut Vec<Action>,
 ) {
-    let palette = &app.palette;
     ui.spacing_mut().item_spacing.y = 4.0;
-    for block in &text.blocks {
+    // Keyed by content and width, not by position, so a message that moves
+    // in the list never reads another message's width.
+    let key = egui::Id::new((
+        "rich-widest",
+        content_hash(text),
+        width.to_bits(),
+        look.size.to_bits(),
+    ));
+    let known: f32 = ui.data(|d| d.get_temp(key)).unwrap_or(0.0);
+    let outer = WIDEST.replace((known, 0.0));
+    show_blocks(ui, app, text, look, width, actions);
+    let (_, widest) = WIDEST.replace(outer);
+    if (widest - known).abs() > 0.5 {
+        ui.data_mut(|d| d.insert_temp(key, widest));
+        ui.ctx().request_repaint();
+    }
+}
+
+fn show_blocks(
+    ui: &mut Ui,
+    app: &App,
+    text: &RichText,
+    look: &Look,
+    width: f32,
+    actions: &mut Vec<Action>,
+) {
+    let palette = &app.palette;
+    for (index, block) in text.blocks.iter().enumerate() {
         match block {
             Block::Paragraph(spans) => paragraph(ui, spans, look, palette, width, actions),
             Block::Heading(spans) => {
@@ -380,24 +556,19 @@ pub fn show(
                 });
             }
             Block::Code(code) => {
-                egui::Frame::new()
-                    .fill(palette.surface_hover)
-                    .stroke(Stroke::new(1.0, palette.outline))
-                    .corner_radius(CornerRadius::same(6))
-                    .inner_margin(Margin::symmetric(10, 8))
-                    .show(ui, |ui| {
-                        ui.set_max_width(width - 20.0);
-                        let mut job = LayoutJob::single_section(
-                            code.clone(),
-                            TextFormat {
-                                font_id: theme::mono(12.0),
-                                color: palette.text,
-                                ..Default::default()
-                            },
-                        );
-                        job.wrap.max_width = width - 20.0;
-                        ui.add(egui::Label::new(job).selectable(true));
-                    });
+                ui.push_id(("code", index), |ui| {
+                    code_block(ui, palette, code, None, width, actions)
+                });
+            }
+            Block::Snippet { language, text } => {
+                ui.push_id(("code", index), |ui| {
+                    code_block(ui, palette, text, language.as_deref(), width, actions)
+                });
+            }
+            Block::Table { header, rows } => {
+                ui.push_id(("table", index), |ui| {
+                    table(ui, *header, rows, look, palette, width, actions)
+                });
             }
             Block::Image {
                 src,
@@ -417,6 +588,101 @@ pub fn show(
             }
         }
     }
+}
+
+fn code_block(
+    ui: &mut Ui,
+    palette: &Palette,
+    code: &str,
+    language: Option<&str>,
+    width: f32,
+    actions: &mut Vec<Action>,
+) {
+    ui.scope(|ui| {
+        ui.set_max_width(width);
+        super::code::block(ui, palette, code, language, actions);
+    });
+}
+
+/// Vertical gap between table rows; the divider lines sit in it.
+const ROW_GAP: f32 = 8.0;
+
+/// Widest a table cell grows before its text wraps.
+const CELL_WIDTH: f32 = 220.0;
+
+/// A table in a grid. When its columns are wider than the bubble it
+/// scrolls sideways inside it.
+fn table(
+    ui: &mut Ui,
+    header: bool,
+    rows: &[Vec<Vec<Span>>],
+    look: &Look,
+    palette: &Palette,
+    width: f32,
+    actions: &mut Vec<Action>,
+) {
+    // A solid scroll bar, there only when the table is wider than the room.
+    ui.scope(|ui| {
+        super::code::thin_scrollbars(ui, palette);
+        egui::ScrollArea::horizontal()
+            .id_salt("scroll")
+            .max_width(width)
+            .auto_shrink([true, true])
+            .show(ui, |ui| {
+                egui::Frame::new()
+                    .stroke(Stroke::new(1.0, palette.outline))
+                    .corner_radius(CornerRadius::same(6))
+                    .inner_margin(Margin::symmetric(8, 4))
+                    .show(ui, |ui| {
+                        // Top of each row, from its cells.
+                        let mut tops: Vec<f32> = Vec::new();
+                        let grid =
+                            egui::Grid::new("grid")
+                                .spacing(vec2(16.0, ROW_GAP))
+                                .show(ui, |ui| {
+                                    for (row_index, row) in rows.iter().enumerate() {
+                                        let mut top = f32::MAX;
+                                        for cell in row {
+                                            if header && row_index == 0 {
+                                                let bold: Vec<Span> = cell
+                                                    .iter()
+                                                    .map(|s| {
+                                                        let mut s = s.clone();
+                                                        s.style.bold = true;
+                                                        s
+                                                    })
+                                                    .collect();
+                                                let at = paragraph_in(
+                                                    ui, &bold, look, palette, CELL_WIDTH, false,
+                                                    actions,
+                                                );
+                                                top = top.min(at.rect.top());
+                                            } else {
+                                                let at = paragraph_in(
+                                                    ui, cell, look, palette, CELL_WIDTH, false,
+                                                    actions,
+                                                );
+                                                top = top.min(at.rect.top());
+                                            }
+                                        }
+                                        if top.is_finite() && top < f32::MAX {
+                                            tops.push(top);
+                                        }
+                                        ui.end_row();
+                                    }
+                                });
+                        // A line between every two rows, in the gap between them.
+                        for top in tops.iter().skip(1) {
+                            let y = top - ROW_GAP / 2.0;
+                            ui.painter().hline(
+                                grid.response.rect.x_range(),
+                                y,
+                                Stroke::new(1.0, palette.outline),
+                            );
+                        }
+                    });
+            });
+    });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -626,6 +892,307 @@ mod tests {
             spans[0].style.link = Some("https://example.com".into());
         }
         assert!(!body_is_emoji_only(&link));
+    }
+
+    fn spans_of(html: &str) -> Vec<Span> {
+        match crate::html::parse(html).blocks.remove(0) {
+            Block::Paragraph(spans) => spans,
+            other => panic!("paragraph expected, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sup_raised() {
+        let palette = Palette::dark();
+        let look = Look::body(&palette);
+        let (job, _) = job(
+            &spans_of("<p>x<sup>2</sup>y<sub>i</sub></p>"),
+            &look,
+            &palette,
+            300.0,
+            None,
+        );
+        let formats: Vec<_> = job.sections.iter().map(|s| &s.format).collect();
+        let plain = formats[0].line_height.unwrap();
+        let (sup, sub) = (
+            formats[1].line_height.unwrap(),
+            formats[3].line_height.unwrap(),
+        );
+        assert_eq!(formats[0].font_id.size, 14.0);
+        assert_eq!(formats[1].font_id.size, 13.0);
+        assert_eq!(formats[3].font_id.size, 13.0);
+        // A larger line height sits higher in a bottom-aligned row.
+        assert!(
+            sup > plain - 2.0 && sup - plain < 4.0,
+            "raise grows the row a little"
+        );
+        assert!(sub < plain, "lowered");
+        assert!(
+            formats
+                .iter()
+                .all(|f| f.valign == TextFormat::default().valign)
+        );
+        // Plain text around is untouched.
+        assert_eq!(formats[2].line_height, formats[0].line_height);
+    }
+
+    #[test]
+    fn find_marks_the_matched_parts_of_a_run() {
+        let palette = Palette::dark();
+        let look = Look::body(&palette);
+        let spans = spans_of("<p>The theme: <b>other</b> ünï THE</p>");
+        let (marked, _) = job(&spans, &look, &palette, 300.0, Some("the"));
+        let (plain, _) = job(&spans, &look, &palette, 300.0, None);
+        assert_eq!(marked.text, plain.text);
+        let color = crate::ui::find::highlight_color(&palette);
+        let pieces: Vec<(&str, bool)> = marked
+            .sections
+            .iter()
+            .map(|s| {
+                (
+                    &marked.text[s.byte_range.start.0..s.byte_range.end.0],
+                    s.format.background == color,
+                )
+            })
+            .collect();
+        assert_eq!(
+            pieces,
+            [
+                ("The", true),
+                (" ", false),
+                ("the", true),
+                ("me: ", false),
+                ("o", false),
+                ("the", true),
+                ("r", false),
+                (" ünï ", false),
+                ("THE", true),
+            ]
+        );
+        assert!(plain.sections.iter().all(|s| s.format.background != color));
+        // No query, no marks; a query that is not there changes nothing.
+        let (none, _) = job(&spans, &look, &palette, 300.0, Some("zzz"));
+        assert_eq!(none.sections.len(), plain.sections.len());
+    }
+
+    #[test]
+    fn script_height_never_below_its_font() {
+        assert!(script_line_height(11.0, 11.0, Script::Sub) >= 11.0);
+        assert!(script_line_height(30.0, 24.0, Script::Sup) > 30.0 * 1.42 - 24.0);
+    }
+
+    #[test]
+    fn sized_spans_use_their_size_on_the_scale() {
+        let palette = Palette::dark();
+        let look = Look::body(&palette);
+        let (job, _) = job(
+            &spans_of("<p>a<span style=\"font-size:24px\">B<sup>c</sup></span></p>"),
+            &look,
+            &palette,
+            300.0,
+            None,
+        );
+        let sizes: Vec<f32> = job.sections.iter().map(|s| s.format.font_id.size).collect();
+        assert_eq!(sizes[0], 14.0);
+        assert_eq!(sizes[1], 24.0);
+        assert_eq!(sizes[2], 20.0);
+        assert_eq!(step_down(11.0), 11.0);
+        assert_eq!(step_down(30.0), 24.0);
+    }
+
+    /// Draws `html` in a 300-point column; returns the width it used.
+    fn frame(html: &str) -> f32 {
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::new(
+            crate::paths::AppDirs::under(dir.path()),
+            crate::settings::Settings::default(),
+            crate::backend::Waker::default(),
+            true,
+        );
+        let ctx = egui::Context::default();
+        crate::ui::install(&ctx, true);
+        let body = crate::html::parse(html);
+        let look = Look::body(&app.palette);
+        let mut used = 0.0;
+        for _ in 0..2 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    vec2(800.0, 600.0),
+                )),
+                ..Default::default()
+            };
+            let mut actions = Vec::new();
+            let mut output = ctx.run_ui(input, |ui| {
+                ui.scope(|ui| {
+                    ui.set_max_width(300.0);
+                    show(ui, &app, &body, &look, 300.0, &mut actions);
+                    used = ui.min_rect().width();
+                });
+            });
+            output.textures_delta.clear();
+            assert!(!output.shapes.is_empty());
+        }
+        used
+    }
+
+    #[test]
+    fn every_new_block_draws() {
+        frame("<codeblock class=\"language-rust\"><code>fn a() {}</code></codeblock>");
+        frame("<pre>old style</pre>");
+        frame("<p>x<sup>2</sup> H<sub>2</sub>O <span style=\"font-size:30px\">big</span></p>");
+        frame("<table><tr><th>A</th><th>B</th></tr><tr><td>1</td><td></td></tr></table>");
+        let mut old = RichText::default();
+        old.blocks.push(Block::Code("legacy".into()));
+        assert_eq!(old.to_plain(), "legacy");
+    }
+
+    #[test]
+    fn plain_join() {
+        let body = crate::html::parse(
+            "<p>one <b>two</b></p><h2>Head</h2><ul><li>dot</li></ul><pre>a
+b</pre><hr><table><tr><td>x</td><td>y</td></tr></table>",
+        );
+        assert_eq!(
+            selectable_text(&body),
+            "one two
+Head
+dot
+a
+b
+x | y"
+        );
+        assert_eq!(selectable_text(&RichText::default()), "");
+    }
+
+    #[test]
+    fn widest_settles_without_repaint_loop() {
+        let (app, ctx, _dir) = app_and_ctx();
+        let a = crate::html::parse("<p>a much longer first paragraph</p><p>b</p>");
+        let b = crate::html::parse("<p>hi</p>");
+        let look = Look::body(&app.palette);
+        let mut repaints = Vec::new();
+        for _ in 0..4 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    vec2(800.0, 600.0),
+                )),
+                ..Default::default()
+            };
+            let mut actions = Vec::new();
+            let mut output = ctx.run_ui(input, |ui| {
+                // Order swaps between frames: keys must not follow position.
+                show(ui, &app, &a, &look, 300.0, &mut actions);
+                show(ui, &app, &b, &look, 300.0, &mut actions);
+            });
+            output.textures_delta.clear();
+            repaints.push(
+                output
+                    .viewport_output
+                    .values()
+                    .any(|v| v.repaint_delay.is_zero()),
+            );
+        }
+        assert!(repaints[0], "first frame learns the width");
+        assert!(
+            !repaints[2] && !repaints[3],
+            "still repainting: {repaints:?}"
+        );
+    }
+
+    #[test]
+    fn short_messages_keep_their_width() {
+        let used = frame("<p>short</p><p>a</p>");
+        assert!(used < 80.0, "paragraphs stretched the message to {used}");
+    }
+
+    #[test]
+    fn wide_table_scrolls() {
+        let cell = "<td>some wide cell text here</td>".repeat(12);
+        let used = frame(&format!("<table><tr>{cell}</tr></table>"));
+        assert!(used <= 300.5, "table pushed the bubble to {used}");
+    }
+
+    fn app_and_ctx() -> (App, egui::Context, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::new(
+            crate::paths::AppDirs::under(dir.path()),
+            crate::settings::Settings::default(),
+            crate::backend::Waker::default(),
+            true,
+        );
+        let ctx = egui::Context::default();
+        crate::ui::install(&ctx, true);
+        (app, ctx, dir)
+    }
+
+    #[test]
+    fn drag_spans_paragraphs() {
+        let (app, ctx, _dir) = app_and_ctx();
+        let body = crate::html::parse("<p>alpha one is the longest</p><p>beta</p><p>gamma</p>");
+        let look = Look::body(&app.palette);
+        let run = |events: Vec<egui::Event>| {
+            let mut rects: Vec<egui::Rect> = Vec::new();
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    vec2(800.0, 600.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let mut actions = Vec::new();
+            let mut output = ctx.run_ui(input, |ui| {
+                let before = ui.cursor().top();
+                show(ui, &app, &body, &look, 300.0, &mut actions);
+                // Three paragraphs of equal height.
+                let total = ui.min_rect().bottom() - before;
+                rects = (0..3)
+                    .map(|i| {
+                        let h = total / 3.0;
+                        egui::Rect::from_min_size(
+                            egui::pos2(ui.min_rect().left(), before + h * i as f32),
+                            vec2(300.0, h),
+                        )
+                    })
+                    .collect();
+            });
+            output.textures_delta.clear();
+            (output, rects)
+        };
+        let rects = run(vec![]).1;
+        let start = rects[0].left_center() + vec2(1.0, 0.0);
+        // Beside the short last line, inside the width of the longest.
+        let end = rects[2].left_center() + vec2(100.0, 0.0);
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        run(vec![egui::Event::PointerMoved(start)]);
+        run(vec![button(start, true)]);
+        run(vec![egui::Event::PointerMoved(rects[1].center())]);
+        run(vec![egui::Event::PointerMoved(end)]);
+        run(vec![]);
+        run(vec![button(end, false)]);
+        let (output, _) = run(vec![egui::Event::Copy]);
+        let copied: String = output
+            .platform_output
+            .commands
+            .iter()
+            .filter_map(|c| match c {
+                egui::OutputCommand::CopyText(t) => Some(t.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            copied,
+            "alpha one is the longest
+beta
+gamma"
+        );
     }
 
     #[test]

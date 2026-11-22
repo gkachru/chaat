@@ -11,6 +11,7 @@ pub const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
         "Navigation",
         &[
             ("⌘K", "Search chats, channels and messages"),
+            ("⌘F", "Find in the open conversation"),
             ("⌘1 – ⌘4", "Chat, Teams, Calendar, Calls"),
             ("Alt ↑ / Alt ↓", "Previous or next conversation"),
             ("⌘N", "New chat"),
@@ -76,8 +77,23 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     let setup_dialog = app.export.open
         || app.export.passphrase.is_some()
         || app.setup.stage != crate::app::SetupStage::Idle;
+    let mut find_requested = false;
     ctx.input_mut(|input| {
         let command = Modifiers::COMMAND;
+        // ⌘F finds in the open conversation; elsewhere it opens the switcher.
+        let in_conversation = app.open.is_some()
+            && app.overlay.is_none()
+            && app.settings_page.is_none()
+            && matches!(app.section, Section::Chats | Section::Teams);
+        if in_conversation && input.consume_key(command, Key::F) {
+            find_requested = true;
+            actions.push(Action::Find(Some(
+                app.find
+                    .as_ref()
+                    .map(|f| f.query.clone())
+                    .unwrap_or_default(),
+            )));
+        }
         if input.consume_key(command, Key::K) || input.consume_key(command, Key::F) {
             actions.push(if app.overlay == Some(Overlay::Switcher) {
                 Action::CloseOverlay
@@ -143,6 +159,9 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             actions.extend(settings_escape(app));
         }
     });
+    if find_requested {
+        ctx.data_mut(|d| d.insert_temp(super::find::focus_flag(), true));
+    }
     // egui's own zoom keys would fight the setting.
     ctx.options_mut(|options| options.zoom_with_keyboard = false);
     app.actions.extend(actions);

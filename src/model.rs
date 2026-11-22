@@ -699,6 +699,19 @@ pub struct SearchHit {
     pub at: Millis,
 }
 
+/// Find in the open conversation.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FindState {
+    /// What the bar holds.
+    pub query: String,
+    /// Hits for `searched`, newest first.
+    pub hits: Vec<SearchHit>,
+    /// The hit shown now, an index into `hits`.
+    pub current: usize,
+    /// The query the hits answer.
+    pub searched: String,
+}
+
 /// A page of the settings view, which takes the place of the sidebar and
 /// the open conversation.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -827,6 +840,18 @@ pub enum Action {
     /// Shows a channel thread's replies inline.
     ToggleThread(String),
     RetrySend {
+        conversation: ConversationId,
+        local_id: String,
+    },
+    /// Opens find in the open conversation (`Some`), setting its query, or
+    /// closes it (`None`).
+    Find(Option<String>),
+    /// Steps to an older (`1`) or newer (`-1`) find hit, wrapping around.
+    FindNext(i32),
+    /// Scrolls the open conversation to its newest message.
+    JumpToLatest,
+    /// Removes a message that failed to send, and its saved copy.
+    DeleteFailed {
         conversation: ConversationId,
         local_id: String,
     },
