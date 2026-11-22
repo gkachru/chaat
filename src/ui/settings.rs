@@ -1108,11 +1108,30 @@ fn push_plugin(
 
 fn shortcuts(app: &App, ui: &mut egui::Ui) {
     let palette = app.palette;
+    // Each section is its own grid; one key-column width for all of them
+    // keeps the descriptions on a single left edge.
+    let keys_width = ui
+        .fonts_mut(|f| {
+            super::keys::SHORTCUTS
+                .iter()
+                .flat_map(|(_, list)| list.iter())
+                .map(|(keys, _)| {
+                    f.layout_no_wrap(
+                        super::keys::platform(keys),
+                        theme::mono(13.0),
+                        egui::Color32::PLACEHOLDER,
+                    )
+                    .size()
+                    .x
+                })
+                .fold(0.0, f32::max)
+        })
+        .max(180.0);
     for (name, list) in super::keys::SHORTCUTS {
         group(ui, &palette, name);
         egui::Grid::new(("shortcuts", *name))
             .num_columns(2)
-            .min_col_width(180.0)
+            .min_col_width(keys_width)
             .spacing(vec2(24.0, 8.0))
             .show(ui, |ui| {
                 for (keys, what) in *list {
