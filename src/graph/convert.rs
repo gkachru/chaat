@@ -26,9 +26,30 @@ fn body_text(body: Option<&g::ItemBody>) -> html::RichText {
     };
     let content = body.content.as_deref().unwrap_or_default();
     match body.content_type.as_deref() {
-        Some(kind) if kind.eq_ignore_ascii_case("text") => html::RichText::plain(content),
+        Some(kind) if kind.eq_ignore_ascii_case("text") => {
+            html::RichText::plain(&without_attachment_tags(content))
+        }
         _ => html::parse(content),
     }
+}
+
+/// A plain-text body still carries Teams' `<attachment id="…"></attachment>`
+/// placeholder for each file; the files show as chips, so the tags go.
+fn without_attachment_tags(content: &str) -> String {
+    const OPEN: &str = "<attachment";
+    const CLOSE: &str = "</attachment>";
+    let mut out = String::with_capacity(content.len());
+    let mut rest = content;
+    while let Some(start) = rest.find(OPEN) {
+        let Some(end) = rest[start..].find(CLOSE) else {
+            break;
+        };
+        out.push_str(&rest[..start]);
+        rest = &rest[start + end + CLOSE.len()..];
+    }
+    out.push_str(rest);
+    let trimmed = out.trim_end();
+    trimmed.to_owned()
 }
 
 pub fn chat(chat: g::Chat, me: &str) -> Chat {
@@ -625,6 +646,27 @@ pub fn out_of_office(raw: g::AutomaticRepliesSetting) -> OutOfOffice {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plain_text_bodies_drop_attachment_placeholders() {
+        let raw: g::ChatMessage = serde_json::from_value(serde_json::json!({
+            "id": "m", "body": {"contentType": "text", "content":
+                "What do you think?<attachment id=\"114bdbee-dd0c\"></attachment>"}
+        }))
+        .unwrap();
+        let message = message(raw, Some(&ConversationId::Chat("chat".into())), "u-me");
+        assert_eq!(message.body.summary(200), "What do you think?");
+        assert_eq!(
+            without_attachment_tags("a <attachment id=\"x\">"),
+            "a <attachment id=\"x\">"
+        );
+        assert_eq!(
+            without_attachment_tags(
+                "<attachment id=\"1\"></attachment>a<attachment id=\"2\"></attachment> b"
+            ),
+            "a b"
+        );
+    }
 
     #[test]
     fn relative_hosted_images_use_the_message_path_and_external_images_stay_external() {
