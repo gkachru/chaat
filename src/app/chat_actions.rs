@@ -1,7 +1,7 @@
 //! Hiding chats, marking them unread, and the Undo on the toast.
 
 use super::App;
-use crate::backend::Command;
+use crate::backend::AccountCommand;
 use crate::model::{Chat, Toast, ToastAction, ToastKind};
 
 impl App {
@@ -12,7 +12,7 @@ impl App {
         entry.hidden = true;
         self.pending_hide.insert(chat.clone(), true);
         self.undo_toast(chat.clone());
-        self.send_account(Command::HideChat { chat, hide: true });
+        self.send_account(AccountCommand::HideChat { chat, hide: true });
     }
 
     /// One toast per hidden chat, never merged with an earlier one, so each
@@ -39,7 +39,7 @@ impl App {
             entry.hidden = false;
         }
         self.pending_hide.insert(chat.clone(), false);
-        self.send_account(Command::HideChat { chat, hide: false });
+        self.send_account(AccountCommand::HideChat { chat, hide: false });
     }
 
     pub(super) fn mark_chat_unread(&mut self, chat: String) {
@@ -47,7 +47,7 @@ impl App {
             return;
         };
         entry.marked_unread = true;
-        self.send_account(Command::MarkChatUnread(chat));
+        self.send_account(AccountCommand::MarkChatUnread(chat));
     }
 
     pub(super) fn mark_chat_read(&mut self, chat: String) {
@@ -62,7 +62,7 @@ impl App {
             if let Some(entry) = self.chats.iter_mut().find(|c| c.id == chat) {
                 entry.last_read = Some(crate::time::now());
             }
-            self.send_account(Command::MarkRead(chat));
+            self.send_account(AccountCommand::MarkRead(chat));
             return;
         }
         self.mark_read(&chat);
@@ -146,7 +146,7 @@ impl App {
 mod tests {
     use super::*;
     use crate::app::{AppDirs, Waker};
-    use crate::backend::{AuthStatus, Backend, Event};
+    use crate::backend::{AccountCommand, AccountEvent, AuthStatus, Backend, Command};
     use crate::model::{ChatKind, ConversationId, Preview};
     use crate::settings::Settings;
     use tokio::sync::mpsc::UnboundedReceiver;
@@ -212,7 +212,7 @@ mod tests {
         assert!(
             drain(&mut commands)
                 .iter()
-                .any(|c| matches!(c, Command::HideChat { chat, hide: true } if chat == "19:a"))
+                .any(|c| matches!(c, Command::Account(AccountCommand::HideChat { chat, hide: true }) if chat == "19:a"))
         );
     }
 
@@ -229,7 +229,7 @@ mod tests {
         assert!(
             drain(&mut commands)
                 .iter()
-                .any(|c| matches!(c, Command::HideChat { chat, hide: false } if chat == "19:a"))
+                .any(|c| matches!(c, Command::Account(AccountCommand::HideChat { chat, hide: false }) if chat == "19:a"))
         );
     }
 
@@ -272,11 +272,9 @@ mod tests {
     fn mark_unread_survives_refresh() {
         let (mut app, mut commands) = group_app();
         app.mark_chat_unread("19:a".into());
-        assert!(
-            drain(&mut commands)
-                .iter()
-                .any(|c| matches!(c, Command::MarkChatUnread(id) if id == "19:a"))
-        );
+        assert!(drain(&mut commands).iter().any(
+            |c| matches!(c, Command::Account(AccountCommand::MarkChatUnread(id)) if id == "19:a")
+        ));
         // A stale list: same preview, higher last_read.
         let mut stale = chat("19:a", 10);
         stale.last_read = Some(99);
@@ -314,7 +312,7 @@ mod tests {
         assert!(
             !drain(&mut commands)
                 .iter()
-                .any(|c| matches!(c, Command::MarkRead(_)))
+                .any(|c| matches!(c, Command::Account(AccountCommand::MarkRead(_))))
         );
         assert!(get(&app, "19:a").marked_unread);
         // Another chat, then back: opening clears it.
@@ -332,9 +330,9 @@ mod tests {
         app.mark_chat_read("19:a".into());
         assert!(!get(&app, "19:a").marked_unread);
         assert!(
-            drain(&mut commands)
-                .iter()
-                .any(|c| matches!(c, Command::MarkRead(id) if id == "19:a"))
+            drain(&mut commands).iter().any(
+                |c| matches!(c, Command::Account(AccountCommand::MarkRead(id)) if id == "19:a")
+            )
         );
     }
 
@@ -368,7 +366,7 @@ mod tests {
         for chat in ["19:a", "19:b"] {
             assert!(
                 sent.iter().any(
-                    |c| matches!(c, Command::HideChat { chat: id, hide: false } if id == chat)
+                    |c| matches!(c, Command::Account(AccountCommand::HideChat { chat: id, hide: false }) if id == chat)
                 ),
                 "no unhide for {chat}"
             );
@@ -383,9 +381,9 @@ mod tests {
         app.open_conversation(ConversationId::Chat("19:a".into()));
         assert!(!get(&app, "19:a").marked_unread);
         assert!(
-            drain(&mut commands)
-                .iter()
-                .any(|c| matches!(c, Command::MarkRead(id) if id == "19:a"))
+            drain(&mut commands).iter().any(
+                |c| matches!(c, Command::Account(AccountCommand::MarkRead(id)) if id == "19:a")
+            )
         );
     }
 
@@ -438,7 +436,7 @@ mod tests {
         assert!(
             drain(&mut commands)
                 .iter()
-                .any(|c| matches!(c, Command::HideChat { chat, hide: false } if chat == "19:a"))
+                .any(|c| matches!(c, Command::Account(AccountCommand::HideChat { chat, hide: false }) if chat == "19:a"))
         );
         assert!(drain(&mut second_commands).is_empty());
     }
@@ -453,15 +451,15 @@ mod tests {
         app.active = 1;
         app.hidden = true;
         app.handle(
-            Event::Pins {
+            AccountEvent::Pins {
                 chat: "19:c".into(),
                 pins: Vec::new(),
             },
             &ctx,
         );
-        app.handle(Event::MarkUnreadFailed("19:c".into()), &ctx);
+        app.handle(AccountEvent::MarkUnreadFailed("19:c".into()), &ctx);
         app.handle(
-            Event::ChatHidden {
+            AccountEvent::ChatHidden {
                 chat: "19:c".into(),
                 hidden: true,
                 ok: false,

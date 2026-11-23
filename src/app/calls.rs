@@ -4,7 +4,7 @@
 use egui::{ViewportCommand, pos2, vec2};
 
 use super::{App, Overlay};
-use crate::backend::Command;
+use crate::backend::AccountCommand;
 use crate::calling::browser::{self, Browser, BrowserProfile, Placement};
 use crate::calling::dock;
 use crate::calling::session::{CallSession, CallState, CallTarget, ChatLookup, in_call};
@@ -68,7 +68,7 @@ impl App {
             });
             self.accounts[index]
                 .backend
-                .send(Command::SignInBrowser(target));
+                .send(AccountCommand::SignInBrowser(target));
         }
     }
 
@@ -95,7 +95,7 @@ impl App {
     pub(super) fn join_meeting(&mut self, url: String, ctx: &egui::Context) {
         if let Some(id) = meeting_id(&url) {
             if self.ensure_scope(crate::auth::ONLINE_MEETINGS_SCOPE) {
-                self.backend.send(Command::FindMeetingById(id));
+                self.backend.send(AccountCommand::FindMeetingById(id));
             }
             return;
         }
@@ -250,7 +250,7 @@ impl App {
             session.lookup = if self.demo {
                 ChatLookup::NotFound
             } else if self.has_scope(crate::auth::ONLINE_MEETINGS_SCOPE) {
-                self.backend.send(Command::FindMeetingChat(url));
+                self.backend.send(AccountCommand::FindMeetingChat(url));
                 ChatLookup::Searching
             } else {
                 ChatLookup::NeedsPermission
@@ -285,7 +285,7 @@ impl App {
         if !self.ensure_scope(crate::auth::ONLINE_MEETINGS_SCOPE) {
             return;
         }
-        self.backend.send(Command::FindMeetingChat(url));
+        self.backend.send(AccountCommand::FindMeetingChat(url));
         if let Some(call) = &mut self.call {
             call.lookup = ChatLookup::Searching;
         }

@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use super::App;
-use crate::backend::Command;
+use crate::backend::ServiceCommand;
 use crate::setup_file::SetupPayload;
 
 /// The export form's state.
@@ -103,7 +103,7 @@ impl App {
             import_by,
         };
         self.export.busy = true;
-        self.service.send(Command::ExportSetup {
+        self.service.send(ServiceCommand::ExportSetup {
             path,
             payload,
             include_relay_key: include_relay,
@@ -126,7 +126,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::{Backend, Event, Waker};
+    use crate::backend::{Backend, Command, ServiceEvent, Waker};
     use crate::model::SetupAction;
     use crate::paths::AppDirs;
     use crate::settings::Settings;
@@ -183,11 +183,11 @@ mod tests {
         app.send_export(PathBuf::from("a.chaatsetup"), None);
         assert!(app.export.busy);
         match commands.try_recv() {
-            Ok(Command::ExportSetup {
+            Ok(Command::Service(ServiceCommand::ExportSetup {
                 payload,
                 include_relay_key,
                 ..
-            }) => {
+            })) => {
                 assert!(!include_relay_key, "no stored key");
                 assert!(payload.relay_url.is_none());
                 assert_eq!(payload.org_label, "Contoso");
@@ -199,10 +199,10 @@ mod tests {
         app.send_export(PathBuf::from("a.chaatsetup"), None);
         assert!(matches!(
             commands.try_recv(),
-            Ok(Command::ExportSetup {
+            Ok(Command::Service(ServiceCommand::ExportSetup {
                 include_relay_key: true,
                 ..
-            })
+            }))
         ));
     }
 
@@ -210,13 +210,13 @@ mod tests {
     fn passphrase_shown_then_dismissed() {
         let (mut app, _) = app();
         app.export.busy = true;
-        app.on_setup_event(Event::SetupExported(Ok("a-b-c-d-e-f".into())));
+        app.on_setup_event(ServiceEvent::SetupExported(Ok("a-b-c-d-e-f".into())));
         assert!(!app.export.busy);
         assert_eq!(app.export.passphrase.as_deref(), Some("a-b-c-d-e-f"));
         app.apply_setup_action(SetupAction::DismissPassphrase);
         assert!(app.export.passphrase.is_none());
         app.export.busy = true;
-        app.on_setup_event(Event::SetupExported(Err("nope".into())));
+        app.on_setup_event(ServiceEvent::SetupExported(Err("nope".into())));
         assert_eq!(app.export.error.as_deref(), Some("nope"));
         assert!(!app.export.busy);
     }

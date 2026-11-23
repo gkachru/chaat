@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use base64::Engine;
-use chaat::backend::{AuthStatus, Backend, BackendOptions, Command, Event, Waker};
+use chaat::backend::{AccountCommand, AccountEvent, AuthStatus, Backend, BackendOptions, Waker};
 use chaat::paths::AppDirs;
 use chaat::secrets::MemoryStore;
 use chaat::sync::{Resource, Trigger};
@@ -25,7 +25,7 @@ pub fn id_token() -> String {
 // Events not yet looked at, so a wait never drops the rest of a batch.
 thread_local! {
     /// Per test thread: tests run in parallel and must not steal events.
-    static PENDING: std::cell::RefCell<Vec<Event>> = const { std::cell::RefCell::new(Vec::new()) };
+    static PENDING: std::cell::RefCell<Vec<AccountEvent>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// Forgets events held back by earlier waits (call before a new backend).
@@ -35,7 +35,11 @@ pub fn clear_pending() {
 
 /// Waits for the first event `pick` accepts, failing after `seconds`.
 /// Events before it are skipped; events after it stay for the next wait.
-pub fn wait_for<T>(backend: &Backend, seconds: u64, mut pick: impl FnMut(Event) -> Option<T>) -> T {
+pub fn wait_for<T>(
+    backend: &Backend,
+    seconds: u64,
+    mut pick: impl FnMut(AccountEvent) -> Option<T>,
+) -> T {
     let deadline = Instant::now() + Duration::from_secs(seconds);
     loop {
         let mut pending = PENDING.take();
@@ -88,20 +92,20 @@ pub async fn signed_in(server: &MockServer) -> Session {
     };
     clear_pending();
     let backend = Backend::spawn_with(dirs.clone(), Waker::default(), options.clone());
-    backend.send(Command::Start {
+    backend.send(AccountCommand::Start {
         client_id: CLIENT.into(),
         tenant: "organizations".into(),
         account: None,
     });
     wait_for(&backend, 5, |e| {
-        matches!(e, Event::Auth(AuthStatus::SignedOut)).then_some(())
+        matches!(e, AccountEvent::Auth(AuthStatus::SignedOut)).then_some(())
     });
-    backend.send(Command::SignIn {
+    backend.send(AccountCommand::SignIn {
         extra_scopes: Vec::new(),
         device_code: false,
     });
     let url = wait_for(&backend, 5, |e| match e {
-        Event::Auth(AuthStatus::WaitingForBrowser { url }) => Some(url),
+        AccountEvent::Auth(AuthStatus::WaitingForBrowser { url }) => Some(url),
         _ => None,
     });
     let redirect = query_value(&url, "redirect_uri");
@@ -113,15 +117,15 @@ pub async fn signed_in(server: &MockServer) -> Session {
     .await
     .unwrap();
     let account = wait_for(&backend, 10, |e| match e {
-        Event::Auth(AuthStatus::SignedIn { account, .. }) => Some(account),
+        AccountEvent::Auth(AuthStatus::SignedIn { account, .. }) => Some(account),
         _ => None,
     });
-    backend.send(Command::Fetch {
+    backend.send(AccountCommand::Fetch {
         resource: Resource::Chats,
         trigger: Trigger::Start,
     });
     wait_for(&backend, 10, |e| {
-        matches!(e, Event::Chats { cached: false, .. }).then_some(())
+        matches!(e, AccountEvent::Chats { cached: false, .. }).then_some(())
     });
     Session {
         backend,
@@ -143,14 +147,14 @@ pub fn cached_chats(session: Session) -> Vec<chaat::model::Chat> {
     } = session;
     drop(backend);
     clear_pending();
-    let backend = Backend::spawn_with(dirs, Waker::default(), options);
-    backend.send(Command::Start {
+    let backend: Backend = Backend::spawn_with(dirs, Waker::default(), options);
+    backend.send(AccountCommand::Start {
         client_id: CLIENT.into(),
         tenant: "organizations".into(),
         account: Some(account),
     });
     wait_for(&backend, 5, |e| match e {
-        Event::Chats {
+        AccountEvent::Chats {
             chats,
             cached: true,
         } => Some(chats),

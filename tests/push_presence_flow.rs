@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use chaat::auth::session::AccountRecord;
-use chaat::backend::{AuthStatus, Backend, BackendOptions, Command, Event, Waker};
+use chaat::backend::{AccountCommand, AccountEvent, AuthStatus, Backend, BackendOptions, Waker};
 use chaat::paths::AppDirs;
 use chaat::realtime::PushStatus;
 use chaat::secrets::{MemoryStore, SecretStore};
@@ -159,13 +159,13 @@ async fn start_with(
             relay_connect_timeout: connect,
         },
     );
-    backend.send(Command::Start {
+    backend.send(AccountCommand::Start {
         client_id: CLIENT.into(),
         tenant: "organizations".into(),
         account: Some(ACCOUNT.into()),
     });
     wait_for(&backend, 5, |e| {
-        matches!(e, Event::Auth(AuthStatus::SignedIn { .. })).then_some(())
+        matches!(e, AccountEvent::Auth(AuthStatus::SignedIn { .. })).then_some(())
     });
     (backend, relay_url, dir)
 }
@@ -177,12 +177,12 @@ async fn contacts_presence_is_fetched_on_look_and_followed_by_push() {
 
     // Looking at the chat list (start) fetches presence for the one-on-one
     // contact, then the group's members, in one request.
-    backend.send(Command::Fetch {
+    backend.send(AccountCommand::Fetch {
         resource: Resource::Chats,
         trigger: Trigger::Start,
     });
     let presence = wait_for(&backend, 5, |e| match e {
-        Event::Presence(list) => Some(list),
+        AccountEvent::Presence(list) => Some(list),
         _ => None,
     });
     assert_eq!(presence[0].0, "u-ada");
@@ -196,10 +196,10 @@ async fn contacts_presence_is_fetched_on_look_and_followed_by_push() {
     );
 
     // Push: one presence subscription: the person, the contact, the group.
-    backend.send(Command::Relay(Some(relay_url.clone())));
+    backend.send(AccountCommand::Relay(Some(relay_url.clone())));
     wait_for(&backend, 10, |e| match e {
-        Event::Push(PushStatus::Live) => Some(()),
-        Event::Push(PushStatus::Failed(reason)) => panic!("push failed: {reason}"),
+        AccountEvent::Push(PushStatus::Live) => Some(()),
+        AccountEvent::Push(PushStatus::Failed(reason)) => panic!("push failed: {reason}"),
         _ => None,
     });
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -254,7 +254,7 @@ async fn contacts_presence_is_fetched_on_look_and_followed_by_push() {
         assert_eq!(status, 202);
     }
     let presence = wait_for(&backend, 5, |e| match e {
-        Event::Presence(list) => Some(list),
+        AccountEvent::Presence(list) => Some(list),
         _ => None,
     });
     assert_eq!(presence[0].0, "u-ada");
@@ -264,9 +264,9 @@ async fn contacts_presence_is_fetched_on_look_and_followed_by_push() {
     last.sort();
     assert_eq!(last, ["u-ada", "u-grace"]);
 
-    backend.send(Command::Relay(None));
+    backend.send(AccountCommand::Relay(None));
     wait_for(&backend, 5, |e| {
-        matches!(e, Event::Push(PushStatus::Off)).then_some(())
+        matches!(e, AccountEvent::Push(PushStatus::Off)).then_some(())
     });
 }
 
@@ -297,18 +297,18 @@ async fn a_refused_presence_list_shrinks_and_is_not_retried() {
         .mount(&server)
         .await;
     let (backend, relay_url, _dir) = start(&server).await;
-    backend.send(Command::Fetch {
+    backend.send(AccountCommand::Fetch {
         resource: Resource::Chats,
         trigger: Trigger::Start,
     });
     wait_for(&backend, 5, |e| match e {
-        Event::Presence(list) => Some(list),
+        AccountEvent::Presence(list) => Some(list),
         _ => None,
     });
-    backend.send(Command::Relay(Some(relay_url)));
+    backend.send(AccountCommand::Relay(Some(relay_url)));
     wait_for(&backend, 10, |e| match e {
-        Event::Push(PushStatus::Live) => Some(()),
-        Event::Push(PushStatus::Failed(reason)) => panic!("push failed: {reason}"),
+        AccountEvent::Push(PushStatus::Live) => Some(()),
+        AccountEvent::Push(PushStatus::Failed(reason)) => panic!("push failed: {reason}"),
         _ => None,
     });
     // Four people refused, two accepted, three refused (after deleting the
@@ -337,7 +337,7 @@ async fn a_refused_presence_list_shrinks_and_is_not_retried() {
     // Later chat-list updates keep to the size that worked.
     let settled = presence_subscriptions(&server).await.len();
     for _ in 0..3 {
-        backend.send(Command::Fetch {
+        backend.send(AccountCommand::Fetch {
             resource: Resource::Chats,
             trigger: Trigger::Refresh,
         });
@@ -349,9 +349,9 @@ async fn a_refused_presence_list_shrinks_and_is_not_retried() {
         "refused sizes are not retried: {:?}",
         presence_subscriptions(&server).await
     );
-    backend.send(Command::Relay(None));
+    backend.send(AccountCommand::Relay(None));
     wait_for(&backend, 5, |e| {
-        matches!(e, Event::Push(PushStatus::Off)).then_some(())
+        matches!(e, AccountEvent::Push(PushStatus::Off)).then_some(())
     });
 }
 
@@ -370,18 +370,18 @@ async fn users_graph_names_are_left_out_and_stay_out() {
         .mount(&server)
         .await;
     let (backend, relay_url, dir) = start(&server).await;
-    backend.send(Command::Fetch {
+    backend.send(AccountCommand::Fetch {
         resource: Resource::Chats,
         trigger: Trigger::Start,
     });
     wait_for(&backend, 5, |e| match e {
-        Event::Presence(list) => Some(list),
+        AccountEvent::Presence(list) => Some(list),
         _ => None,
     });
-    backend.send(Command::Relay(Some(relay_url.clone())));
+    backend.send(AccountCommand::Relay(Some(relay_url.clone())));
     wait_for(&backend, 10, |e| match e {
-        Event::Push(PushStatus::Live) => Some(()),
-        Event::Push(PushStatus::Failed(reason)) => panic!("push failed: {reason}"),
+        AccountEvent::Push(PushStatus::Live) => Some(()),
+        AccountEvent::Push(PushStatus::Failed(reason)) => panic!("push failed: {reason}"),
         _ => None,
     });
     let four = "communications/presences?$filter=id in ('u-me','u-ada','u-grace','u-bo')";
@@ -402,16 +402,16 @@ async fn users_graph_names_are_left_out_and_stay_out() {
     assert_eq!(presence_subscriptions(&server).await, [four, without_grace]);
     // Later chat-list updates don't bring Grace back.
     for _ in 0..2 {
-        backend.send(Command::Fetch {
+        backend.send(AccountCommand::Fetch {
             resource: Resource::Chats,
             trigger: Trigger::Refresh,
         });
         tokio::time::sleep(Duration::from_millis(2100)).await;
     }
     assert_eq!(presence_subscriptions(&server).await, [four, without_grace]);
-    backend.send(Command::Relay(None));
+    backend.send(AccountCommand::Relay(None));
     wait_for(&backend, 5, |e| {
-        matches!(e, Event::Push(PushStatus::Off)).then_some(())
+        matches!(e, AccountEvent::Push(PushStatus::Off)).then_some(())
     });
 
     // The refusal is remembered: the next session leaves Grace out at once.
@@ -419,10 +419,10 @@ async fn users_graph_names_are_left_out_and_stay_out() {
         .account(ACCOUNT)
         .join(chaat::realtime::REFUSED_FILE);
     assert!(chaat::realtime::read_refused(&refused, chaat::time::now()).contains_key("u-grace"));
-    backend.send(Command::Relay(Some(relay_url)));
+    backend.send(AccountCommand::Relay(Some(relay_url)));
     wait_for(&backend, 10, |e| match e {
-        Event::Push(PushStatus::Live) => Some(()),
-        Event::Push(PushStatus::Failed(reason)) => panic!("push failed: {reason}"),
+        AccountEvent::Push(PushStatus::Live) => Some(()),
+        AccountEvent::Push(PushStatus::Failed(reason)) => panic!("push failed: {reason}"),
         _ => None,
     });
     assert_eq!(
@@ -430,9 +430,9 @@ async fn users_graph_names_are_left_out_and_stay_out() {
         [four, without_grace, without_grace],
         "no refused request in the new session"
     );
-    backend.send(Command::Relay(None));
+    backend.send(AccountCommand::Relay(None));
     wait_for(&backend, 5, |e| {
-        matches!(e, Event::Push(PushStatus::Off)).then_some(())
+        matches!(e, AccountEvent::Push(PushStatus::Off)).then_some(())
     });
 }
 
@@ -459,10 +459,10 @@ async fn a_presence_conflict_is_tried_again_at_the_next_renewal() {
         .await;
     let (backend, relay_url, _dir) =
         start_with(&server, Duration::from_secs(4), Duration::from_secs(20)).await;
-    backend.send(Command::Relay(Some(relay_url)));
+    backend.send(AccountCommand::Relay(Some(relay_url)));
     wait_for(&backend, 15, |e| match e {
-        Event::Push(PushStatus::Live) => Some(()),
-        Event::Push(PushStatus::Failed(reason)) => panic!("push failed: {reason}"),
+        AccountEvent::Push(PushStatus::Live) => Some(()),
+        AccountEvent::Push(PushStatus::Failed(reason)) => panic!("push failed: {reason}"),
         _ => None,
     });
     // Refused twice (once, then after a pause): push is live without it.
@@ -479,9 +479,9 @@ async fn a_presence_conflict_is_tried_again_at_the_next_renewal() {
         3,
         "one retry, no more"
     );
-    backend.send(Command::Relay(None));
+    backend.send(AccountCommand::Relay(None));
     wait_for(&backend, 5, |e| {
-        matches!(e, Event::Push(PushStatus::Off)).then_some(())
+        matches!(e, AccountEvent::Push(PushStatus::Off)).then_some(())
     });
 }
 
@@ -521,10 +521,10 @@ async fn a_presence_subscription_in_the_way_is_found_and_deleted() {
         .await;
     let (backend, relay_url, _dir) = start(&server).await;
     let started = Instant::now();
-    backend.send(Command::Relay(Some(relay_url)));
+    backend.send(AccountCommand::Relay(Some(relay_url)));
     wait_for(&backend, 15, |e| match e {
-        Event::Push(PushStatus::Live) => Some(()),
-        Event::Push(PushStatus::Failed(reason)) => panic!("push failed: {reason}"),
+        AccountEvent::Push(PushStatus::Live) => Some(()),
+        AccountEvent::Push(PushStatus::Failed(reason)) => panic!("push failed: {reason}"),
         _ => None,
     });
     // Refused once, then the same list accepted at once after the blocker
@@ -536,9 +536,9 @@ async fn a_presence_subscription_in_the_way_is_found_and_deleted() {
         started.elapsed() < Duration::from_secs(3),
         "no pause when a blocker was deleted"
     );
-    backend.send(Command::Relay(None));
+    backend.send(AccountCommand::Relay(None));
     wait_for(&backend, 5, |e| {
-        matches!(e, Event::Push(PushStatus::Off)).then_some(())
+        matches!(e, AccountEvent::Push(PushStatus::Off)).then_some(())
     });
 }
 
@@ -561,16 +561,16 @@ async fn a_relay_that_never_answers_counts_as_unreachable() {
         }
     });
     let started = Instant::now();
-    backend.send(Command::Relay(Some(silent_url)));
+    backend.send(AccountCommand::Relay(Some(silent_url)));
     let reason = wait_for(&backend, 10, |e| match e {
-        Event::Push(PushStatus::Failed(reason)) => Some(reason),
-        Event::Push(PushStatus::Live) => panic!("a silent relay cannot be live"),
+        AccountEvent::Push(PushStatus::Failed(reason)) => Some(reason),
+        AccountEvent::Push(PushStatus::Live) => panic!("a silent relay cannot be live"),
         _ => None,
     });
     assert_eq!(reason, "the relay did not answer in time");
     assert!(started.elapsed() < Duration::from_secs(5));
-    backend.send(Command::Relay(None));
+    backend.send(AccountCommand::Relay(None));
     wait_for(&backend, 5, |e| {
-        matches!(e, Event::Push(PushStatus::Off)).then_some(())
+        matches!(e, AccountEvent::Push(PushStatus::Off)).then_some(())
     });
 }

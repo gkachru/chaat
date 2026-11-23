@@ -3,7 +3,7 @@
 
 use std::time::{Duration, Instant};
 
-use chaat::backend::{Command, Event};
+use chaat::backend::{AccountCommand, AccountEvent};
 use chaat::sync::{Resource, Trigger};
 use wiremock::matchers::{body_string_contains, header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -91,12 +91,12 @@ async fn hide_success_emits_and_updates_cache() {
         .mount(&server)
         .await;
     let session = signed_in(&server).await;
-    session.backend.send(Command::HideChat {
+    session.backend.send(AccountCommand::HideChat {
         chat: CHAT.into(),
         hide: true,
     });
     let (chat, hidden, ok) = wait_for(&session.backend, 10, |e| match e {
-        Event::ChatHidden { chat, hidden, ok } => Some((chat, hidden, ok)),
+        AccountEvent::ChatHidden { chat, hidden, ok } => Some((chat, hidden, ok)),
         _ => None,
     });
     assert_eq!((chat.as_str(), hidden, ok), (CHAT, true, true));
@@ -114,12 +114,12 @@ async fn hide_failure_emits_not_ok() {
         .mount(&server)
         .await;
     let session = signed_in(&server).await;
-    session.backend.send(Command::HideChat {
+    session.backend.send(AccountCommand::HideChat {
         chat: CHAT.into(),
         hide: false,
     });
     let (hidden, ok) = wait_for(&session.backend, 10, |e| match e {
-        Event::ChatHidden { hidden, ok, .. } => Some((hidden, ok)),
+        AccountEvent::ChatHidden { hidden, ok, .. } => Some((hidden, ok)),
         _ => None,
     });
     assert_eq!((hidden, ok), (false, false));
@@ -136,9 +136,11 @@ async fn mark_unread_failure_emits_event() {
         .mount(&server)
         .await;
     let session = signed_in(&server).await;
-    session.backend.send(Command::MarkChatUnread(CHAT.into()));
+    session
+        .backend
+        .send(AccountCommand::MarkChatUnread(CHAT.into()));
     let chat = wait_for(&session.backend, 10, |e| match e {
-        Event::MarkUnreadFailed(chat) => Some(chat),
+        AccountEvent::MarkUnreadFailed(chat) => Some(chat),
         _ => None,
     });
     assert_eq!(chat, CHAT);
@@ -156,12 +158,12 @@ async fn pins_fetch_emits_pins() {
         .mount(&server)
         .await;
     let session = signed_in(&server).await;
-    session.backend.send(Command::Fetch {
+    session.backend.send(AccountCommand::Fetch {
         resource: Resource::Pins(CHAT.into()),
         trigger: Trigger::Opened,
     });
     let pins = wait_for(&session.backend, 10, |e| match e {
-        Event::Pins { chat, pins } if chat == CHAT => Some(pins),
+        AccountEvent::Pins { chat, pins } if chat == CHAT => Some(pins),
         _ => None,
     });
     assert_eq!(pins.len(), 1);
@@ -191,13 +193,13 @@ async fn pin_then_refetches_pins() {
         .mount(&server)
         .await;
     let session = signed_in(&server).await;
-    session.backend.send(Command::PinMessage {
+    session.backend.send(AccountCommand::PinMessage {
         chat: CHAT.into(),
         message: "m1".into(),
     });
     let pins = wait_for(&session.backend, 10, |e| match e {
-        Event::Pins { chat, pins } if chat == CHAT => Some(pins),
-        Event::Error(text) => panic!("unexpected error: {text}"),
+        AccountEvent::Pins { chat, pins } if chat == CHAT => Some(pins),
+        AccountEvent::Error(text) => panic!("unexpected error: {text}"),
         _ => None,
     });
     assert_eq!(pins[0].message_id, "m1");
@@ -222,18 +224,18 @@ async fn unpin_failure_errors_and_refetches_pins() {
         .mount(&server)
         .await;
     let session = signed_in(&server).await;
-    session.backend.send(Command::UnpinMessage {
+    session.backend.send(AccountCommand::UnpinMessage {
         chat: CHAT.into(),
         pin: "p1".into(),
     });
     let text = wait_for(&session.backend, 10, |e| match e {
-        Event::Error(text) => Some(text),
+        AccountEvent::Error(text) => Some(text),
         _ => None,
     });
     assert!(text.starts_with("Unpinning"), "{text}");
     // The banner corrects itself: the pin that still exists comes back.
     let pins = wait_for(&session.backend, 10, |e| match e {
-        Event::Pins { pins, .. } => Some(pins),
+        AccountEvent::Pins { pins, .. } => Some(pins),
         _ => None,
     });
     assert_eq!(pins.len(), 1);
@@ -255,7 +257,7 @@ async fn status_expiry_forwarded() {
         .mount(&server)
         .await;
     let session = signed_in(&server).await;
-    session.backend.send(Command::SetStatusMessage {
+    session.backend.send(AccountCommand::SetStatusMessage {
         text: "Heads down".into(),
         expires: Some(0),
     });
@@ -304,9 +306,9 @@ async fn meeting_by_id_emits_join_url_and_none() {
     let session = signed_in(&server).await;
     session
         .backend
-        .send(Command::FindMeetingById("123456789012".into()));
+        .send(AccountCommand::FindMeetingById("123456789012".into()));
     let (id, url) = wait_for(&session.backend, 10, |e| match e {
-        Event::MeetingById { id, join_url } => Some((id, join_url)),
+        AccountEvent::MeetingById { id, join_url } => Some((id, join_url)),
         _ => None,
     });
     assert_eq!(id, "123456789012");
@@ -316,9 +318,9 @@ async fn meeting_by_id_emits_join_url_and_none() {
     );
     session
         .backend
-        .send(Command::FindMeetingById("999999999".into()));
+        .send(AccountCommand::FindMeetingById("999999999".into()));
     let (id, url) = wait_for(&session.backend, 10, |e| match e {
-        Event::MeetingById { id, join_url } => Some((id, join_url)),
+        AccountEvent::MeetingById { id, join_url } => Some((id, join_url)),
         _ => None,
     });
     assert_eq!((id.as_str(), url), ("999999999", None));

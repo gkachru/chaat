@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use super::App;
-use crate::backend::{AuthStatus, Command};
+use crate::backend::{AuthStatus, ServiceCommand};
 use crate::model::SetupAction;
 use crate::setup_file::SetupSummary;
 
@@ -79,7 +79,7 @@ impl App {
                 // Kept until the file opens, so a typo can be corrected
                 // instead of typing six words again.
                 let passphrase = crate::setup_file::passphrase::normalize(&self.setup.passphrase);
-                self.service.send(Command::OpenSetupFile {
+                self.service.send(ServiceCommand::OpenSetupFile {
                     path: path.clone(),
                     passphrase,
                     token: self.setup.token,
@@ -110,7 +110,7 @@ impl App {
                 self.settings.org_label = Some(summary.org_label);
                 self.mark_settings_dirty();
                 self.save_settings();
-                self.service.send(Command::ApplySetup {
+                self.service.send(ServiceCommand::ApplySetup {
                     token: self.setup.token,
                 });
                 self.setup.stage = SetupStage::Applying;
@@ -160,7 +160,7 @@ impl App {
             self.setup.stage,
             SetupStage::Opening(_) | SetupStage::Review(_)
         ) {
-            self.service.send(Command::DiscardSetup {
+            self.service.send(ServiceCommand::DiscardSetup {
                 token: self.setup.token,
             });
             self.setup.token += 1;
@@ -177,7 +177,7 @@ pub fn is_setup_file(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::{Backend, Waker};
+    use crate::backend::{Backend, Command, Waker};
     use crate::paths::AppDirs;
     use crate::settings::Settings;
 
@@ -248,11 +248,11 @@ mod tests {
             SetupStage::Opening(PathBuf::from("a.chaatsetup"))
         );
         match commands.try_recv() {
-            Ok(Command::OpenSetupFile {
+            Ok(Command::Service(ServiceCommand::OpenSetupFile {
                 path,
                 passphrase,
                 token,
-            }) => {
+            })) => {
                 assert_eq!(path, PathBuf::from("a.chaatsetup"));
                 assert_eq!(passphrase, "apple-banana-cherry");
                 assert_eq!(token, before + 1);
@@ -273,7 +273,7 @@ mod tests {
         assert_eq!(app.setup.stage, SetupStage::Idle);
         assert!(matches!(
             commands.try_recv(),
-            Ok(Command::DiscardSetup { token: 4 })
+            Ok(Command::Service(ServiceCommand::DiscardSetup { token: 4 }))
         ));
         assert_eq!(app.setup.token, 5, "a late answer is stale");
         // Nothing pending: nothing to discard.
@@ -295,7 +295,7 @@ mod tests {
         assert_eq!(app.setup.stage, SetupStage::Applying);
         assert!(matches!(
             commands.try_recv(),
-            Ok(Command::ApplySetup { token: 7 })
+            Ok(Command::Service(ServiceCommand::ApplySetup { token: 7 }))
         ));
     }
 
@@ -316,7 +316,7 @@ mod tests {
         app.apply_setup_action(SetupAction::Apply);
         // Still forced while applying, so the progress stays on screen.
         assert!(app.onboarding_forced);
-        app.on_setup_event(crate::backend::Event::SetupApplied { token: 3, ok: true });
+        app.on_setup_event(crate::backend::ServiceEvent::SetupApplied { token: 3, ok: true });
         assert!(!app.onboarding_forced);
     }
 

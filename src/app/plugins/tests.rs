@@ -1,6 +1,8 @@
 use super::*;
 use crate::app::tests::*;
-use crate::backend::{AuthStatus, Backend, Event, Waker};
+use crate::backend::{
+    AccountCommand, AccountEvent, AuthStatus, Backend, Command, ServiceCommand, ServiceEvent, Waker,
+};
 use crate::model::{Action, PluginAction, Presence};
 use crate::paths::AppDirs;
 use crate::settings::Settings;
@@ -118,14 +120,14 @@ fn unapproved_accounts_send_neither_line_nor_restart_hello() {
     assert!(matches!(
         sent.as_slice(),
         [
-            Command::PluginSend {
+            Command::Service(ServiceCommand::PluginSend {
                 message: HostMessage::Accounts { .. },
                 ..
-            },
-            Command::PluginHello {
+            }),
+            Command::Service(ServiceCommand::PluginHello {
                 accounts: Some(_),
                 ..
-            }
+            })
         ]
     ));
 }
@@ -180,7 +182,7 @@ fn a_ready_that_drops_accounts_clears_the_stored_restart_hello() {
     let sent: Vec<Command> = std::iter::from_fn(|| commands.try_recv().ok()).collect();
     assert!(sent.iter().any(|c| matches!(
         c,
-        Command::PluginHello { id, accounts: Some(a), .. } if id == "p" && a.is_empty()
+        Command::Service(ServiceCommand::PluginHello { id, accounts: Some(a), .. }) if id == "p" && a.is_empty()
     )));
 }
 
@@ -231,7 +233,7 @@ fn describe_options(app: &mut App) {
 
 fn option_commands(commands: &mut tokio::sync::mpsc::UnboundedReceiver<Command>) -> usize {
     std::iter::from_fn(|| commands.try_recv().ok())
-        .filter(|c| matches!(c, Command::PluginOptions { .. }))
+        .filter(|c| matches!(c, Command::Service(ServiceCommand::PluginOptions { .. })))
         .count()
 }
 
@@ -277,7 +279,7 @@ fn trusting_a_changed_file_sends_options_only_after_ready() {
 
 fn generation_of(command: Option<Command>) -> u64 {
     match command {
-        Some(Command::StartPlugin { generation, .. }) => generation,
+        Some(Command::Service(ServiceCommand::StartPlugin { generation, .. })) => generation,
         other => panic!("expected a start, got {other:?}"),
     }
 }
@@ -329,7 +331,7 @@ fn events_from_an_old_generation_are_dropped() {
     app.sync_plugins();
     assert!(matches!(
         commands.try_recv(),
-        Ok(Command::StopPlugin { id }) if id == "p"
+        Ok(Command::Service(ServiceCommand::StopPlugin { id })) if id == "p"
     ));
     assert!(!running(&mut app, second, true));
     // Turned on again: a newer generation, and only that one counts.
@@ -416,7 +418,7 @@ fn sent_values(
     commands: &mut tokio::sync::mpsc::UnboundedReceiver<Command>,
 ) -> Option<BTreeMap<String, serde_json::Value>> {
     drain(commands).into_iter().rev().find_map(|c| match c {
-        Command::PluginOptions { values, .. } => Some(values),
+        Command::Service(ServiceCommand::PluginOptions { values, .. }) => Some(values),
         _ => None,
     })
 }
@@ -427,10 +429,10 @@ fn action_sent(commands: &mut tokio::sync::mpsc::UnboundedReceiver<Command>) -> 
         .filter(|c| {
             matches!(
                 c,
-                Command::PluginSend {
+                Command::Service(ServiceCommand::PluginSend {
                     message: HostMessage::Action { .. },
                     ..
-                }
+                })
             )
         })
         .count()
@@ -608,10 +610,10 @@ fn actions_go_only_to_a_ready_plugin() {
     let sent = drain(&mut commands);
     assert!(sent.iter().any(|c| matches!(
         c,
-        Command::PluginSend {
+        Command::Service(ServiceCommand::PluginSend {
             id,
             message: HostMessage::Action { id: action },
-        } if id == "p" && action == "scan"
+        }) if id == "p" && action == "scan"
     )));
     assert!(app.plugins["p"].action_started.contains_key("scan"));
     // Not running: no click goes out.
@@ -699,13 +701,13 @@ fn reset_section_restores_defaults_and_keeps_secrets() {
     let sent = drain(&mut commands);
     assert!(sent.iter().any(|c| matches!(
         c,
-        Command::PluginOptions { values, secrets, .. }
+        Command::Service(ServiceCommand::PluginOptions { values, secrets, .. })
             if values["bright"] == json!(50.0) && secrets == &["key".to_owned()]
     )));
     assert!(
         !sent
             .iter()
-            .any(|c| matches!(c, Command::SavePluginSecret { .. })),
+            .any(|c| matches!(c, Command::Service(ServiceCommand::SavePluginSecret { .. }))),
         "secrets are untouched"
     );
 }
@@ -736,7 +738,7 @@ fn a_new_plugin_opens_its_add_flow_and_stays_pending() {
     assert!(
         drain(&mut commands)
             .iter()
-            .any(|c| matches!(c, Command::StartPlugin { id: started, .. } if *started == id)),
+            .any(|c| matches!(c, Command::Service(ServiceCommand::StartPlugin { id: started, .. }) if *started == id)),
         "it starts so that it can send ready"
     );
     app.remove_plugin(&id);
@@ -757,7 +759,7 @@ fn setup_pending_is_not_started_at_launch() {
     let started: Vec<String> = drain(&mut commands)
         .into_iter()
         .filter_map(|c| match c {
-            Command::StartPlugin { id, .. } => Some(id),
+            Command::Service(ServiceCommand::StartPlugin { id, .. }) => Some(id),
             _ => None,
         })
         .collect();
@@ -773,18 +775,16 @@ fn setup_pending_is_not_started_at_launch() {
     app.apply_plugin_action(PluginAction::Open("new".into()));
     assert_eq!(app.plugins_view, PluginsView::Adding("new".into()));
     assert_eq!(app.settings_page, Some(SettingsPage::Plugins));
-    assert!(
-        drain(&mut commands)
-            .iter()
-            .any(|c| matches!(c, Command::StartPlugin { id, .. } if id == "new"))
-    );
+    assert!(drain(&mut commands).iter().any(
+        |c| matches!(c, Command::Service(ServiceCommand::StartPlugin { id, .. }) if id == "new")
+    ));
     app.settings_page = None;
     app.plugins_view_follows_settings();
     assert_eq!(app.plugins_view, PluginsView::List);
     assert!(
-        drain(&mut commands)
-            .iter()
-            .any(|c| matches!(c, Command::StopPlugin { id } if id == "new"))
+        drain(&mut commands).iter().any(
+            |c| matches!(c, Command::Service(ServiceCommand::StopPlugin { id }) if id == "new")
+        )
     );
     assert!(app.settings.plugins[1].setup_pending, "still pending");
 }
@@ -852,10 +852,10 @@ fn finish_setup_with_nothing_ticked_sends_no_accounts() {
     assert!(app.settings.plugins[0].approved_needs.is_empty());
     assert!(!drain(&mut commands).iter().any(|c| matches!(
         c,
-        Command::PluginSend {
+        Command::Service(ServiceCommand::PluginSend {
             message: HostMessage::Accounts { .. } | HostMessage::Presence { .. },
             ..
-        }
+        })
     )));
 }
 
@@ -1013,17 +1013,17 @@ fn move_plugin_switches_owners() {
     let sent = drain(&mut service);
     assert!(sent.iter().any(|c| matches!(
         c,
-        Command::PluginSend { id, message: HostMessage::PushChannels { channels } }
+        Command::Service(ServiceCommand::PluginSend { id, message: HostMessage::PushChannels { channels } })
             if id == "a" && channels.is_empty()
     )));
     assert!(sent.iter().any(|c| matches!(
         c,
-        Command::PluginSend { id, message: HostMessage::PushChannels { channels } }
+        Command::Service(ServiceCommand::PluginSend { id, message: HostMessage::PushChannels { channels } })
             if id == "b" && channels.len() == app.accounts.len()
     )));
     assert!(drain(&mut account).iter().any(|c| matches!(
         c,
-        Command::PushPlugin(Some(route)) if format!("{route:?}").contains("b.trycloudflare.com")
+        Command::Account(AccountCommand::PushPlugin(Some(route))) if format!("{route:?}").contains("b.trycloudflare.com")
     )));
     // An index past the end moves it last.
     app.apply_plugin_action(PluginAction::Move {
@@ -1175,12 +1175,12 @@ fn retry_stops_the_old_run_and_ignores_finished_plugins() {
     while commands.try_recv().is_ok() {}
     app.apply_plugin_action(PluginAction::RetryStart("p".into()));
     let sent: Vec<Command> = std::iter::from_fn(|| commands.try_recv().ok()).collect();
-    let stop = sent
-        .iter()
-        .position(|c| matches!(c, Command::StopPlugin { id } if id == "p"));
-    let start = sent
-        .iter()
-        .position(|c| matches!(c, Command::StartPlugin { id, .. } if id == "p"));
+    let stop = sent.iter().position(
+        |c| matches!(c, Command::Service(ServiceCommand::StopPlugin { id }) if id == "p"),
+    );
+    let start = sent.iter().position(
+        |c| matches!(c, Command::Service(ServiceCommand::StartPlugin { id, .. }) if id == "p"),
+    );
     assert!(
         stop.is_some() && start.is_some() && stop < start,
         "stop, then start"
@@ -1392,7 +1392,7 @@ fn secrets_are_checked_and_trimmed_before_saving() {
     let saved: Vec<_> = drain(&mut commands)
         .into_iter()
         .filter_map(|c| match c {
-            Command::SavePluginSecret { value, .. } => Some(value),
+            Command::Service(ServiceCommand::SavePluginSecret { value, .. }) => Some(value),
             _ => None,
         })
         .collect();
@@ -1429,12 +1429,12 @@ fn the_plugin_sign_in_panel_shows_until_signed_in_or_stopped() {
     let (mut app, _dir) = demo_app();
     let ctx = egui::Context::default();
     call_alerts_plugin(&mut app, "ca");
-    app.handle(plugin_event(&app, "ca", sign_in_event(None, "AB12")), &ctx);
+    app.handle_service(plugin_event(&app, "ca", sign_in_event(None, "AB12")), &ctx);
     assert_eq!(app.plugins["ca"].sign_in[0].user_code, "AB12");
-    app.handle(plugin_event(&app, "ca", signed_in_event(None)), &ctx);
+    app.handle_service(plugin_event(&app, "ca", signed_in_event(None)), &ctx);
     assert!(app.plugins["ca"].sign_in.is_empty());
-    app.handle(plugin_event(&app, "ca", sign_in_event(None, "AB12")), &ctx);
-    app.handle(
+    app.handle_service(plugin_event(&app, "ca", sign_in_event(None, "AB12")), &ctx);
+    app.handle_service(
         plugin_event(
             &app,
             "ca",
@@ -1446,7 +1446,7 @@ fn the_plugin_sign_in_panel_shows_until_signed_in_or_stopped() {
         &ctx,
     );
     assert!(app.plugins["ca"].sign_in.is_empty());
-    app.handle(plugin_event(&app, "ca", sign_in_event(None, "AB12")), &ctx);
+    app.handle_service(plugin_event(&app, "ca", sign_in_event(None, "AB12")), &ctx);
     app.apply(
         Action::Plugin(PluginAction::HideSignIn {
             plugin: "ca".into(),
@@ -1473,7 +1473,7 @@ fn plugins_turned_on_start_once_the_service_is_attached() {
     app.attach_service(service);
     assert!(matches!(
         commands.try_recv(),
-        Ok(Command::StartPlugin { id, .. }) if id == "pr"
+        Ok(Command::Service(ServiceCommand::StartPlugin { id, .. })) if id == "pr"
     ));
 }
 
@@ -1501,7 +1501,7 @@ fn enabling_and_disabling_a_plugin_starts_and_stops_it() {
     };
     assert!(matches!(
         commands.try_recv(),
-        Ok(Command::StartPlugin { id, path, hello: crate::plugin::protocol::HostMessage::Hello { accounts, .. }, .. })
+        Ok(Command::Service(ServiceCommand::StartPlugin { id, path, hello: crate::plugin::protocol::HostMessage::Hello { accounts, .. }, .. }))
             if id == "ca" && path == std::path::Path::new("plugin.exe") && accounts == vec![me.clone()]
     ));
     // Syncing again with nothing changed starts nothing.
@@ -1512,7 +1512,7 @@ fn enabling_and_disabling_a_plugin_starts_and_stops_it() {
     app.sync_plugins();
     assert!(matches!(
         commands.try_recv(),
-        Ok(Command::StartPlugin { path, .. }) if path == std::path::Path::new("other.exe")
+        Ok(Command::Service(ServiceCommand::StartPlugin { path, .. })) if path == std::path::Path::new("other.exe")
     ));
     app.apply(
         Action::Plugin(PluginAction::SetEnabled("ca".into(), false)),
@@ -1520,7 +1520,7 @@ fn enabling_and_disabling_a_plugin_starts_and_stops_it() {
     );
     assert!(matches!(
         commands.try_recv(),
-        Ok(Command::StopPlugin { id }) if id == "ca"
+        Ok(Command::Service(ServiceCommand::StopPlugin { id })) if id == "ca"
     ));
 }
 
@@ -1530,7 +1530,7 @@ fn only_the_first_sign_in_code_raises_the_window() {
     let ctx = egui::Context::default();
     call_alerts_plugin(&mut app, "ca");
     app.wants_show = false;
-    app.handle(plugin_event(&app, "ca", sign_in_event(None, "FIRST")), &ctx);
+    app.handle_service(plugin_event(&app, "ca", sign_in_event(None, "FIRST")), &ctx);
     assert!(app.wants_show);
     app.wants_show = false;
     app.apply(
@@ -1540,15 +1540,15 @@ fn only_the_first_sign_in_code_raises_the_window() {
         }),
         &ctx,
     );
-    app.handle(
+    app.handle_service(
         plugin_event(&app, "ca", sign_in_event(None, "SECOND")),
         &ctx,
     );
     assert!(!app.wants_show, "a later code doesn't pull Chaat forward");
     assert_eq!(app.plugins["ca"].sign_in[0].user_code, "SECOND");
     // After signing in, a future expiry may raise it again.
-    app.handle(plugin_event(&app, "ca", signed_in_event(None)), &ctx);
-    app.handle(plugin_event(&app, "ca", sign_in_event(None, "THIRD")), &ctx);
+    app.handle_service(plugin_event(&app, "ca", signed_in_event(None)), &ctx);
+    app.handle_service(plugin_event(&app, "ca", sign_in_event(None, "THIRD")), &ctx);
     assert!(app.wants_show);
 }
 
@@ -1561,11 +1561,11 @@ fn accounts_go_only_to_plugins_that_need_them() {
     let started = sent(&mut commands);
     let accounts_in = |id: &str| {
         started.iter().find_map(|c| match c {
-            Command::StartPlugin {
+            Command::Service(ServiceCommand::StartPlugin {
                 id: started,
                 hello: crate::plugin::protocol::HostMessage::Hello { accounts, .. },
                 ..
-            } if started == id => Some(accounts.len()),
+            }) if started == id => Some(accounts.len()),
             _ => None,
         })
     };
@@ -1583,17 +1583,17 @@ fn accounts_go_only_to_plugins_that_need_them() {
     let changed = sent(&mut commands);
     assert!(changed.iter().any(|c| matches!(
         c,
-        Command::PluginSend { id, message: crate::plugin::protocol::HostMessage::Accounts { accounts } }
+        Command::Service(ServiceCommand::PluginSend { id, message: crate::plugin::protocol::HostMessage::Accounts { accounts } })
             if id == "ca" && accounts[0].username == "me@fabrikam.com"
     )));
     assert!(changed.iter().any(|c| matches!(
         c,
-        Command::PluginHello { id, accounts: Some(_), .. } if id == "ca"
+        Command::Service(ServiceCommand::PluginHello { id, accounts: Some(_), .. }) if id == "ca"
     )));
     assert!(
         !changed.iter().any(|c| matches!(
             c,
-            Command::PluginSend { id, .. } | Command::PluginHello { id, .. } if id == "light"
+            Command::Service(ServiceCommand::PluginSend { id, .. }) | Command::Service(ServiceCommand::PluginHello { id, .. }) if id == "light"
         )),
         "a plugin that needs no accounts hears nothing about them"
     );
@@ -1606,7 +1606,7 @@ fn a_ready_that_asks_for_accounts_gets_them_once() {
     plugin_entry(&mut app, "new", &[]);
     app.sync_plugins();
     sent(&mut commands);
-    app.handle(
+    app.handle_service(
         plugin_event(
             &app,
             "new",
@@ -1617,13 +1617,13 @@ fn a_ready_that_asks_for_accounts_gets_them_once() {
     let after = sent(&mut commands);
     assert!(after.iter().any(|c| matches!(
         c,
-        Command::PluginSend {
+        Command::Service(ServiceCommand::PluginSend {
             message: crate::plugin::protocol::HostMessage::Accounts { .. },
             ..
-        }
+        })
     )));
     assert_eq!(app.settings.plugins[0].needs, vec!["accounts".to_owned()]);
-    app.handle(
+    app.handle_service(
         plugin_event(
             &app,
             "new",
@@ -1633,10 +1633,10 @@ fn a_ready_that_asks_for_accounts_gets_them_once() {
     );
     assert!(!sent(&mut commands).iter().any(|c| matches!(
         c,
-        Command::PluginSend {
+        Command::Service(ServiceCommand::PluginSend {
             message: crate::plugin::protocol::HostMessage::Accounts { .. },
             ..
-        }
+        })
     )));
 }
 
@@ -1649,7 +1649,7 @@ fn presence_goes_only_to_plugins_that_need_it() {
     plugin_entry(&mut app, "other", &[]);
     app.sync_plugins();
     sent(&mut commands);
-    app.handle(
+    app.handle_service(
         plugin_event(
             &app,
             "light",
@@ -1657,7 +1657,7 @@ fn presence_goes_only_to_plugins_that_need_it() {
         ),
         &ctx,
     );
-    app.handle(
+    app.handle_service(
         plugin_event(
             &app,
             "other",
@@ -1670,17 +1670,17 @@ fn presence_goes_only_to_plugins_that_need_it() {
         .filter(|c| {
             matches!(
                 c,
-                Command::PluginSend {
+                Command::Service(ServiceCommand::PluginSend {
                     message: crate::plugin::protocol::HostMessage::Presence { .. },
                     ..
-                }
+                })
             )
         })
         .collect();
     assert_eq!(presences.len(), 1);
     assert!(matches!(
         &presences[0],
-        Command::PluginSend { id, message: crate::plugin::protocol::HostMessage::Presence { availability, activity } }
+        Command::Service(ServiceCommand::PluginSend { id, message: crate::plugin::protocol::HostMessage::Presence { availability, activity } })
             if id == "light" && availability == "Busy" && activity.is_none()
     ));
 }
@@ -1692,7 +1692,7 @@ fn presence_is_resent_only_when_it_changes() {
     app.my_presence = Some(busy());
     plugin_entry(&mut app, "light", &[]);
     app.sync_plugins();
-    app.handle(
+    app.handle_service(
         plugin_event(
             &app,
             "light",
@@ -1706,20 +1706,20 @@ fn presence_is_resent_only_when_it_changes() {
             .filter(|c| {
                 matches!(
                     c,
-                    Command::PluginSend {
+                    Command::Service(ServiceCommand::PluginSend {
                         message: crate::plugin::protocol::HostMessage::Presence { .. },
                         ..
-                    }
+                    })
                 )
             })
             .count()
     };
     assert_eq!(count(&mut commands), 1);
     app.sync_plugin_presence();
-    app.handle(Event::MyPresence(busy()), &ctx);
+    app.handle(AccountEvent::MyPresence(busy()), &ctx);
     assert_eq!(count(&mut commands), 0, "the same presence is not resent");
     app.handle(
-        Event::MyPresence(Presence {
+        AccountEvent::MyPresence(Presence {
             availability: crate::model::Availability::Available,
             ..Default::default()
         }),
@@ -1735,7 +1735,7 @@ fn presence_is_resent_when_the_account_signs_out() {
     app.my_presence = Some(busy());
     plugin_entry(&mut app, "light", &[]);
     app.sync_plugins();
-    app.handle(
+    app.handle_service(
         plugin_event(
             &app,
             "light",
@@ -1744,13 +1744,13 @@ fn presence_is_resent_when_the_account_signs_out() {
         &ctx,
     );
     sent(&mut commands);
-    app.handle(Event::Auth(AuthStatus::SignedOut), &ctx);
+    app.handle(AccountEvent::Auth(AuthStatus::SignedOut), &ctx);
     assert!(sent(&mut commands).iter().any(|c| matches!(
         c,
-        Command::PluginSend {
+        Command::Service(ServiceCommand::PluginSend {
             message: crate::plugin::protocol::HostMessage::Presence { availability, .. },
             ..
-        } if availability == "Unknown"
+        }) if availability == "Unknown"
     )));
 }
 
@@ -1760,22 +1760,22 @@ fn a_plugin_that_drops_and_regains_the_accounts_need_is_sent_them_again() {
     let ctx = egui::Context::default();
     plugin_entry(&mut app, "p", &["accounts"]);
     app.sync_plugins();
-    app.handle(
+    app.handle_service(
         plugin_event(&app, "p", ready_event(&[], &[], Vec::new(), &[])),
         &ctx,
     );
     assert!(app.plugins["p"].sent_accounts.is_none());
     sent(&mut commands);
-    app.handle(
+    app.handle_service(
         plugin_event(&app, "p", ready_event(&["accounts"], &[], Vec::new(), &[])),
         &ctx,
     );
     assert!(sent(&mut commands).iter().any(|c| matches!(
         c,
-        Command::PluginSend {
+        Command::Service(ServiceCommand::PluginSend {
             message: crate::plugin::protocol::HostMessage::Accounts { .. },
             ..
-        }
+        })
     )));
 }
 
@@ -1786,7 +1786,7 @@ fn a_second_call_alerts_plugin_is_ignored() {
     call_alerts_plugin(&mut app, "first");
     call_alerts_plugin(&mut app, "second");
     assert_eq!(app.call_alerts_owner().as_deref(), Some("first"));
-    app.handle(
+    app.handle_service(
         plugin_event(
             &app,
             "second",
@@ -1794,13 +1794,13 @@ fn a_second_call_alerts_plugin_is_ignored() {
         ),
         &ctx,
     );
-    app.handle(
+    app.handle_service(
         plugin_event(&app, "second", sign_in_event(None, "NO")),
         &ctx,
     );
     assert!(app.rings.is_empty());
     assert!(app.plugins["second"].sign_in.is_empty());
-    app.handle(
+    app.handle_service(
         plugin_event(
             &app,
             "first",
@@ -1823,11 +1823,11 @@ fn a_non_owner_call_alerts_plugin_shows_no_sign_in_notices() {
     call_alerts_plugin(&mut app, "second");
     let toasts = app.toasts.len();
     let account = || Some("u-me.demo".to_owned());
-    app.handle(
+    app.handle_service(
         plugin_event(&app, "second", PluginEvent::SignedIn { account: account() }),
         &ctx,
     );
-    app.handle(
+    app.handle_service(
         plugin_event(
             &app,
             "second",
@@ -1837,7 +1837,7 @@ fn a_non_owner_call_alerts_plugin_shows_no_sign_in_notices() {
         ),
         &ctx,
     );
-    app.handle(
+    app.handle_service(
         plugin_event(
             &app,
             "second",
@@ -1851,7 +1851,7 @@ fn a_non_owner_call_alerts_plugin_shows_no_sign_in_notices() {
     assert_eq!(app.toasts.len(), toasts);
     assert!(app.plugins["second"].listening.is_empty());
     // The owner still gets its notices.
-    app.handle(
+    app.handle_service(
         plugin_event(&app, "first", PluginEvent::SignedIn { account: account() }),
         &ctx,
     );
@@ -1866,15 +1866,15 @@ fn sign_in_cards_key_on_plugin_and_account() {
         plugin_entry(&mut app, id, &[]);
         app.plugins.insert(id.into(), PluginState::default());
     }
-    app.handle(
+    app.handle_service(
         plugin_event(&app, "a", sign_in_event(Some("u-me.demo"), "A1")),
         &ctx,
     );
-    app.handle(
+    app.handle_service(
         plugin_event(&app, "b", sign_in_event(Some("u-me.demo"), "B1")),
         &ctx,
     );
-    app.handle(
+    app.handle_service(
         plugin_event(&app, "b", sign_in_event(Some("u-me.demo"), "B2")),
         &ctx,
     );
@@ -1906,21 +1906,19 @@ fn removing_a_plugin_deletes_its_secrets_and_stops_it() {
     let after = sent(&mut commands);
     assert!(after.iter().any(|c| matches!(
         c,
-        Command::PluginSend { id, message: crate::plugin::protocol::HostMessage::Forget { account } }
+        Command::Service(ServiceCommand::PluginSend { id, message: crate::plugin::protocol::HostMessage::Forget { account } })
             if id == "light" && account == "u-me.t1"
     )));
     for option in ["token", "key"] {
         assert!(after.iter().any(|c| matches!(
             c,
-            Command::SavePluginSecret { plugin, option: o, value: None, .. }
+            Command::Service(ServiceCommand::SavePluginSecret { plugin, option: o, value: None, .. })
                 if plugin == "light" && o == option
         )));
     }
-    assert!(
-        after
-            .iter()
-            .any(|c| matches!(c, Command::StopPlugin { id } if id == "light"))
-    );
+    assert!(after.iter().any(
+        |c| matches!(c, Command::Service(ServiceCommand::StopPlugin { id }) if id == "light")
+    ));
     assert!(app.settings.plugins.is_empty());
     assert!(!app.plugins.contains_key("light"));
 }
@@ -1937,7 +1935,7 @@ fn adding_a_plugin_names_it_from_its_file_and_starts_it() {
     assert_eq!(
         started
             .iter()
-            .filter(|c| matches!(c, Command::StartPlugin { .. }))
+            .filter(|c| matches!(c, Command::Service(ServiceCommand::StartPlugin { .. })))
             .count(),
         2
     );
@@ -1968,17 +1966,17 @@ fn options_are_sent_after_ready_and_on_change() {
         spec("flash", OptionKind::Toggle, Some(serde_json::json!(true))),
         spec("key", OptionKind::Secret, None),
     ];
-    app.handle(
+    app.handle_service(
         plugin_event(&app, "light", ready_event(&[], &[], options, &[])),
         &ctx,
     );
     let values = |commands: &mut tokio::sync::mpsc::UnboundedReceiver<Command>| {
         sent(commands).into_iter().find_map(|c| match c {
-            Command::PluginOptions {
+            Command::Service(ServiceCommand::PluginOptions {
                 id,
                 values,
                 secrets,
-            } if id == "light" => Some((values, secrets)),
+            }) if id == "light" => Some((values, secrets)),
             _ => None,
         })
     };
@@ -2002,17 +2000,17 @@ fn options_are_sent_after_ready_and_on_change() {
     );
     // A cleared secret leaves the list, a stored one joins it, and the
     // plugin hears each time.
-    let saved = |set: bool| Event::PluginSecretSaved {
+    let saved = |set: bool| ServiceEvent::PluginSecretSaved {
         plugin: "light".into(),
         instance: "inst-light".into(),
         option: "key".into(),
         set,
         ok: true,
     };
-    app.handle(saved(false), &ctx);
+    app.handle_service(saved(false), &ctx);
     let (_, secrets) = values(&mut commands).expect("options after a clear");
     assert!(secrets.is_empty());
-    app.handle(saved(true), &ctx);
+    app.handle_service(saved(true), &ctx);
     let (_, secrets) = values(&mut commands).expect("options after a secret");
     assert_eq!(secrets, vec!["key".to_owned()]);
 }
@@ -2023,7 +2021,7 @@ fn an_account_error_names_the_account_and_stops_listening() {
     let ctx = egui::Context::default();
     call_alerts_plugin(&mut app, "ca");
     app.plugins.get_mut("ca").unwrap().info.name = Some("Call alerts".into());
-    app.handle(
+    app.handle_service(
         plugin_event(
             &app,
             "ca",
@@ -2033,7 +2031,7 @@ fn an_account_error_names_the_account_and_stops_listening() {
         ),
         &ctx,
     );
-    app.handle(
+    app.handle_service(
         plugin_event(
             &app,
             "ca",
@@ -2065,11 +2063,11 @@ fn signing_out_with_a_plugin_off_still_clears_its_sign_in() {
     app.sync_plugins();
     assert!(matches!(
         commands.try_recv(),
-        Ok(Command::StartPlugin { hello: crate::plugin::protocol::HostMessage::Hello { forget, .. }, .. })
+        Ok(Command::Service(ServiceCommand::StartPlugin { hello: crate::plugin::protocol::HostMessage::Hello { forget, .. }, .. }))
             if forget == vec!["u-me.t1".to_owned()]
     ));
     // Once the plugin is ready, the queue is done.
-    app.handle(
+    app.handle_service(
         plugin_event(
             &app,
             "ca",
@@ -2107,14 +2105,14 @@ fn a_sign_out_queues_forget_per_plugin() {
     for id in ["a", "b"] {
         assert!(after.iter().any(|c| matches!(
             c,
-            Command::PluginSend { id: to, message: crate::plugin::protocol::HostMessage::Forget { account } }
+            Command::Service(ServiceCommand::PluginSend { id: to, message: crate::plugin::protocol::HostMessage::Forget { account } })
                 if to == id && account == "u-me.t1"
         )));
     }
     assert!(
         !after.iter().any(|c| matches!(
             c,
-            Command::PluginSend { id, message: crate::plugin::protocol::HostMessage::Forget { .. } } if id == "c"
+            Command::Service(ServiceCommand::PluginSend { id, message: crate::plugin::protocol::HostMessage::Forget { .. } }) if id == "c"
         )),
         "a plugin that needs no accounts is not told to forget one"
     );
@@ -2156,12 +2154,12 @@ fn a_sign_out_stays_queued_until_the_plugin_confirms_or_the_account_returns() {
     // Told at once, and still queued in case it never arrives.
     assert!(after.iter().any(|c| matches!(
         c,
-        Command::PluginSend { id, message: crate::plugin::protocol::HostMessage::Forget { account } }
+        Command::Service(ServiceCommand::PluginSend { id, message: crate::plugin::protocol::HostMessage::Forget { account } })
             if id == "ca" && account == "u-me.t1"
     )));
     assert_eq!(app.settings.plugins[0].forget, vec!["u-me.t1".to_owned()]);
     // A ready that didn't clear it keeps it queued.
-    app.handle(
+    app.handle_service(
         plugin_event(&app, "ca", ready_event(&["accounts"], &[], Vec::new(), &[])),
         &ctx,
     );
@@ -2173,7 +2171,7 @@ fn a_sign_out_stays_queued_until_the_plugin_confirms_or_the_account_returns() {
     assert!(app.settings.plugins[0].forget.is_empty());
     assert!(sent(&mut commands).iter().any(|c| matches!(
         c,
-        Command::PluginHello { id, forget: Some(forget), .. } if id == "ca" && forget.is_empty()
+        Command::Service(ServiceCommand::PluginHello { id, forget: Some(forget), .. }) if id == "ca" && forget.is_empty()
     )));
 }
 
@@ -2203,7 +2201,7 @@ fn accounts_sent_to(commands: &[Command], id: &str) -> bool {
     commands.iter().any(|c| {
         matches!(
             c,
-            Command::PluginSend { id: to, message: crate::plugin::protocol::HostMessage::Accounts { .. } }
+            Command::Service(ServiceCommand::PluginSend { id: to, message: crate::plugin::protocol::HostMessage::Accounts { .. } })
                 if to == id
         )
     })
@@ -2213,7 +2211,7 @@ fn presence_sent_to(commands: &[Command], id: &str) -> bool {
     commands.iter().any(|c| {
         matches!(
             c,
-            Command::PluginSend { id: to, message: crate::plugin::protocol::HostMessage::Presence { .. } }
+            Command::Service(ServiceCommand::PluginSend { id: to, message: crate::plugin::protocol::HostMessage::Presence { .. } })
                 if to == id
         )
     })
@@ -2226,12 +2224,12 @@ fn events_for_unknown_accounts_are_dropped() {
     call_alerts_plugin(&mut app, "ca");
     sent(&mut commands);
     let stranger = Some("u-stranger.t9");
-    app.handle(
+    app.handle_service(
         plugin_event(&app, "ca", sign_in_event(stranger, "AB12")),
         &ctx,
     );
-    app.handle(plugin_event(&app, "ca", signed_in_event(stranger)), &ctx);
-    app.handle(
+    app.handle_service(plugin_event(&app, "ca", signed_in_event(stranger)), &ctx);
+    app.handle_service(
         plugin_event(
             &app,
             "ca",
@@ -2241,7 +2239,7 @@ fn events_for_unknown_accounts_are_dropped() {
         ),
         &ctx,
     );
-    app.handle(
+    app.handle_service(
         plugin_event(
             &app,
             "ca",
@@ -2254,7 +2252,7 @@ fn events_for_unknown_accounts_are_dropped() {
     );
     let mut alert = ring("stranger-call", "u-ada");
     alert.account = stranger.map(str::to_owned);
-    app.handle(
+    app.handle_service(
         plugin_event(
             &app,
             "ca",
@@ -2267,11 +2265,11 @@ fn events_for_unknown_accounts_are_dropped() {
     assert!(app.toasts.is_empty());
     assert!(app.rings.is_empty());
     // The same events for one of Chaat's accounts count.
-    app.handle(
+    app.handle_service(
         plugin_event(&app, "ca", sign_in_event(Some("u-me.t1"), "AB12")),
         &ctx,
     );
-    app.handle(
+    app.handle_service(
         plugin_event(
             &app,
             "ca",
@@ -2294,7 +2292,7 @@ fn a_new_need_waits_for_approval() {
     app.sync_plugins();
     sent(&mut commands);
     let ready = |app: &mut App| {
-        app.handle(
+        app.handle_service(
             plugin_event(
                 app,
                 "light",
@@ -2329,7 +2327,7 @@ fn a_new_need_waits_for_approval() {
 fn approved_needs_flow_and_denied_ones_dont() {
     let ctx = egui::Context::default();
     let ready = |app: &mut App| {
-        app.handle(
+        app.handle_service(
             plugin_event(
                 app,
                 "light",
@@ -2361,7 +2359,7 @@ fn approved_needs_flow_and_denied_ones_dont() {
     app.sync_plugins();
     assert!(sent(&mut commands).iter().any(|c| matches!(
         c,
-        Command::StartPlugin { hello: crate::plugin::protocol::HostMessage::Hello { accounts, .. }, .. }
+        Command::Service(ServiceCommand::StartPlugin { hello: crate::plugin::protocol::HostMessage::Hello { accounts, .. }, .. })
             if accounts.len() == 1
     )));
 
@@ -2405,9 +2403,9 @@ fn a_changed_file_waits_and_trust_resets_needs() {
     app.sync_plugins();
     assert!(matches!(
         sent(&mut commands).first(),
-        Some(Command::StartPlugin { expected_sha256: Some(pin), .. }) if pin == "old"
+        Some(Command::Service(ServiceCommand::StartPlugin { expected_sha256: Some(pin), .. })) if pin == "old"
     ));
-    app.handle(
+    app.handle_service(
         plugin_event(
             &app,
             "light",
@@ -2436,12 +2434,12 @@ fn a_changed_file_waits_and_trust_resets_needs() {
     assert!(app.plugins["light"].file_changed.is_none());
     assert!(matches!(
         sent(&mut commands).first(),
-        Some(Command::StartPlugin { expected_sha256: Some(pin), hello: crate::plugin::protocol::HostMessage::Hello { accounts, .. }, .. })
+        Some(Command::Service(ServiceCommand::StartPlugin { expected_sha256: Some(pin), hello: crate::plugin::protocol::HostMessage::Hello { accounts, .. }, .. }))
             if pin == "new" && accounts.is_empty()
     ));
 
     // Keeping it off turns the plugin off and drops the question.
-    app.handle(
+    app.handle_service(
         plugin_event(
             &app,
             "light",
@@ -2457,7 +2455,7 @@ fn a_changed_file_waits_and_trust_resets_needs() {
     assert_eq!(app.settings.plugins[0].sha256.as_deref(), Some("new"));
     assert!(sent(&mut commands).iter().any(|c| matches!(
         c,
-        Command::StopPlugin { id } if id == "light"
+        Command::Service(ServiceCommand::StopPlugin { id }) if id == "light"
     )));
 }
 
@@ -2468,7 +2466,7 @@ fn the_first_fingerprint_is_stored_and_never_replaced() {
     let ctx = egui::Context::default();
     plugin_entry(&mut app, "light", &[]);
     let fingerprint = |app: &mut App, sha: &str| {
-        app.handle(
+        app.handle_service(
             plugin_event(
                 app,
                 "light",
@@ -2497,17 +2495,17 @@ fn a_late_secret_answer_for_an_old_instance_is_ignored() {
             ..Default::default()
         },
     );
-    let answer = |instance: &str| Event::PluginSecretSaved {
+    let answer = |instance: &str| ServiceEvent::PluginSecretSaved {
         plugin: "light".into(),
         instance: instance.into(),
         option: "key".into(),
         set: true,
         ok: true,
     };
-    app.handle(answer("old"), &ctx);
+    app.handle_service(answer("old"), &ctx);
     assert!(app.settings.plugins[0].secrets.is_empty());
     assert!(sent(&mut commands).is_empty());
-    app.handle(answer("new"), &ctx);
+    app.handle_service(answer("new"), &ctx);
     assert_eq!(app.settings.plugins[0].secrets, ["key"]);
     // Saves carry the entry's instance.
     app.apply(
@@ -2520,7 +2518,7 @@ fn a_late_secret_answer_for_an_old_instance_is_ignored() {
     );
     assert!(sent(&mut commands).iter().any(|c| matches!(
         c,
-        Command::SavePluginSecret { instance, .. } if instance == "new"
+        Command::Service(ServiceCommand::SavePluginSecret { instance, .. }) if instance == "new"
     )));
     // Each new entry gets its own instance.
     app.add_plugin(PathBuf::from("C:/x/other.exe"));
@@ -2545,7 +2543,7 @@ fn removing_deletes_every_described_secret() {
     app.settings.plugins[0].secrets = vec!["recorded".into()];
     app.sync_plugins();
     sent(&mut commands);
-    app.handle(
+    app.handle_service(
         plugin_event(
             &app,
             "light",
@@ -2567,12 +2565,12 @@ fn removing_deletes_every_described_secret() {
     let deleted: Vec<String> = sent(&mut commands)
         .into_iter()
         .filter_map(|c| match c {
-            Command::SavePluginSecret {
+            Command::Service(ServiceCommand::SavePluginSecret {
                 plugin,
                 instance,
                 option,
                 value: None,
-            } if plugin == "light" && instance == "inst-light" => Some(option),
+            }) if plugin == "light" && instance == "inst-light" => Some(option),
             _ => None,
         })
         .collect();
@@ -2595,11 +2593,11 @@ fn forget_needs_the_accounts_need() {
     let started = sent(&mut commands);
     let hello_forget = |id: &str| {
         started.iter().find_map(|c| match c {
-            Command::StartPlugin {
+            Command::Service(ServiceCommand::StartPlugin {
                 id: started,
                 hello: crate::plugin::protocol::HostMessage::Hello { forget, .. },
                 ..
-            } if started == id => Some(forget.clone()),
+            }) if started == id => Some(forget.clone()),
             _ => None,
         })
     };
@@ -2616,7 +2614,7 @@ fn forget_needs_the_accounts_need() {
             .filter(|c| {
                 matches!(
                     c,
-                    Command::PluginSend { id: to, message: crate::plugin::protocol::HostMessage::Forget { .. } }
+                    Command::Service(ServiceCommand::PluginSend { id: to, message: crate::plugin::protocol::HostMessage::Forget { .. } })
                         if to == id
                 )
             })
@@ -2656,7 +2654,7 @@ fn options_follow_the_current_schema() {
     }
     app.sync_plugins();
     sent(&mut commands);
-    app.handle(
+    app.handle_service(
         plugin_event(
             &app,
             "light",
@@ -2676,11 +2674,11 @@ fn options_follow_the_current_schema() {
     let (values, secrets) = sent(&mut commands)
         .into_iter()
         .find_map(|c| match c {
-            Command::PluginOptions {
+            Command::Service(ServiceCommand::PluginOptions {
                 id,
                 values,
                 secrets,
-            } if id == "light" => Some((values, secrets)),
+            }) if id == "light" => Some((values, secrets)),
             _ => None,
         })
         .expect("options after ready");
@@ -2706,7 +2704,7 @@ fn plugin_toasts_are_quoted_and_limited() {
     plugin_entry(&mut app, "light", &[]);
     app.plugins.entry("light".into()).or_default().info.name = Some("Busy \u{201d}light".into());
     let stopped = |app: &mut App, id: &str, message: &str| {
-        app.handle(
+        app.handle_service(
             plugin_event(
                 app,
                 id,

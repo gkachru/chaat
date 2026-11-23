@@ -1,7 +1,7 @@
 //! Application state and the one place it changes.
 //!
 //! Views in `ui/` read [`App`] and push [`Action`]s; [`App::apply`] runs
-//! them after the frame. Backend [`Event`]s are applied at the start of each
+//! them after the frame. Backend [`crate::backend::Event`]s are applied at the start of each
 //! frame. Nothing here waits on the network.
 //!
 //! Several Microsoft accounts can be signed in at once. Each [`Account`] has
@@ -16,7 +16,10 @@ use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use crate::backend::{AuthStatus, Backend, Command, Event, Merge, Waker};
+use crate::backend::{
+    AccountCommand, AccountEvent, AuthStatus, Backend, Merge, ServiceCommand, ServiceEvent,
+    ServiceRole, Waker,
+};
 use crate::html;
 use crate::model::{
     Access, Action, Availability, Channel, Chat, ChatKind, ConversationId, Delivery, Meeting,
@@ -28,10 +31,12 @@ use crate::settings::Settings;
 use crate::sync::{Resource, Trigger};
 use crate::theme::Palette;
 
+mod actions;
 mod agents;
 mod calls;
 mod chat_actions;
 pub mod chat_filter;
+mod events;
 mod history;
 mod notify;
 use notify::NoticeItem;
@@ -639,7 +644,7 @@ pub struct App {
     /// The setup file export form.
     pub export: setup_export::ExportForm,
     /// Process-wide work survives account switching and sign-out.
-    pub service: Backend,
+    pub service: Backend<ServiceRole>,
     pub update: crate::updates::Status,
     pub update_receipt: Option<fastframe_update::Receipt>,
     pub dirs: AppDirs,
@@ -769,7 +774,7 @@ pub struct App {
 impl Drop for App {
     fn drop(&mut self) {
         if let crate::updates::Status::Ready(prepared) = std::mem::take(&mut self.update) {
-            self.service.send(Command::DiscardUpdate(prepared));
+            self.service.send(ServiceCommand::DiscardUpdate(prepared));
         }
     }
 }
@@ -814,7 +819,7 @@ impl App {
 
     /// Connects the service backend (plugins, updates, secrets) and starts
     /// the plugins that are turned on.
-    pub fn attach_service(&mut self, service: Backend) {
+    pub fn attach_service(&mut self, service: Backend<ServiceRole>) {
         self.service = service;
         self.sync_plugins();
     }
@@ -947,19 +952,19 @@ impl App {
         for account in &self.accounts {
             account
                 .backend
-                .send(Command::Relay(self.settings.relay_url.clone()));
+                .send(AccountCommand::Relay(self.settings.relay_url.clone()));
         }
     }
 
     fn start_account(&mut self, index: usize) {
         let configured = self.settings.has_app_registration();
-        let start = Command::Start {
+        let start = AccountCommand::Start {
             client_id: self.settings.client_id.clone(),
             tenant: self.settings.tenant.clone(),
             account: self.accounts[index].id.clone(),
         };
-        let relay = Command::Relay(self.settings.relay_url.clone());
-        let session = Command::PresenceSession(self.settings.presence_session);
+        let relay = AccountCommand::Relay(self.settings.relay_url.clone());
+        let session = AccountCommand::PresenceSession(self.settings.presence_session);
         let route = self.push_route_for(index);
         let account = &mut self.accounts[index];
         account.auth = if configured {
@@ -1092,14 +1097,14 @@ impl App {
     }
 
     /// Sends a command to the active account's backend; the demo has none.
-    pub(crate) fn send_account(&self, command: Command) {
+    pub(crate) fn send_account(&self, command: AccountCommand) {
         if !self.demo {
             self.backend.send(command);
         }
     }
 
     fn fetch(&self, resource: Resource, trigger: Trigger) {
-        self.send_account(Command::Fetch { resource, trigger });
+        self.send_account(AccountCommand::Fetch { resource, trigger });
     }
 
     /// Asks for whatever the current view shows.
@@ -1147,7 +1152,7 @@ impl App {
     /// every account, tray clicks, reminders.
     pub fn background(&mut self, ctx: &egui::Context) {
         for event in self.service.poll() {
-            self.handle(event, ctx);
+            self.handle_service(event, ctx);
         }
         if !self.demo
             && !self.service.is_detached()
@@ -1250,7 +1255,7 @@ impl App {
             // Presence needs a refresh only every few minutes.
             if self.last_input.is_none_or(|last| now - last > 60.0) && !self.demo {
                 for account in &self.accounts {
-                    account.backend.send(Command::PresenceActive);
+                    account.backend.send(AccountCommand::PresenceActive);
                 }
             }
             self.last_input = Some(now);
@@ -1297,351 +1302,97 @@ impl App {
     // -- Events ------------------------------------------------------------------
 
     /// Applies one event to the account at `self.active`.
-    pub fn handle(&mut self, event: Event, ctx: &egui::Context) {
+    pub fn handle(&mut self, event: AccountEvent, ctx: &egui::Context) {
         if self.notify_ctx.is_none() {
             self.notify_ctx = Some(ctx.clone());
         }
         match event {
-            Event::AgentAnswer {
+            AccountEvent::AgentAnswer {
                 plugin,
                 request,
                 data,
             } => self.on_agent_answer(plugin, request, data),
-            Event::Update(event) => match event {
-                crate::updates::Event::Status(status) => {
-                    if matches!(status, crate::updates::Status::Ready(_)) {
-                        self.toast(
-                            ToastKind::Info,
-                            "An update is downloaded and ready to install when you restart.",
-                        );
-                    }
-                    self.update = status;
-                }
-                crate::updates::Event::Quit => self.quit_requested = true,
-            },
-            Event::Pasted {
+            AccountEvent::Pasted {
                 conversation,
                 range,
                 text,
                 image,
-            } => {
-                let draft = self.drafts.entry(conversation.clone()).or_default();
-                draft.pending_pastes = draft.pending_pastes.saturating_sub(1);
-                match image {
-                    Ok(Some(image)) if draft.editing.is_none() => {
-                        if draft.images.iter().map(|i| i.png.len()).sum::<usize>() + image.png.len()
-                            > crate::clipboard::MAX_BYTES
-                        {
-                            self.toast(ToastKind::Error, "The pasted images are too large for one message. Send them separately.");
-                        } else {
-                            crate::images::include(ctx, image.uri(), image.png.clone());
-                            draft.images.push(image);
-                        }
-                    }
-                    Ok(Some(_)) => self.toast(
-                        ToastKind::Info,
-                        "Finish editing before pasting an image into a new message.",
-                    ),
-                    result => {
-                        if !text.is_empty() {
-                            let chars: Vec<char> = draft.text.chars().collect();
-                            let start = range.0.min(chars.len());
-                            let end = range.1.min(chars.len()).max(start);
-                            draft.text = format!(
-                                "{}{}{}",
-                                chars[..start].iter().collect::<String>(),
-                                text,
-                                chars[end..].iter().collect::<String>()
-                            );
-                            draft.paste_cursor = Some(start + text.chars().count());
-                        } else if let Err(error) = result {
-                            self.toast(ToastKind::Error, error);
-                        }
-                    }
-                }
-            }
-            Event::Auth(status) => self.on_auth(status),
-            Event::Profile(profile) => self.profile = Some(*profile),
-            event @ (Event::SetupOpened { .. }
-            | Event::SetupApplied { .. }
-            | Event::SetupExported(_)) => self.on_setup_event(event),
-            Event::Granted(granted) => {
-                let had = self.has_scope(crate::auth::MAILBOX_SETTINGS_SCOPE);
-                self.granted = granted;
-                if !self.hidden
-                    && !had
-                    && self.settings_page == Some(SettingsPage::OutOfOffice)
-                    && self.has_scope(crate::auth::MAILBOX_SETTINGS_SCOPE)
-                {
-                    self.fetch(Resource::OutOfOffice, Trigger::Opened);
-                }
-            }
-            Event::ChannelAccess(access) => self.channel_access = access,
-            Event::Chats { chats, cached } => self.on_chats(chats, cached),
-            Event::Teams { teams, .. } => {
-                if self.expanded_teams.is_empty()
-                    && let Some(first) = teams.first()
-                {
-                    let first = first.id.clone();
-                    self.expanded_teams.insert(first);
-                }
-                self.teams = teams;
-            }
-            Event::Channels { team, channels } => match team {
-                Some(team) => {
-                    self.channels.insert(team, channels);
-                }
-                None => {
-                    self.channels.clear();
-                    for channel in channels {
-                        self.channels
-                            .entry(channel.team_id.clone())
-                            .or_default()
-                            .push(channel);
-                    }
-                }
-            },
-            Event::Messages {
+            } => self.handle_pasted(conversation, range, text, image, ctx),
+            AccountEvent::Auth(status) => self.on_auth(status),
+            AccountEvent::Profile(profile) => self.profile = Some(*profile),
+            AccountEvent::Granted(granted) => self.handle_granted(granted),
+            AccountEvent::ChannelAccess(access) => self.channel_access = access,
+            AccountEvent::Chats { chats, cached } => self.on_chats(chats, cached),
+            AccountEvent::Teams { teams, .. } => self.handle_teams(teams),
+            AccountEvent::Channels { team, channels } => self.handle_channels(team, channels),
+            AccountEvent::Messages {
                 conversation,
                 messages,
                 merge,
                 more,
                 cached,
             } => self.on_messages(conversation, messages, merge, more, cached),
-            Event::Replies {
+            AccountEvent::Replies {
                 conversation,
                 root,
                 replies,
-            } => {
-                let entry = self.conversations.entry(conversation).or_default();
-                entry.layout.invalidate();
-                entry.heights.remove(&root);
-                if let Some(root) = entry.messages.iter_mut().find(|m| m.id == root) {
-                    root.replies = replies;
-                }
-            }
-            Event::Sent {
+            } => self.handle_replies(conversation, root, replies),
+            AccountEvent::Sent {
                 conversation,
                 local_id,
                 message,
             } => self.on_sent(conversation, local_id, *message),
-            Event::SendFailed {
+            AccountEvent::SendFailed {
                 conversation,
                 local_id,
                 reason,
-            } => {
-                if let Some(entry) = self.conversations.get_mut(&conversation)
-                    && let Some(message) = entry.find_mut(&local_id)
-                {
-                    message.delivery = Delivery::Failed;
-                }
-                self.toast(ToastKind::Error, format!("Not sent: {reason}"));
-            }
-            Event::Deleted {
+            } => self.handle_send_failed(conversation, local_id, reason),
+            AccountEvent::Deleted {
                 conversation,
                 message,
-            } => {
-                if let Some(entry) = self.conversations.get_mut(&conversation)
-                    && let Some(message) = entry.find_mut(&message)
-                {
-                    message.deleted = true;
-                    message.body = html::RichText::default();
-                }
-            }
-            Event::Presence(list) => {
-                let before = (!self.settings.notify.follow_available.is_empty())
-                    .then(|| self.presence.clone());
-                self.presence.extend(list);
-                if let Some(before) = before {
-                    self.observe_presence_for_follow(&before);
-                }
-            }
-            Event::MyPresence(presence) => {
-                let me = self.me().to_owned();
-                if !me.is_empty() {
-                    self.presence.insert(me, presence.clone());
-                }
-                self.observe_call(presence.activity.as_deref());
-                self.my_presence = Some(presence);
-                self.sync_plugin_presence();
-            }
-            Event::OutOfOffice(value) => {
-                // The fields follow Graph unless the person changed them.
-                let follow = self.out_of_office.as_ref().is_none_or(|old| {
-                    !self.form_out_of_office.changed_from(old)
-                        || !self.form_out_of_office.changed_from(&value)
-                });
-                if follow && !self.hidden {
-                    self.form_out_of_office =
-                        crate::model::OutOfOfficeForm::new(&value, crate::time::now());
-                }
-                self.out_of_office = Some(value);
-                self.out_of_office_saving = false;
-                self.no_mailbox = false;
-            }
-            Event::OutOfOfficeUnavailable => {
+            } => self.handle_deleted(conversation, message),
+            AccountEvent::Presence(list) => self.handle_presence(list),
+            AccountEvent::MyPresence(presence) => self.handle_my_presence(presence),
+            AccountEvent::OutOfOffice(value) => self.handle_out_of_office(value),
+            AccountEvent::OutOfOfficeUnavailable => {
                 self.no_mailbox = true;
                 self.out_of_office_saving = false;
             }
-            Event::OutOfOfficeNotSaved => self.out_of_office_saving = false,
-            Event::MeetingChat { join_url, chat } => self.on_meeting_chat(join_url, chat),
-            Event::MeetingById { id, join_url } => self.on_meeting_by_id(id, join_url, ctx),
-            Event::ChatHidden { chat, hidden, ok } => self.on_chat_hidden(chat, hidden, ok),
-            Event::MarkUnreadFailed(chat) => self.on_mark_unread_failed(chat),
-            Event::Pins { chat, pins } => self.on_pins(chat, pins),
-            Event::UserName { user, name } => {
+            AccountEvent::OutOfOfficeNotSaved => self.out_of_office_saving = false,
+            AccountEvent::MeetingChat { join_url, chat } => self.on_meeting_chat(join_url, chat),
+            AccountEvent::MeetingById { id, join_url } => self.on_meeting_by_id(id, join_url, ctx),
+            AccountEvent::ChatHidden { chat, hidden, ok } => self.on_chat_hidden(chat, hidden, ok),
+            AccountEvent::MarkUnreadFailed(chat) => self.on_mark_unread_failed(chat),
+            AccountEvent::Pins { chat, pins } => self.on_pins(chat, pins),
+            AccountEvent::UserName { user, name } => {
                 if let Some(name) = name {
                     self.names.insert(user, name);
                 }
             }
-            Event::Photo { user, bytes } => {
-                let state = match bytes
-                    .and_then(|bytes| register_image(ctx, &format!("photo-{user}"), bytes))
-                {
-                    Some(uri) => Image::Ready(uri),
-                    None => Image::Missing,
-                };
-                self.photos.insert(user, state);
-            }
-            Event::Media { url, bytes } => {
-                let key = format!("media-{:016x}", fnv(&url));
-                let state = match bytes.and_then(|bytes| register_image(ctx, &key, bytes)) {
-                    Some(uri) => Image::Ready(uri),
-                    None => Image::Missing,
-                };
-                self.media.insert(url, state);
-            }
-            Event::Meetings { meetings, .. } => self.meetings = meetings,
-            Event::SearchResults {
+            AccountEvent::Photo { user, bytes } => self.handle_photo(user, bytes, ctx),
+            AccountEvent::Media { url, bytes } => self.handle_media(url, bytes, ctx),
+            AccountEvent::Meetings { meetings, .. } => self.meetings = meetings,
+            AccountEvent::SearchResults {
                 query,
                 hits,
                 remote,
-            } => {
-                if !self.hidden && query == self.switcher.searched {
-                    if remote {
-                        self.switcher.remote_hits = hits;
-                    } else {
-                        self.switcher.hits = hits;
-                    }
-                }
-            }
-            Event::People { query, people } => {
-                if !self.hidden && query == self.people.query {
-                    self.people.results = people;
-                }
-            }
-            Event::Members { chat, members } => {
-                let pending: Vec<(String, String)> = self
-                    .adding
-                    .iter()
-                    .filter(|(c, _)| *c == chat)
-                    .cloned()
-                    .collect();
-                if let Some(found) = self.chats.iter_mut().find(|c| c.id == chat) {
-                    // People still being added stay listed until Graph says.
-                    let waiting: Vec<Member> = found
-                        .members
-                        .iter()
-                        .filter(|m| {
-                            pending.iter().any(|(_, user)| *user == m.user_id)
-                                && !members.iter().any(|n| n.user_id == m.user_id)
-                        })
-                        .cloned()
-                        .collect();
-                    found.members = members;
-                    found.members.extend(waiting);
-                }
-            }
-            Event::MembersAdded {
+            } => self.handle_search_results(query, hits, remote),
+            AccountEvent::People { query, people } => self.handle_people(query, people),
+            AccountEvent::Members { chat, members } => self.handle_members(chat, members),
+            AccountEvent::MembersAdded {
                 chat,
                 added,
                 failed,
-            } => {
-                for user in added.iter().chain(failed.iter()) {
-                    self.adding.remove(&(chat.clone(), user.clone()));
-                }
-                if let Some(found) = self.chats.iter_mut().find(|c| c.id == chat) {
-                    found.members.retain(|m| !failed.contains(&m.user_id));
-                }
-                if !failed.is_empty() {
-                    let noun = if failed.len() == 1 {
-                        "person"
-                    } else {
-                        "people"
-                    };
-                    self.toast(
-                        ToastKind::Error,
-                        format!("Could not add {} {noun}", failed.len()),
-                    );
-                }
-            }
-            Event::LeftChat(chat) => {
-                self.leaving.remove(&chat);
-                self.chats.retain(|c| c.id != chat);
-                self.left.insert(chat);
-            }
-            Event::LeaveFailed { chat, admin } => {
-                if let Some(found) = self.leaving.remove(&chat) {
-                    self.chats.retain(|c| c.id != chat);
-                    self.chats.insert(0, found);
-                    self.chats.sort_by_key(Chat::list_order);
-                }
-                let text = if admin {
-                    "Could not leave the chat. An administrator must approve leaving chats; try Open in Teams."
-                } else {
-                    "Could not leave the chat"
-                };
-                self.toast(ToastKind::Error, text);
-            }
-            Event::ChatCreated(chat) => {
-                let chat = *chat;
-                let id = chat.id.clone();
-                self.chats.retain(|c| c.id != id);
-                self.chats.insert(0, chat);
-                if !self.hidden {
-                    self.open_conversation(ConversationId::Chat(id));
-                }
-            }
-            Event::Loading(resource, on) => {
-                if on {
-                    self.loading.insert(resource);
-                } else {
-                    self.loading.remove(&resource);
-                }
-            }
-            Event::Reachable(reachable) => self.unreachable = !reachable,
-            Event::Error(text) => self.toast(ToastKind::Error, text),
-            Event::Push(status) => self.push = status,
-            Event::RelayKeySaved { set, ok } => {
-                if !ok {
-                    self.toast(
-                        ToastKind::Error,
-                        "The access key could not be saved in the system's credential store.",
-                    );
-                    return;
-                }
-                self.settings.relay_key_set = set;
-                self.mark_settings_dirty();
-                if set {
-                    self.form_relay_key.clear();
-                }
-                // Reconnect every account with the new key.
-                self.send_relay();
-            }
-            Event::Plugin {
-                id,
-                generation,
-                event,
-            } => self.on_plugin_event(id, generation, event),
-            Event::PluginSecretSaved {
-                plugin,
-                instance,
-                option,
-                set,
-                ok,
-            } => self.on_plugin_secret_saved(&plugin, &instance, option, set, ok),
-            Event::Restored { drafts, outbox } => self.on_restored(drafts, outbox),
-            Event::ConversationHits {
+            } => self.handle_members_added(chat, added, failed),
+            AccountEvent::LeftChat(chat) => self.handle_left_chat(chat),
+            AccountEvent::LeaveFailed { chat, admin } => self.handle_leave_failed(chat, admin),
+            AccountEvent::ChatCreated(chat) => self.handle_chat_created(chat),
+            AccountEvent::Loading(resource, on) => self.handle_loading(resource, on),
+            AccountEvent::Reachable(reachable) => self.unreachable = !reachable,
+            AccountEvent::Error(text) => self.toast(ToastKind::Error, text),
+            AccountEvent::Push(status) => self.push = status,
+            AccountEvent::Restored { drafts, outbox } => self.on_restored(drafts, outbox),
+            AccountEvent::ConversationHits {
                 conversation,
                 query,
                 hits,
@@ -1649,588 +1400,35 @@ impl App {
         }
     }
 
-    fn on_auth(&mut self, status: AuthStatus) {
-        log::info!("account: {}", status.log_label());
-        let became_signed_in = matches!(status, AuthStatus::SignedIn { .. })
-            && !matches!(self.auth, AuthStatus::SignedIn { .. });
-        match &status {
-            AuthStatus::SignedIn { account, .. } => {
-                // The same account signed in twice (through "Add account"):
-                // keep the slot that had it and show that one.
-                if let Some(existing) =
-                    self.accounts.iter().enumerate().position(|(index, a)| {
-                        index != self.active && a.id.as_deref() == Some(account)
-                    })
-                {
-                    self.retire.push(self.active);
-                    self.adding_from = None;
-                    self.toast(ToastKind::Info, "That account is already signed in.");
-                    self.actions
-                        .push(Action::SwitchAccount(if existing > self.active {
-                            existing - 1
-                        } else {
-                            existing
-                        }));
-                    return;
-                }
-                self.id = Some(account.clone());
-                self.reauth = None;
-                self.remember_browser_profile();
-                if !self.hidden {
-                    self.adding_from = None;
-                }
-            }
-            AuthStatus::SignedOut => {
-                self.clear_data();
-                // The account has no presence now; plugins hear it.
-                self.sync_plugin_presence();
-            }
-            AuthStatus::Failed(reason) => {
-                // Signing in again did not finish: back to the cached
-                // workspace, with the reason.
-                if let Some(AuthStatus::Expired { username, .. }) = self.reauth.take() {
-                    self.auth = AuthStatus::Expired {
-                        username,
-                        reason: reason.clone(),
-                    };
-                    return;
-                }
-            }
-            AuthStatus::Expired { username, reason } => {
-                // Keep the name the account had when Graph does not repeat it.
-                if username.is_empty()
-                    && let AuthStatus::SignedIn {
-                        username: known, ..
-                    } = &self.auth
-                {
-                    let known = known.clone();
-                    let reason = reason.clone();
-                    self.auth = AuthStatus::Expired {
-                        username: known,
-                        reason,
-                    };
-                    return;
-                }
-            }
-            _ => {}
+    /// Applies an event of the service backend. These never swap accounts:
+    /// they belong to the app, not to one signed-in person.
+    pub fn handle_service(&mut self, event: ServiceEvent, ctx: &egui::Context) {
+        if self.notify_ctx.is_none() {
+            self.notify_ctx = Some(ctx.clone());
         }
-        self.auth = status;
-        if !self.hidden {
-            self.continue_to_sign_in();
-        }
-        if became_signed_in {
-            self.on_signed_in_setup();
-            self.remember_accounts_for_slot();
-            for resource in [
-                Resource::Profile,
-                Resource::Chats,
-                Resource::Teams,
-                Resource::Calendar,
-                Resource::MyPresence,
-            ] {
-                self.fetch(resource, Trigger::Start);
-            }
-            if let Some(open) = &self.open {
-                self.fetch(Resource::Messages(open.clone()), Trigger::Start);
-            }
-        }
-    }
-
-    /// `remember_accounts` from inside event handling, where the active
-    /// index may point at a hidden account.
-    fn remember_accounts_for_slot(&mut self) {
-        let ids: Vec<String> = self.accounts.iter().filter_map(|a| a.id.clone()).collect();
-        if self.settings.accounts != ids {
-            self.settings.accounts = ids;
-            self.mark_settings_dirty();
-        }
-        if !self.hidden && self.settings.account != self.id {
-            self.settings.account = self.id.clone();
-            self.mark_settings_dirty();
-        }
-        self.sync_plugin_accounts();
-    }
-
-    fn on_chats(&mut self, mut chats: Vec<Chat>, cached: bool) {
-        // A chat being left stays out of the list until Graph answers.
-        if !cached {
-            // Once Graph stops listing a left chat, forget it.
-            let listed: HashSet<&str> = chats.iter().map(|c| c.id.as_str()).collect();
-            self.left.retain(|id| listed.contains(id.as_str()));
-        }
-        chats.retain(|c| !self.leaving.contains_key(&c.id) && !self.left.contains(&c.id));
-        self.keep_local_chat_flags(&mut chats);
-        chats.sort_by_key(Chat::list_order);
-        let me = self.me().to_owned();
-        let mut notices = Vec::new();
-        if !cached && !self.chats.is_empty() {
-            for chat in &chats {
-                let Some(preview) = &chat.preview else {
-                    continue;
-                };
-                let previous = self.chat(&chat.id).and_then(|c| c.preview.as_ref());
-                let new = previous
-                    .is_none_or(|p| p.message_id != preview.message_id && preview.at > p.at);
-                if new && preview.author_id.as_deref() != Some(me.as_str()) && !preview.deleted {
-                    notices.push((
-                        chat.id.clone(),
-                        NoticeItem {
-                            message: preview.message_id.clone(),
-                            author: preview.author.clone(),
-                            text: preview.text.clone(),
-                            mentions_me: false,
-                            urgent: false,
-                            created: preview.at,
-                        },
-                    ));
-                }
-            }
-        }
-        // Read state Chaat set locally survives a cached list.
-        for chat in &mut chats {
-            if let Some(known) = self.chats.iter().find(|c| c.id == chat.id)
-                && known.last_read > chat.last_read
-            {
-                chat.last_read = known.last_read;
-            }
-        }
-        self.chats = chats;
-        // One toast per chat; the kind and title come from the new list.
-        for (chat, item) in notices {
-            self.notify_batch(&ConversationId::Chat(chat), vec![item]);
-        }
-    }
-
-    fn on_messages(
-        &mut self,
-        conversation: ConversationId,
-        messages: Vec<Message>,
-        merge: Merge,
-        more: Option<bool>,
-        cached: bool,
-    ) {
-        self.after_messages_pins(&conversation, &messages);
-        if !self.recent_conversations.contains(&conversation) {
-            self.recent_conversations.push_front(conversation.clone());
-        }
-        let me = self.me().to_owned();
-        let open = !self.hidden && self.open.as_ref() == Some(&conversation);
-        let focused = self.window_focused;
-        let entry = self.conversations.entry(conversation.clone()).or_default();
-        // The disk-only reopen can finish after Graph. Do not replace a
-        // newer network answer with a snapshot read before that answer.
-        if cached && merge == Merge::Latest && entry.fresh {
-            return;
-        }
-        let newest_before = entry
-            .messages
-            .iter()
-            .filter(|m| m.delivery == Delivery::Sent)
-            .map(|m| m.created)
-            .max();
-        let fresh_from_others: Vec<&Message> = messages
-            .iter()
-            .filter(|m| !m.system && !m.deleted && !m.is_from(&me))
-            .filter(|m| newest_before.is_some_and(|newest| m.created > newest))
-            .collect();
-        let incoming_new: Vec<NoticeItem> = fresh_from_others
-            .iter()
-            .map(|m| NoticeItem {
-                message: m.id.clone(),
-                author: Some(m.author.clone()),
-                text: m.body.summary(140),
-                mentions_me: m.mentions(&me),
-                urgent: m.urgent,
-                created: m.created,
-            })
-            .collect();
-        let agent_new: Vec<Message> = if cached || merge == Merge::Older {
-            Vec::new()
-        } else {
-            fresh_from_others.into_iter().cloned().collect()
-        };
-        if merge == Merge::Older && !messages.is_empty() {
-            entry.restore_history_anchor = true;
-        }
-        entry.merge(messages, merge);
-        if let Some(more) = more {
-            // A cached page says history may exist. It must not undo an
-            // end-of-history answer Graph already gave in this process.
-            if !cached || !entry.fresh {
-                entry.more = more;
-            }
-        }
-        if !cached {
-            entry.fresh = true;
-        }
-        self.agent_events_new_messages(&conversation, &agent_new);
-        if !cached && !incoming_new.is_empty() {
-            self.notify_batch(&conversation, incoming_new);
-        }
-        // A message that arrives while Chaat is behind another window stays
-        // unread, so Teams keeps it unread on other devices too. Coming back
-        // to the window marks it read.
-        if open
-            && focused
-            && !cached
-            && let ConversationId::Chat(chat) = &conversation
-        {
-            self.mark_read(&chat.clone());
-        }
-        // Keep the chat list's preview in step with what the chat shows.
-        // People added or removed don't count, as in Teams: they would move
-        // the chat up the list.
-        if let ConversationId::Chat(chat_id) = &conversation
-            && let Some(last) = self
-                .conversations
-                .get(&conversation)
-                .and_then(|c| c.messages.iter().rev().find(|m| m.membership.is_none()))
-                .cloned()
-            && let Some(chat) = self.chats.iter_mut().find(|c| &c.id == chat_id)
-            && chat
-                .preview
-                .as_ref()
-                .is_none_or(|p| p.at < last.created || p.membership.is_some())
-            && last.delivery == Delivery::Sent
-        {
-            chat.preview = Some(crate::model::Preview {
-                message_id: last.id.clone(),
-                author_id: last.author_id.clone(),
-                author: Some(last.author.clone()),
-                text: preview_text(&last),
-                at: last.created,
-                deleted: last.deleted,
-                system: last.system,
-                membership: last.membership.clone(),
-            });
-            self.chats.sort_by_key(Chat::list_order);
-        }
-        self.trim_conversations();
-    }
-
-    /// Drafts and unsent messages from before the last exit. Young unsent
-    /// messages go out again (after the backend checks they were not
-    /// delivered); older ones show as failed with Retry and Delete.
-    fn on_restored(
-        &mut self,
-        drafts: Vec<(ConversationId, crate::outbox::StoredDraft)>,
-        outbox: Vec<crate::outbox::OutboxEntry>,
-    ) {
-        for (conversation, saved) in drafts {
-            let empty = self
-                .drafts
-                .get(&conversation)
-                .is_none_or(|d| d.text.trim().is_empty());
-            if empty {
-                self.drafts.insert(
-                    conversation.clone(),
-                    Draft {
-                        text: saved.text.clone(),
-                        reply_to: saved.reply_to.clone(),
-                        mentions: saved.mentions.clone(),
-                        ..Default::default()
-                    },
-                );
-            }
-            self.saved_drafts.insert(conversation, saved);
-        }
-        let now = crate::time::now();
-        for entry in outbox {
-            if self.pending_sends.contains_key(&entry.local_id) {
-                // The same start reported twice: it is already shown and in
-                // flight, and sending it again could post it twice.
-                continue;
-            }
-            if let Some(number) = entry
-                .local_id
-                .strip_prefix("local-")
-                .and_then(|n| n.parse::<u64>().ok())
-            {
-                self.next_local = self.next_local.max(number);
-            }
-            let conversation = entry.conversation.clone();
-            let channel_reply = conversation.is_channel() && entry.reply_to.is_some();
-            // The duplicate check reads the conversation's top-level
-            // messages, which cannot show a thread reply: those are not sent
-            // again on their own.
-            let resend = entry.resendable(now) && !channel_reply;
-            let known = self.conversations.contains_key(&conversation);
-            let mut preview_html = entry.html.clone();
-            for image in &entry.images {
-                preview_html.push_str(&format!(
-                    "<img src=\"{}\" width=\"{}\" height=\"{}\">",
-                    image.uri(),
-                    image.width,
-                    image.height
-                ));
-                self.media.insert(image.uri(), Image::Ready(image.uri()));
-            }
-            let mut message = Message {
-                id: entry.local_id.clone(),
-                conversation: Some(conversation.clone()),
-                reply_to: if channel_reply {
-                    entry.reply_to.clone()
-                } else {
-                    None
-                },
-                author_id: Some(self.me().to_owned()),
-                author: self
-                    .profile
-                    .as_ref()
-                    .map(|p| p.display_name.clone())
-                    .unwrap_or_else(|| "You".into()),
-                created: entry.created,
-                modified: entry.created,
-                body: html::parse(&preview_html),
-                delivery: if resend {
-                    Delivery::Sending
-                } else {
-                    Delivery::Failed
-                },
-                ..Default::default()
-            };
-            for path in &entry.files {
-                message.attachments.push(crate::model::Attachment {
-                    id: path.display().to_string(),
-                    kind: crate::model::AttachmentKind::File,
-                    name: path.file_name().map(|n| n.to_string_lossy().into_owned()),
-                    content_type: Some("reference".into()),
-                    url: None,
-                    content: None,
-                });
-            }
-            let view = self.conversations.entry(conversation.clone()).or_default();
-            view.layout.invalidate();
-            let root = channel_reply
-                .then(|| {
-                    view.messages
-                        .iter()
-                        .position(|m| Some(&m.id) == entry.reply_to.as_ref())
-                })
-                .flatten();
-            if let Some(root) = root {
-                if view.find(&entry.local_id).is_none() {
-                    view.messages[root].replies.push(message);
-                }
-            } else if view.find(&entry.local_id).is_none() {
-                // A reply whose thread root is not loaded yet shows as its own
-                // row, so a failed one can still be retried or deleted.
-                message.reply_to = None;
-                view.messages.push(message);
-                view.messages.sort_by(|a, b| {
-                    (a.delivery != Delivery::Sent, a.created, &a.id).cmp(&(
-                        b.delivery != Delivery::Sent,
-                        b.created,
-                        &b.id,
-                    ))
-                });
-            }
-            if !known && !self.demo {
-                // Opening later would skip the cache for a view that exists.
-                self.backend.send(Command::CachedMessages(conversation));
-            }
-            self.pending_sends.insert(
-                entry.local_id.clone(),
-                PendingSend {
-                    html: entry.html.clone(),
-                    reply_to: entry.reply_to.clone(),
-                    mentions: entry.mentions.clone(),
-                    files: entry.files.clone(),
-                    images: entry.images.clone(),
-                    recipients: entry.recipients.clone(),
-                },
-            );
-            if resend && !self.demo {
-                self.backend.send(Command::Resend(entry));
-            }
-        }
-    }
-
-    /// Hits for the find bar. Hits for an older query, or for a conversation
-    /// that is no longer open, are dropped.
-    fn on_conversation_hits(
-        &mut self,
-        conversation: ConversationId,
-        query: String,
-        mut hits: Vec<SearchHit>,
-    ) {
-        if self.hidden || self.open.as_ref() != Some(&conversation) {
-            return;
-        }
-        let Some(find) = &mut self.find else { return };
-        if query != find.searched {
-            return;
-        }
-        hits.retain(|hit| hit.conversation == conversation);
-        hits.sort_by_key(|hit| std::cmp::Reverse(hit.at));
-        let shown = find.hits.get(find.current).map(|h| h.message_id.clone());
-        let first = find.hits.is_empty();
-        find.current = shown
-            .and_then(|id| hits.iter().position(|h| h.message_id == id))
-            .unwrap_or(0);
-        find.hits = hits;
-        if first && let Some(hit) = find.hits.first() {
-            self.jump_to = Some(hit.message_id.clone());
+        match event {
+            ServiceEvent::Update(event) => self.handle_update(event),
+            event @ (ServiceEvent::SetupOpened { .. }
+            | ServiceEvent::SetupApplied { .. }
+            | ServiceEvent::SetupExported(_)) => self.on_setup_event(event),
+            ServiceEvent::RelayKeySaved { set, ok } => self.handle_relay_key_saved(set, ok),
+            ServiceEvent::Plugin {
+                id,
+                generation,
+                event,
+            } => self.on_plugin_event(id, generation, event),
+            ServiceEvent::PluginSecretSaved {
+                plugin,
+                instance,
+                option,
+                set,
+                ok,
+            } => self.on_plugin_secret_saved(&plugin, &instance, option, set, ok),
         }
     }
 
     /// How long the find query stays unchanged before Microsoft Search runs.
     const FIND_REMOTE_DELAY: Duration = Duration::from_millis(500);
-
-    /// Opens or updates find. A query of two characters or more searches the
-    /// local cache at once; Microsoft Search (three or more) waits until the
-    /// query has been still for `FIND_REMOTE_DELAY` or Enter is pressed.
-    fn find_query(&mut self, query: String) {
-        let Some(conversation) = self.open.clone() else {
-            return;
-        };
-        let find = self.find.get_or_insert_with(Default::default);
-        find.query = query.clone();
-        if find.searched == query {
-            return;
-        }
-        find.searched = query.clone();
-        find.hits.clear();
-        find.current = 0;
-        self.find_remote = None;
-        if query.trim().chars().count() >= 2 && !self.demo {
-            if query.trim().chars().count() >= 3 {
-                self.find_remote = Some((
-                    conversation.clone(),
-                    query.clone(),
-                    Instant::now() + Self::FIND_REMOTE_DELAY,
-                ));
-            }
-            self.backend.send(Command::SearchIn {
-                conversation,
-                query,
-                remote: false,
-            });
-        }
-    }
-
-    /// Sends the waiting Microsoft Search once it is due (`now` at or past
-    /// its deadline). Drops it when find closed, the
-    /// conversation changed or the query moved on. While it waits, asks for
-    /// one repaint at its deadline, so the frame that sends it runs.
-    fn send_due_find_search(&mut self, now: Instant, ctx: &egui::Context) {
-        let Some((conversation, query, due)) = self.find_remote.take() else {
-            return;
-        };
-        let current = self.open.as_ref() == Some(&conversation)
-            && self
-                .find
-                .as_ref()
-                .is_some_and(|find| find.searched == query);
-        if !current {
-            return;
-        }
-        if now < due {
-            ctx.request_repaint_after(due - now);
-            self.find_remote = Some((conversation, query, due));
-            return;
-        }
-        self.backend.send(Command::SearchIn {
-            conversation,
-            query,
-            remote: true,
-        });
-    }
-
-    /// Enter in the find bar: Microsoft Search for the query now, if it is
-    /// still waiting.
-    fn find_remote_now(&mut self, ctx: &egui::Context) {
-        if let Some((_, _, due)) = &mut self.find_remote {
-            *due = Instant::now();
-        }
-        self.send_due_find_search(Instant::now(), ctx);
-    }
-
-    /// Saves the drafts that changed since the last call: at most one
-    /// `SaveDraft` per conversation, none when nothing changed.
-    pub fn sync_drafts(&mut self) {
-        if self.demo {
-            return;
-        }
-        let mut changed: Vec<ConversationId> = Vec::new();
-        for (conversation, draft) in &self.drafts {
-            // An edit in progress leaves the saved draft alone.
-            if draft.editing.is_none() && !draft.is_saved(self.saved_drafts.get(conversation)) {
-                changed.push(conversation.clone());
-            }
-        }
-        for conversation in self.saved_drafts.keys() {
-            if !self.drafts.contains_key(conversation) && !changed.contains(conversation) {
-                changed.push(conversation.clone());
-            }
-        }
-        for conversation in changed {
-            let persisted = self.drafts.get(&conversation).and_then(Draft::persisted);
-            match &persisted {
-                Some(draft) => self
-                    .saved_drafts
-                    .insert(conversation.clone(), draft.clone()),
-                None => self.saved_drafts.remove(&conversation),
-            };
-            self.backend.send(Command::SaveDraft {
-                conversation,
-                draft: persisted,
-            });
-        }
-    }
-
-    /// The chat list's line for a chat with an unsent draft: its text on one
-    /// line.
-    pub fn draft_preview(&self, chat: &str) -> Option<String> {
-        let draft = self.drafts.get(&ConversationId::Chat(chat.to_owned()))?;
-        let text = draft.text.split_whitespace().collect::<Vec<_>>().join(" ");
-        (!text.is_empty()).then(|| text.chars().take(140).collect())
-    }
-
-    fn on_sent(&mut self, conversation: ConversationId, local_id: String, message: Message) {
-        self.pending_sends.remove(&local_id);
-        self.agent_event_user_sent(&conversation, &message.id);
-        let entry = self.conversations.entry(conversation.clone()).or_default();
-        if let Some(reply_to) = &message.reply_to
-            && conversation.is_channel()
-        {
-            entry.messages.retain(|m| m.id != local_id);
-            if let Some(root) = entry.messages.iter_mut().find(|m| &m.id == reply_to) {
-                root.replies.retain(|r| r.id != local_id);
-                entry.heights.remove(reply_to);
-                entry.layout.invalidate();
-                root.replies.push(message);
-            }
-            return;
-        }
-        entry.messages.retain(|m| m.id != local_id);
-        entry.merge(vec![message], Merge::Changes);
-        self.fetch(Resource::Messages(conversation), Trigger::AfterAction);
-    }
-
-    fn mark_read(&mut self, chat: &str) {
-        if self.hidden || self.keeps_unread(chat) {
-            return;
-        }
-        let account = self.id.clone().unwrap_or_default();
-        self.urgent.stop(
-            &account,
-            &ConversationId::Chat(chat.to_owned()),
-            crate::time::now(),
-        );
-        let me = self.me().to_owned();
-        let demo = self.demo;
-        let Some(entry) = self.chats.iter_mut().find(|c| c.id == chat) else {
-            return;
-        };
-        if !entry.is_unread(&me) {
-            return;
-        }
-        entry.last_read = Some(crate::time::now());
-        if !demo {
-            self.backend.send(Command::MarkRead(chat.to_owned()));
-        }
-    }
 
     // -- Actions -------------------------------------------------------------------
 
@@ -2259,75 +1457,15 @@ impl App {
                 self.settings.automatic_updates = enabled;
                 self.mark_settings_dirty();
             }
-            Action::DownloadUpdate => {
-                if let crate::updates::Status::Available {
-                    release,
-                    reason: None,
-                } = &self.update
-                {
-                    self.service.send(Command::DownloadUpdate(release.clone()));
-                    self.update = crate::updates::Status::Downloading {
-                        received: 0,
-                        total: 0,
-                    };
-                }
-            }
-            Action::InstallUpdate => {
-                let unsent = self.accounts.iter().any(|account| {
-                    !account.pending_sends.is_empty()
-                        || account.drafts.iter().any(|(conversation, draft)| {
-                            // Text the backend has saved survives a restart.
-                            !draft.files.is_empty()
-                                || !draft.images.is_empty()
-                                || draft.pending_pastes > 0
-                                || (draft.editing.is_some() && !draft.text.is_empty())
-                                || !draft.is_saved(account.saved_drafts.get(conversation))
-                        })
-                });
-                if unsent {
-                    self.toast(ToastKind::Info, "Send or clear your drafts and finish pending sends before restarting to update.");
-                } else if matches!(self.update, crate::updates::Status::Ready(_)) {
-                    let crate::updates::Status::Ready(prepared) =
-                        std::mem::replace(&mut self.update, crate::updates::Status::Installing)
-                    else {
-                        unreachable!()
-                    };
-                    self.service.send(Command::InstallUpdate(prepared));
-                }
-            }
-            Action::Navigate(section) => {
-                self.settings_page = None;
-                if self.section != section {
-                    self.section = section;
-                    self.open = match (section, &self.open) {
-                        (Section::Chats, Some(open @ ConversationId::Chat(_))) => {
-                            Some(open.clone())
-                        }
-                        (Section::Teams, Some(open @ ConversationId::Channel { .. })) => {
-                            Some(open.clone())
-                        }
-                        _ => None,
-                    };
-                }
-                self.fetch_view(Trigger::Opened);
-            }
+            Action::DownloadUpdate => self.apply_download_update(),
+            Action::InstallUpdate => self.apply_install_update(),
+            Action::Navigate(section) => self.apply_navigate(section),
             Action::OpenConversation(conversation) => self.open_conversation(conversation),
             Action::OpenMessage {
                 conversation,
                 message,
-            } => {
-                self.open_conversation(conversation);
-                self.jump_to = Some(message);
-                self.overlay = None;
-            }
-            Action::ToggleTeam(team) => {
-                if !self.expanded_teams.remove(&team) {
-                    self.expanded_teams.insert(team.clone());
-                    if self.channels.get(&team).is_none_or(Vec::is_empty) {
-                        self.fetch(Resource::Channels(team), Trigger::Opened);
-                    }
-                }
-            }
+            } => self.apply_open_message(conversation, message),
+            Action::ToggleTeam(team) => self.apply_toggle_team(team),
             Action::CloseConversation => self.open = None,
             Action::Step(delta) => self.step(delta),
             Action::Send {
@@ -2342,338 +1480,64 @@ impl App {
                 conversation,
                 message,
                 text,
-            } => {
-                let html = html::compose(&text);
-                if let Some(entry) = self.conversations.get_mut(&conversation)
-                    && let Some(found) = entry.find_mut(&message)
-                {
-                    found.body = html::parse(&html);
-                    found.edited = true;
-                }
-                self.send_account(Command::Edit {
-                    conversation: conversation.clone(),
-                    message,
-                    html,
-                });
-                self.drafts.remove(&conversation);
-            }
+            } => self.apply_edit(conversation, message, text),
             Action::Delete {
                 conversation,
                 message,
-            } => {
-                if let Some(entry) = self.conversations.get_mut(&conversation)
-                    && let Some(found) = entry.find_mut(&message)
-                {
-                    found.deleted = true;
-                    found.body = html::RichText::default();
-                }
-                self.send_account(Command::Delete {
-                    conversation,
-                    message,
-                });
-            }
+            } => self.apply_delete(conversation, message),
             Action::React {
                 conversation,
                 message,
                 emoji,
                 on,
-            } => {
-                let me = self.me().to_owned();
-                if let Some(entry) = self.conversations.get_mut(&conversation)
-                    && let Some(found) = entry.find_mut(&message)
-                {
-                    toggle_reaction(&mut found.reactions, &emoji, &me, on);
-                }
-                self.send_account(Command::React {
-                    conversation,
-                    message,
-                    emoji,
-                    on,
-                });
-            }
-            Action::StartReply(message) => {
-                if let Some(open) = self.open.clone() {
-                    let draft = self.drafts.entry(open).or_default();
-                    draft.reply_to = Some(message);
-                    draft.editing = None;
-                    self.focus_composer = true;
-                }
-            }
-            Action::StartEdit(message) => {
-                if let Some(open) = self.open.clone() {
-                    let text = self
-                        .conversations
-                        .get(&open)
-                        .and_then(|c| c.find(&message))
-                        .map(|m| m.body.to_plain())
-                        .unwrap_or_default();
-                    self.drafts.insert(
-                        open,
-                        Draft {
-                            text,
-                            editing: Some(message),
-                            ..Default::default()
-                        },
-                    );
-                    self.focus_composer = true;
-                }
-            }
-            Action::CancelCompose => {
-                if let Some(open) = self.open.clone()
-                    && let Some(draft) = self.drafts.get_mut(&open)
-                {
-                    if draft.editing.take().is_some() {
-                        draft.text.clear();
-                    }
-                    draft.reply_to = None;
-                }
-            }
-            Action::LoadOlder(conversation) => {
-                if !self.demo {
-                    let resource = Resource::Messages(conversation.clone());
-                    if self.loading.contains(&resource) {
-                        return;
-                    }
-                    let before = self.conversations.get(&conversation).and_then(|c| {
-                        c.messages
-                            .iter()
-                            .filter(|m| m.delivery == Delivery::Sent)
-                            .map(|m| m.created)
-                            .min()
-                    });
-                    self.loading.insert(resource);
-                    self.backend.send(Command::LoadOlder {
-                        conversation,
-                        before,
-                    });
-                } else if let Some(entry) = self.conversations.get_mut(&conversation) {
-                    entry.more = false;
-                }
-            }
+            } => self.apply_react(conversation, message, emoji, on),
+            Action::StartReply(message) => self.apply_start_reply(message),
+            Action::StartEdit(message) => self.apply_start_edit(message),
+            Action::CancelCompose => self.apply_cancel_compose(),
+            Action::LoadOlder(conversation) => self.apply_load_older(conversation),
             Action::LoadReplies {
                 conversation,
                 message,
-            } => {
-                self.send_account(Command::LoadReplies {
-                    conversation,
-                    root: message,
-                });
-            }
-            Action::ToggleThread(root) => {
-                if let Some(open) = self.open.clone() {
-                    let entry = self.conversations.entry(open).or_default();
-                    entry.heights.remove(&root);
-                    if !entry.expanded.remove(&root) {
-                        entry.expanded.insert(root);
-                    }
-                    entry.layout.invalidate();
-                }
-            }
+            } => self.apply_load_replies(conversation, message),
+            Action::ToggleThread(root) => self.apply_toggle_thread(root),
             Action::RetrySend {
                 conversation,
                 local_id,
-            } => {
-                if let Some(pending) = self.pending_sends.get(&local_id).cloned() {
-                    if let Some(entry) = self.conversations.get_mut(&conversation)
-                        && let Some(found) = entry.find_mut(&local_id)
-                    {
-                        found.delivery = Delivery::Sending;
-                    }
-                    self.backend.send(Command::Send {
-                        conversation,
-                        local_id,
-                        html: pending.html,
-                        reply_to: pending.reply_to,
-                        mentions: pending.mentions,
-                        files: pending.files,
-                        images: pending.images,
-                        recipients: pending.recipients,
-                    });
-                }
-            }
+            } => self.apply_retry_send(conversation, local_id),
             Action::Find(Some(query)) => self.find_query(query),
             Action::Find(None) => {
                 self.find = None;
                 self.find_remote = None;
             }
-            Action::FindNext(step) => {
-                self.find_remote_now(ctx);
-                if let Some(find) = &mut self.find
-                    && !find.hits.is_empty()
-                {
-                    let count = find.hits.len() as i64;
-                    find.current =
-                        (find.current as i64 + i64::from(step)).rem_euclid(count) as usize;
-                    self.jump_to = Some(find.hits[find.current].message_id.clone());
-                }
-            }
+            Action::FindNext(step) => self.apply_find_next(step, ctx),
             Action::JumpToLatest => self.scroll_to_end = 4,
             Action::DeleteFailed {
                 conversation,
                 local_id,
-            } => {
-                if let Some(entry) = self.conversations.get_mut(&conversation) {
-                    entry.layout.invalidate();
-                    entry.heights.remove(&local_id);
-                    entry.messages.retain(|m| m.id != local_id);
-                    for message in &mut entry.messages {
-                        message.replies.retain(|r| r.id != local_id);
-                    }
-                }
-                self.pending_sends.remove(&local_id);
-                self.send_account(Command::DropOutbox(local_id));
-            }
-            Action::AttachFiles => {
-                if self.open.is_none() || !self.ensure_scope(crate::auth::FILES_SCOPE) {
-                    return;
-                }
-                // The platform's own picker; it is modal, like a dialog.
-                if let Some(paths) = rfd::FileDialog::new()
-                    .set_title("Attach files")
-                    .pick_files()
-                {
-                    self.actions.push(Action::AddFiles(paths));
-                }
-            }
+            } => self.apply_delete_failed(conversation, local_id),
+            Action::AttachFiles => self.apply_attach_files(),
             Action::Paste {
                 conversation,
                 range,
                 text,
-            } => {
-                self.drafts
-                    .entry(conversation.clone())
-                    .or_default()
-                    .pending_pastes += 1;
-                self.backend.send(Command::Paste {
-                    conversation,
-                    range,
-                    text,
-                });
-            }
+            } => self.apply_paste(conversation, range, text),
             Action::AddFiles(paths) => self.add_files(paths),
-            Action::RemoveFile(index) => {
-                if let Some(open) = self.open.clone()
-                    && let Some(draft) = self.drafts.get_mut(&open)
-                    && index < draft.files.len()
-                {
-                    draft.files.remove(index);
-                }
-            }
-            Action::LoadMedia(url) => {
-                let missing = match self.media.get(&url) {
-                    Some(Image::Ready(uri)) => !crate::images::contains(ctx, uri),
-                    None => true,
-                    _ => false,
-                };
-                if missing {
-                    let demo = self.demo;
-                    self.media.insert(url.clone(), Image::Loading);
-                    if demo {
-                        self.media.insert(url, Image::Missing);
-                    } else {
-                        self.backend.send(Command::Media(url));
-                    }
-                }
-            }
-            Action::SignIn => {
-                if matches!(self.auth, AuthStatus::Expired { .. }) {
-                    self.reauth = Some(self.auth.clone());
-                }
-                self.backend.send(Command::SignIn {
-                    extra_scopes: Vec::new(),
-                    device_code: false,
-                });
-            }
-            Action::SignInWithCode => self.backend.send(Command::SignIn {
+            Action::RemoveFile(index) => self.apply_remove_file(index),
+            Action::LoadMedia(url) => self.apply_load_media(url, ctx),
+            Action::SignIn => self.apply_sign_in(),
+            Action::SignInWithCode => self.backend.send(AccountCommand::SignIn {
                 extra_scopes: Vec::new(),
                 device_code: true,
             }),
-            Action::CancelSignIn => {
-                self.backend.send(Command::CancelSignIn);
-                self.auth = self.reauth.take().unwrap_or(AuthStatus::SignedOut);
-            }
+            Action::CancelSignIn => self.apply_cancel_sign_in(),
             Action::SignOut => self.sign_out(),
-            Action::RequestScope(scope) => {
-                self.overlay = None;
-                if !self.demo {
-                    self.backend.send(Command::SignIn {
-                        extra_scopes: vec![scope.to_owned()],
-                        device_code: false,
-                    });
-                    self.toast(
-                        ToastKind::Info,
-                        "Approve the permission in your browser, then try again.",
-                    );
-                }
-            }
+            Action::RequestScope(scope) => self.apply_request_scope(scope),
             Action::SaveAppRegistration { client_id, tenant } => {
-                let client_id = client_id.trim().to_owned();
-                if !crate::settings::is_guid(&client_id) {
-                    self.toast(
-                        ToastKind::Error,
-                        "The application (client) ID is a GUID like 00000000-0000-0000-0000-000000000000.",
-                    );
-                    return;
-                }
-                self.onboarding_forced = false;
-                self.settings.client_id = client_id;
-                self.settings.tenant = match tenant.trim() {
-                    "" => "organizations".into(),
-                    other => other.to_owned(),
-                };
-                self.mark_settings_dirty();
-                self.save_settings();
-                if !self.demo {
-                    for index in 0..self.accounts.len() {
-                        self.start_account(index);
-                    }
-                }
+                self.apply_save_app_registration(client_id, tenant)
             }
-            Action::SetAvailability(availability) => {
-                if !self.ensure_scope(crate::auth::PRESENCE_WRITE_SCOPE) {
-                    return;
-                }
-                // Shown at once; Graph's answer replaces it.
-                let shown = Presence {
-                    availability: availability.unwrap_or(Availability::Available),
-                    activity: None,
-                    status_message: self
-                        .my_presence
-                        .as_ref()
-                        .and_then(|p| p.status_message.clone()),
-                };
-                let me = self.me().to_owned();
-                self.presence.insert(me, shown.clone());
-                self.my_presence = Some(shown);
-                self.sync_plugin_presence();
-                self.send_account(Command::SetAvailability(availability));
-            }
-            Action::OpenStatusMessage => {
-                if !self.ensure_scope(crate::auth::PRESENCE_WRITE_SCOPE) {
-                    return;
-                }
-                self.form_status = self
-                    .my_presence
-                    .as_ref()
-                    .and_then(|p| p.status_message.clone())
-                    .unwrap_or_default();
-                self.overlay = Some(Overlay::StatusMessage);
-            }
-            Action::SetStatusMessage(text) => {
-                self.overlay = None;
-                let text = text.trim().to_owned();
-                let mut presence = self.my_presence.clone().unwrap_or_default();
-                presence.status_message = (!text.is_empty()).then(|| text.clone());
-                let me = self.me().to_owned();
-                self.presence.insert(me, presence.clone());
-                self.my_presence = Some(presence);
-                self.sync_plugin_presence();
-                if !self.demo {
-                    let expires = self.status_expiry_millis();
-                    self.backend
-                        .send(Command::SetStatusMessage { text, expires });
-                }
-            }
+            Action::SetAvailability(availability) => self.apply_set_availability(availability),
+            Action::OpenStatusMessage => self.apply_open_status_message(),
+            Action::SetStatusMessage(text) => self.apply_set_status_message(text),
             Action::SetStatusExpiry(expiry) => self.status_expiry = expiry,
             Action::HideChat(chat) => self.hide_chat(chat),
             Action::UnhideChat(chat) => self.unhide_chat(chat),
@@ -2686,160 +1550,25 @@ impl App {
                 conversation,
                 message,
             } => self.copy_message_link(conversation, message, ctx),
-            Action::OpenOutOfOffice => {
-                self.apply(Action::ShowSettingsPage(SettingsPage::OutOfOffice), ctx);
-                self.ensure_scope(crate::auth::MAILBOX_SETTINGS_SCOPE);
-            }
-            Action::SetOutOfOffice(value) => {
-                if self.demo {
-                    self.form_out_of_office =
-                        crate::model::OutOfOfficeForm::new(&value, crate::time::now());
-                    self.out_of_office = Some(value);
-                } else if !self.out_of_office_saving {
-                    self.out_of_office_saving = true;
-                    self.backend.send(Command::SetOutOfOffice(value));
-                }
-            }
-            Action::SetPresenceSession(on) => {
-                self.settings.presence_session = on;
-                self.mark_settings_dirty();
-                for account in &self.accounts {
-                    account.backend.send(Command::PresenceSession(on));
-                }
-            }
-            Action::SwitchAccount(index) => {
-                if index < self.accounts.len() && index != self.active {
-                    self.active = index;
-                    self.overlay = None;
-                    self.switcher = Switcher::default();
-                    self.scroll_to_end = 4;
-                    self.remember_accounts();
-                    self.fetch_view(Trigger::Focused);
-                    self.fetch(Resource::MyPresence, Trigger::Focused);
-                    if self.settings_page == Some(SettingsPage::OutOfOffice) {
-                        self.show_out_of_office();
-                    }
-                }
-            }
-            Action::AddAccount => {
-                if self.demo {
-                    self.toast(
-                        ToastKind::Info,
-                        "The demo has its accounts already: switch between them in this menu.",
-                    );
-                    return;
-                }
-                self.overlay = None;
-                let from = self.active;
-                let index = self.add_slot(None);
-                self.adding_from = Some(from);
-                self.active = index;
-                if self.settings.has_app_registration() {
-                    // Straight to Microsoft's account picker.
-                    self.backend.send(Command::SignIn {
-                        extra_scopes: Vec::new(),
-                        device_code: false,
-                    });
-                }
-            }
-            Action::CancelAddAccount => {
-                if let Some(from) = self.adding_from.take() {
-                    self.backend.send(Command::CancelSignIn);
-                    let adding = self.active;
-                    self.retire_slot(adding);
-                    self.active = if from > adding { from - 1 } else { from }
-                        .min(self.accounts.len().saturating_sub(1));
-                }
-            }
-            Action::OpenNewChat => {
-                if !self.ensure_scope(crate::auth::CHAT_CREATE_SCOPE) {
-                    return;
-                }
-                self.new_chat = NewChat::default();
-                self.people = People::default();
-                self.overlay = Some(Overlay::NewChat);
-            }
-            Action::OpenAddPeople(chat) => {
-                self.add_people = AddPeople::default();
-                self.people = People::default();
-                self.overlay = Some(Overlay::AddPeople(chat));
-            }
+            Action::OpenOutOfOffice => self.apply_open_out_of_office(ctx),
+            Action::SetOutOfOffice(value) => self.apply_set_out_of_office(value),
+            Action::SetPresenceSession(on) => self.apply_set_presence_session(on),
+            Action::SwitchAccount(index) => self.apply_switch_account(index),
+            Action::AddAccount => self.apply_add_account(),
+            Action::CancelAddAccount => self.apply_cancel_add_account(),
+            Action::OpenNewChat => self.apply_open_new_chat(),
+            Action::OpenAddPeople(chat) => self.apply_open_add_people(chat),
             Action::AddMembers {
                 chat,
                 members,
                 history,
-            } => {
-                let existing: Vec<String> = self
-                    .chats
-                    .iter()
-                    .find(|c| c.id == chat)
-                    .map(|c| c.members.iter().map(|m| m.user_id.clone()).collect())
-                    .unwrap_or_default();
-                let mut fresh: Vec<Member> = Vec::new();
-                for member in members {
-                    if !existing.contains(&member.user_id)
-                        && !fresh.iter().any(|m| m.user_id == member.user_id)
-                    {
-                        fresh.push(member);
-                    }
-                }
-                self.overlay = None;
-                if fresh.is_empty() {
-                    return;
-                }
-                let count = fresh.len();
-                let users: Vec<String> = fresh.iter().map(|m| m.user_id.clone()).collect();
-                if let Some(found) = self.chats.iter_mut().find(|c| c.id == chat) {
-                    found.members.extend(fresh);
-                }
-                if self.demo {
-                    let noun = if count == 1 { "person" } else { "people" };
-                    self.toast(ToastKind::Info, format!("Added {count} {noun}"));
-                } else {
-                    for user in &users {
-                        self.adding.insert((chat.clone(), user.clone()));
-                    }
-                    self.backend.send(Command::AddMembers {
-                        chat,
-                        users,
-                        history,
-                    });
-                }
-            }
+            } => self.apply_add_members(chat, members, history),
             Action::OpenLeaveChat(chat) => self.overlay = Some(Overlay::LeaveChat(chat)),
-            Action::LeaveChat(chat) => {
-                if !self.demo && !self.has_scope(crate::auth::CHAT_MEMBER_SCOPE) {
-                    // Never delete without the permission: explain it instead.
-                    self.overlay = Some(Overlay::LeaveChat(chat));
-                    return;
-                }
-                self.overlay = None;
-                if self.open == Some(ConversationId::Chat(chat.clone())) {
-                    self.open = None;
-                }
-                if self.demo {
-                    self.chats.retain(|c| c.id != chat);
-                } else if let Some(found) = self.chats.iter().position(|c| c.id == chat) {
-                    let found = self.chats.remove(found);
-                    self.leaving.insert(chat.clone(), found);
-                    self.backend.send(Command::LeaveChat(chat));
-                }
-            }
+            Action::LeaveChat(chat) => self.apply_leave_chat(chat),
             Action::PeopleOpened(chat) => {
                 self.fetch(Resource::Members(chat), Trigger::Opened);
             }
-            Action::SearchPeople(query) => {
-                self.people.query = query.clone();
-                self.people.results.clear();
-                if query.trim().chars().count() < 2 {
-                    return;
-                }
-                if self.demo {
-                    self.people.results = crate::demo::search_people(self, &query);
-                } else {
-                    self.backend.send(Command::SearchPeople(query));
-                }
-            }
+            Action::SearchPeople(query) => self.apply_search_people(query),
             Action::CreateChat { members, topic } => self.create_chat(members, topic),
             Action::JoinMeeting(url) => self.join_meeting(url, ctx),
             Action::StartCall { users, video } => self.start_call(users, video, ctx),
@@ -2854,13 +1583,7 @@ impl App {
             Action::JoinOnPhone => self.join_on_phone(),
             Action::PrepareTeamsWeb => self.prepare_teams_web(),
             Action::SetCallSettings(calls) => self.set_call_settings(calls),
-            Action::OpenUrl(url) => {
-                if url.starts_with("https://") || url.starts_with("http://") {
-                    self.open_link(&url);
-                } else if url.starts_with("mailto:") {
-                    open_external(&url);
-                }
-            }
+            Action::OpenUrl(url) => self.apply_open_url(url),
             Action::CopyText(text) => {
                 ctx.copy_text(text);
                 self.toast(ToastKind::Info, "Copied");
@@ -2874,42 +1597,8 @@ impl App {
                 // Give loaders a pass without the original so they can release it.
                 ctx.request_repaint();
             }
-            Action::PreviewImage(uri) => {
-                if !crate::images::contains(ctx, &uri) {
-                    let local = self
-                        .accounts
-                        .iter()
-                        .flat_map(|a| {
-                            a.drafts
-                                .values()
-                                .flat_map(|d| &d.images)
-                                .chain(a.pending_sends.values().flat_map(|s| &s.images))
-                        })
-                        .find(|image| image.uri() == uri)
-                        .cloned();
-                    if let Some(image) = local {
-                        crate::images::include(ctx, uri.clone(), image.png);
-                    } else if let Some(url) = self.media.iter().find_map(|(url, state)| {
-                        matches!(state, Image::Ready(stored) if *stored == uri).then(|| url.clone())
-                    }) {
-                        self.apply(Action::LoadMedia(url), ctx);
-                    }
-                }
-                self.overlay = Some(Overlay::ImagePreview(uri));
-            }
-            Action::SearchMessages(query) => {
-                self.switcher.searched = query.clone();
-                self.switcher.hits.clear();
-                self.switcher.remote_hits.clear();
-                if query.trim().is_empty() {
-                    return;
-                }
-                if self.demo {
-                    self.switcher.hits = self.local_search(&query);
-                } else {
-                    self.backend.send(Command::Search(query));
-                }
-            }
+            Action::PreviewImage(uri) => self.apply_preview_image(uri, ctx),
+            Action::SearchMessages(query) => self.apply_search_messages(query),
             Action::OpenSettings => {
                 let page = self.last_settings_page;
                 self.apply(Action::ShowSettingsPage(page), ctx);
@@ -2917,14 +1606,7 @@ impl App {
             Action::OpenShortcuts => {
                 self.apply(Action::ShowSettingsPage(SettingsPage::Shortcuts), ctx)
             }
-            Action::ShowSettingsPage(page) => {
-                self.settings_page = Some(page);
-                self.last_settings_page = page;
-                self.overlay = None;
-                if page == SettingsPage::OutOfOffice {
-                    self.show_out_of_office();
-                }
-            }
+            Action::ShowSettingsPage(page) => self.apply_show_settings_page(page),
             Action::CloseSettings => self.settings_page = None,
             Action::SetTheme(choice) => {
                 self.settings.theme = choice;
@@ -2939,98 +1621,15 @@ impl App {
                 self.settings.notifications = on;
                 self.mark_settings_dirty();
             }
-            Action::SetKeepRunning(on) => {
-                self.settings.keep_running = on;
-                self.mark_settings_dirty();
-                // The tray is the way back to a closed window: make it now.
-                if on && self.tray.is_none() && !self.demo {
-                    self.tray = crate::platform::tray(&self.waker);
-                    if let Some(tray) = &mut self.tray {
-                        tray.attach();
-                    }
-                }
-            }
-            Action::SetCustomTitlebar(on) => {
-                self.settings.custom_titlebar = on;
-                self.mark_settings_dirty();
-                fastframe_titlebar::set_enabled(on);
-                ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(
-                    !fastframe_titlebar::enabled(),
-                ));
-            }
-            Action::SetRelay(url) => {
-                let url = url.trim().to_owned();
-                if !url.is_empty() && crate::realtime::normalize_relay(&url).is_none() {
-                    self.toast(ToastKind::Error, "The relay must be an https:// address.");
-                    return;
-                }
-                self.settings.relay_url = (!url.is_empty()).then_some(url);
-                self.mark_settings_dirty();
-                self.send_relay();
-                // A manual relay wins; clearing it brings the plugin back.
-                self.sync_push_route(false);
-            }
-            Action::SetRelayKey(key) => {
-                let key = key.map(|key| key.trim().to_owned());
-                if key
-                    .as_deref()
-                    .is_some_and(|key| !crate::realtime::valid_relay_key(key))
-                {
-                    self.toast(
-                        ToastKind::Error,
-                        "The access key must be at least 16 characters, without spaces.",
-                    );
-                    return;
-                }
-                // The service backend owns the credential store write, so
-                // accounts never write the shared entry at the same time.
-                if !self.demo {
-                    self.service
-                        .send(Command::SaveRelayKey(key.map(crate::realtime::RelayKey)));
-                }
-            }
-            Action::LookUpNames(users) => {
-                // Asked once each; the demo has no directory to ask.
-                let demo = self.demo;
-                for user in users {
-                    if self.person_name(&user).is_none()
-                        && self.names_asked.insert(user.clone())
-                        && !demo
-                    {
-                        self.backend.send(Command::UserName(user));
-                    }
-                }
-            }
-            Action::RetryRelay => {
-                // Accounts already connected keep their connection.
-                if !self.demo {
-                    for account in &self.accounts {
-                        if matches!(account.push, crate::realtime::PushStatus::Failed(_)) {
-                            account
-                                .backend
-                                .send(Command::Relay(self.settings.relay_url.clone()));
-                        }
-                    }
-                }
-            }
-            Action::TogglePerfOverlay => {
-                self.settings.perf_overlay = !self.settings.perf_overlay;
-                self.mark_settings_dirty();
-            }
-            Action::OpenLogFolder => {
-                // A path, not a file:// link: OpenUrl opens web links only.
-                // The error is logged by kind; its text can hold the path.
-                if let Err(error) = open::that_detached(&self.dirs.state) {
-                    log::warn!("could not open the log folder: {:?}", error.kind());
-                    self.toast(ToastKind::Error, "Chaat could not open the log folder.");
-                }
-            }
-            Action::Refresh => {
-                self.fetch_view(Trigger::Refresh);
-                if self.demo {
-                    self.toast(ToastKind::Info, "The demo has no account to refresh from.");
-                }
-            }
+            Action::SetKeepRunning(on) => self.apply_set_keep_running(on),
+            Action::SetCustomTitlebar(on) => self.apply_set_custom_titlebar(on, ctx),
+            Action::SetRelay(url) => self.apply_set_relay(url),
+            Action::SetRelayKey(key) => self.apply_set_relay_key(key),
+            Action::LookUpNames(users) => self.apply_look_up_names(users),
+            Action::RetryRelay => self.apply_retry_relay(),
+            Action::TogglePerfOverlay => self.apply_toggle_perf_overlay(),
+            Action::OpenLogFolder => self.apply_open_log_folder(),
+            Action::Refresh => self.apply_refresh(),
             Action::DismissToast(id) => self.toasts.retain(|t| t.id != id),
             Action::DismissRing(id) => self.rings.retain(|r| r.id != id),
             Action::Plugin(action) => self.apply_plugin_action(action),
@@ -3042,465 +1641,6 @@ impl App {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
         }
-    }
-
-    fn open_conversation(&mut self, conversation: ConversationId) {
-        self.settings_page = None;
-        let me = self.me().to_owned();
-        self.unread_kept = match &conversation {
-            ConversationId::Chat(id) if self.chat(id).is_some_and(|c| c.is_unread(&me)) => {
-                Some(id.clone())
-            }
-            _ => None,
-        };
-        let needs_cache = !self.conversations.contains_key(&conversation);
-        // Before marking it read: where the "Last read" divider goes.
-        let unread_after = match &conversation {
-            ConversationId::Chat(id) => self
-                .chat(id)
-                .filter(|c| c.is_unread(&me))
-                .and_then(|c| c.last_read),
-            ConversationId::Channel { .. } => None,
-        };
-        if let Some(entry) = self.conversations.get_mut(&conversation) {
-            entry.set_unread_after(unread_after);
-        } else if unread_after.is_some() {
-            self.conversations
-                .entry(conversation.clone())
-                .or_default()
-                .set_unread_after(unread_after);
-        }
-        self.recent_conversations.retain(|id| id != &conversation);
-        self.recent_conversations.push_back(conversation.clone());
-        self.section = match conversation {
-            ConversationId::Chat(_) => Section::Chats,
-            ConversationId::Channel { .. } => Section::Teams,
-        };
-        if let ConversationId::Channel { team, .. } = &conversation {
-            self.expanded_teams.insert(team.clone());
-        }
-        if self.open.as_ref() != Some(&conversation) {
-            self.find = None;
-        }
-        self.open = Some(conversation.clone());
-        self.trim_conversations();
-        if needs_cache && !self.demo {
-            self.backend
-                .send(Command::CachedMessages(conversation.clone()));
-        }
-        self.focus_composer = true;
-        self.scroll_to_end = 4;
-        self.fetch(Resource::Messages(conversation.clone()), Trigger::Opened);
-        if let ConversationId::Chat(chat) = &conversation {
-            self.open_pins(chat);
-            // Opening the chat ends its urgent repeats.
-            if !self.hidden {
-                let account = self.id.clone().unwrap_or_default();
-                self.urgent
-                    .stop(&account, &conversation, crate::time::now());
-            }
-            // A chat marked unread tells Graph it is read again.
-            self.mark_chat_read(chat.clone());
-            let me = self.me().to_owned();
-            let members: Vec<String> = self
-                .chat(chat)
-                .map(|c| {
-                    c.members
-                        .iter()
-                        .filter(|m| m.user_id != me)
-                        .map(|m| m.user_id.clone())
-                        .take(20)
-                        .collect()
-                })
-                .unwrap_or_default();
-            if !members.is_empty() && !self.demo {
-                self.backend.send(Command::Presence(members));
-            }
-        }
-    }
-
-    /// SQLite keeps the full history. RAM keeps the current conversation,
-    /// pending/failed sends, and a small set of recently opened conversations.
-    fn trim_conversations(&mut self) {
-        if self.demo {
-            return;
-        }
-        loop {
-            let inactive_messages: usize = self
-                .conversations
-                .iter()
-                .filter(|(id, _)| self.open.as_ref() != Some(*id))
-                .map(|(_, view)| {
-                    view.messages
-                        .iter()
-                        .map(|message| 1 + message.replies.len())
-                        .sum::<usize>()
-                })
-                .sum();
-            if self.conversations.len() <= 12 && inactive_messages <= 2_000 {
-                break;
-            }
-            let oldest = self
-                .recent_conversations
-                .iter()
-                .find(|id| {
-                    self.open.as_ref() != Some(*id)
-                        && self.conversations.get(*id).is_some_and(|view| {
-                            view.messages.iter().all(|m| {
-                                m.delivery == Delivery::Sent
-                                    && m.replies.iter().all(|r| r.delivery == Delivery::Sent)
-                            })
-                        })
-                })
-                .cloned();
-            let Some(oldest) = oldest else { break };
-            self.conversations.remove(&oldest);
-            self.recent_conversations.retain(|id| id != &oldest);
-        }
-    }
-
-    fn step(&mut self, delta: i32) {
-        let me = self.me().to_owned();
-        let list: Vec<ConversationId> = match self.section {
-            Section::Chats => self
-                .chats
-                .iter()
-                .filter(|c| chat_filter::listed(self, c, &me))
-                .map(|c| ConversationId::Chat(c.id.clone()))
-                .collect(),
-            Section::Teams => self
-                .teams
-                .iter()
-                .flat_map(|t| self.channels.get(&t.id).into_iter().flatten())
-                .map(|c| ConversationId::Channel {
-                    team: c.team_id.clone(),
-                    channel: c.id.clone(),
-                })
-                .collect(),
-            _ => return,
-        };
-        if list.is_empty() {
-            return;
-        }
-        let current = self
-            .open
-            .as_ref()
-            .and_then(|open| list.iter().position(|c| c == open));
-        let next = match current {
-            Some(index) => (index as i32 + delta).clamp(0, list.len() as i32 - 1) as usize,
-            None => 0,
-        };
-        self.open_conversation(list[next].clone());
-    }
-
-    fn check_update(&mut self, download: bool) {
-        if self.update.busy() || matches!(self.update, crate::updates::Status::Ready(_)) {
-            return;
-        }
-        self.update = crate::updates::Status::Checking;
-        self.settings.last_update_check = crate::time::now();
-        self.mark_settings_dirty();
-        self.service.send(Command::CheckUpdate { download });
-    }
-
-    fn add_files(&mut self, paths: Vec<PathBuf>) {
-        let Some(open) = self.open.clone() else {
-            self.toast(ToastKind::Info, "Open a chat or channel to send files to.");
-            return;
-        };
-        if !self.ensure_scope(crate::auth::FILES_SCOPE) {
-            return;
-        }
-        let mut refused = Vec::new();
-        let draft = self.drafts.entry(open).or_default();
-        for path in paths {
-            let size = std::fs::metadata(&path).map(|m| (m.is_file(), m.len()));
-            match size {
-                Ok((true, size)) if size <= crate::graph::files::MAX_FILE => {
-                    if !draft.files.contains(&path) {
-                        draft.files.push(path);
-                    }
-                }
-                _ => refused.push(
-                    path.file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_default(),
-                ),
-            }
-        }
-        self.focus_composer = true;
-        if !refused.is_empty() {
-            self.toast(
-                ToastKind::Error,
-                format!(
-                    "Not attached (folders and files over 1 GB are not sent): {}",
-                    refused.join(", ")
-                ),
-            );
-        }
-    }
-
-    fn send(
-        &mut self,
-        conversation: ConversationId,
-        text: String,
-        reply_to: Option<String>,
-        mentions: Vec<MentionRef>,
-        files: Vec<PathBuf>,
-        images: Vec<crate::clipboard::InlineImage>,
-    ) {
-        let text = text.trim_end().to_owned();
-        if text.trim().is_empty() && files.is_empty() && images.is_empty() {
-            return;
-        }
-        self.outdate_agent_proposals(&conversation);
-        let (html, mentions) = html::compose_with_mentions(&text, &mentions);
-        let mut preview_html = html.clone();
-        for image in &images {
-            preview_html.push_str(&format!(
-                "<img src=\"{}\" width=\"{}\" height=\"{}\">",
-                image.uri(),
-                image.width,
-                image.height
-            ));
-            self.media.insert(image.uri(), Image::Ready(image.uri()));
-        }
-        self.next_local += 1;
-        let local_id = format!("local-{}", self.next_local);
-        let me = self.me().to_owned();
-        let author = self
-            .profile
-            .as_ref()
-            .map(|p| p.display_name.clone())
-            .unwrap_or_else(|| "You".into());
-        let channel_reply = conversation.is_channel() && reply_to.is_some();
-        let demo = self.demo;
-        let mut message = Message {
-            id: local_id.clone(),
-            conversation: Some(conversation.clone()),
-            reply_to: if channel_reply {
-                reply_to.clone()
-            } else {
-                None
-            },
-            author_id: Some(me.clone()),
-            author,
-            created: crate::time::now(),
-            modified: crate::time::now(),
-            body: html::parse(&preview_html),
-            delivery: if demo {
-                Delivery::Sent
-            } else {
-                Delivery::Sending
-            },
-            ..Default::default()
-        };
-        for path in &files {
-            message.attachments.push(crate::model::Attachment {
-                id: path.display().to_string(),
-                kind: crate::model::AttachmentKind::File,
-                name: path.file_name().map(|n| n.to_string_lossy().into_owned()),
-                content_type: Some("reference".into()),
-                url: None,
-                content: None,
-            });
-        }
-        if let (Some(quoted), false) = (&reply_to, conversation.is_channel())
-            && let Some(original) = self
-                .conversations
-                .get(&conversation)
-                .and_then(|c| c.find(quoted))
-        {
-            message.attachments.push(crate::model::Attachment {
-                id: quoted.clone(),
-                kind: crate::model::AttachmentKind::Quote {
-                    message_id: quoted.clone(),
-                    author: Some(original.author.clone()),
-                    preview: original.body.summary(200),
-                },
-                name: None,
-                content_type: Some("messageReference".into()),
-                url: None,
-                content: None,
-            });
-        }
-        if demo {
-            message.id = format!("demo-{}", self.next_local);
-        }
-        // Who can open the files: everyone in the chat. Channel uploads get
-        // an organisation link instead (Graph does not list channel members
-        // with Chaat's permissions).
-        let recipients: Vec<String> = match &conversation {
-            ConversationId::Chat(chat) => self
-                .chat(chat)
-                .map(|c| {
-                    c.members
-                        .iter()
-                        .filter(|m| m.user_id != me)
-                        .filter_map(|m| m.email.clone())
-                        .collect()
-                })
-                .unwrap_or_default(),
-            ConversationId::Channel { .. } => Vec::new(),
-        };
-        let entry = self.conversations.entry(conversation.clone()).or_default();
-        if channel_reply {
-            entry.layout.invalidate();
-            if let Some(root) = &reply_to {
-                entry.heights.remove(root);
-            }
-            if let Some(root) = entry
-                .messages
-                .iter_mut()
-                .find(|m| Some(&m.id) == reply_to.as_ref())
-            {
-                root.replies.push(message.clone());
-            }
-            entry.expanded.insert(reply_to.clone().unwrap_or_default());
-        } else {
-            entry.messages.push(message.clone());
-        }
-        if let ConversationId::Chat(chat_id) = &conversation
-            && let Some(chat) = self.chats.iter_mut().find(|c| &c.id == chat_id)
-        {
-            chat.preview = Some(crate::model::Preview {
-                message_id: message.id.clone(),
-                author_id: Some(me),
-                author: Some(message.author.clone()),
-                text: preview_text(&message),
-                at: message.created,
-                deleted: false,
-                ..Default::default()
-            });
-            self.chats.sort_by_key(Chat::list_order);
-        }
-        self.drafts.remove(&conversation);
-        if !channel_reply {
-            self.scroll_to_end = 3;
-        }
-        if !demo {
-            self.pending_sends.insert(
-                local_id.clone(),
-                PendingSend {
-                    html: html.clone(),
-                    reply_to: reply_to.clone(),
-                    mentions: mentions.clone(),
-                    files: files.clone(),
-                    images: images.clone(),
-                    recipients: recipients.clone(),
-                },
-            );
-            self.backend
-                .send(Command::SaveOutbox(crate::outbox::OutboxEntry {
-                    local_id: local_id.clone(),
-                    conversation: conversation.clone(),
-                    created: message.created,
-                    html: html.clone(),
-                    text: html::parse(&html).to_plain(),
-                    reply_to: reply_to.clone(),
-                    mentions: mentions.clone(),
-                    files: files.clone(),
-                    images: images.clone(),
-                    recipients: recipients.clone(),
-                }));
-            self.backend.send(Command::Send {
-                conversation,
-                local_id,
-                html,
-                reply_to,
-                mentions,
-                files,
-                images,
-                recipients,
-            });
-        }
-    }
-
-    fn create_chat(&mut self, members: Vec<Member>, topic: Option<String>) {
-        if members.is_empty() {
-            return;
-        }
-        self.overlay = None;
-        let me = self.me().to_owned();
-        // A one-on-one chat that exists already just opens.
-        if members.len() == 1
-            && let Some(existing) = self.chats.iter().find(|chat| {
-                chat.kind == ChatKind::OneOnOne
-                    && chat
-                        .peer(&me)
-                        .is_some_and(|p| p.user_id == members[0].user_id)
-            })
-        {
-            let id = existing.id.clone();
-            self.open_conversation(ConversationId::Chat(id));
-            return;
-        }
-        if self.demo {
-            let chat = crate::demo::new_chat(self, members, topic);
-            let id = chat.id.clone();
-            self.chats.insert(0, chat);
-            self.conversations
-                .entry(ConversationId::Chat(id.clone()))
-                .or_default();
-            self.open_conversation(ConversationId::Chat(id));
-            return;
-        }
-        self.backend.send(Command::CreateChat {
-            others: members.into_iter().map(|m| m.user_id).collect(),
-            topic,
-        });
-        self.toast(ToastKind::Info, "Starting the chat…");
-    }
-
-    fn sign_out(&mut self) {
-        self.overlay = None;
-        if self.demo {
-            return;
-        }
-        // Signing out of Chaat also ends plugin sign-ins for that account.
-        if let Some(id) = self.id.clone() {
-            self.forget_account_in_plugins(&id);
-        }
-        self.sign_out_browser();
-        self.backend.send(Command::SignOut);
-        let index = self.active;
-        self.retire_slot(index);
-        if self.accounts.is_empty() {
-            self.add_slot(None);
-            self.active = 0;
-        }
-        self.remember_accounts();
-        self.fetch_view(Trigger::Focused);
-    }
-
-    /// Search over loaded messages, for the demo.
-    fn local_search(&self, query: &str) -> Vec<SearchHit> {
-        let needle = query.to_lowercase();
-        let mut hits: Vec<SearchHit> = self
-            .conversations
-            .iter()
-            .flat_map(|(id, conversation)| {
-                conversation
-                    .messages
-                    .iter()
-                    .flat_map(|m| std::iter::once(m).chain(m.replies.iter()))
-                    .filter(|m| !m.system && m.body.to_plain().to_lowercase().contains(&needle))
-                    .map(move |m| SearchHit {
-                        conversation: id.clone(),
-                        message_id: m
-                            .reply_to
-                            .clone()
-                            .filter(|_| id.is_channel())
-                            .unwrap_or_else(|| m.id.clone()),
-                        author: m.author.clone(),
-                        snippet: m.body.summary(140),
-                        at: m.created,
-                    })
-            })
-            .collect();
-        hits.sort_by_key(|hit| std::cmp::Reverse(hit.at));
-        hits.truncate(50);
-        hits
     }
 
     pub fn shutdown(&mut self) {
@@ -3604,6 +1744,7 @@ fn fnv(text: &str) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::Command;
     use crate::html::RichText;
     #[test]
     fn inactive_conversations_are_bounded_but_unsent_messages_and_drafts_survive() {
@@ -3653,7 +1794,9 @@ mod tests {
         assert!(!app.conversations.contains_key(&old));
         while commands.try_recv().is_ok() {}
         app.apply(Action::OpenConversation(old.clone()), &ctx);
-        assert!(matches!(commands.try_recv().unwrap(), Command::CachedMessages(id) if id == old));
+        assert!(
+            matches!(commands.try_recv().unwrap(), Command::Account(AccountCommand::CachedMessages(id)) if id == old)
+        );
     }
 
     #[test]
@@ -3713,13 +1856,13 @@ mod tests {
         app.apply(Action::LookUpNames(vec!["u-gone".into()]), &ctx);
         assert!(matches!(
             commands.try_recv().unwrap(),
-            Command::UserName(id) if id == "u-gone"
+            Command::Account(AccountCommand::UserName(id)) if id == "u-gone"
         ));
         assert!(!app.needs_name("u-gone"), "asked already");
         app.apply(Action::LookUpNames(vec!["u-gone".into()]), &ctx);
         assert!(commands.try_recv().is_err(), "not asked twice");
         app.handle(
-            Event::UserName {
+            AccountEvent::UserName {
                 user: "u-gone".into(),
                 name: Some("Sourabh".into()),
             },
@@ -3742,7 +1885,7 @@ mod tests {
         app.apply(Action::RetryRelay, &ctx);
         assert!(matches!(
             commands.try_recv().unwrap(),
-            Command::Relay(Some(url)) if url == "https://relay.example.com"
+            Command::Account(AccountCommand::Relay(Some(url))) if url == "https://relay.example.com"
         ));
     }
 
@@ -3823,7 +1966,7 @@ mod tests {
     fn next_command(commands: &mut tokio::sync::mpsc::UnboundedReceiver<Command>) -> Command {
         loop {
             match commands.try_recv().unwrap() {
-                Command::SaveOutbox(_) => continue,
+                Command::Account(AccountCommand::SaveOutbox(_)) => continue,
                 other => return other,
             }
         }
@@ -3847,8 +1990,8 @@ mod tests {
         app: &App,
         id: &str,
         event: crate::plugin::event::PluginEvent,
-    ) -> Event {
-        Event::Plugin {
+    ) -> ServiceEvent {
+        ServiceEvent::Plugin {
             id: id.into(),
             generation: app.plugin_generations.get(id).copied().unwrap_or(0),
             event,
@@ -4120,9 +2263,9 @@ mod tests {
         let (mut app, _commands) = group_app();
         let ctx = egui::Context::default();
         app.apply(Action::LeaveChat("19:g".into()), &ctx);
-        app.handle(Event::LeftChat("19:g".into()), &ctx);
+        app.handle(AccountEvent::LeftChat("19:g".into()), &ctx);
         app.handle(
-            Event::Chats {
+            AccountEvent::Chats {
                 chats: vec![Chat {
                     id: "19:g".into(),
                     ..Default::default()
@@ -4133,7 +2276,7 @@ mod tests {
         );
         assert!(app.chats.is_empty(), "a lagging list must not re-add it");
         app.handle(
-            Event::Chats {
+            AccountEvent::Chats {
                 chats: vec![],
                 cached: false,
             },
@@ -4149,10 +2292,10 @@ mod tests {
         app.apply(Action::PeopleOpened("19:g".into()), &ctx);
         assert!(matches!(
             commands.try_recv(),
-            Ok(Command::Fetch {
+            Ok(Command::Account(AccountCommand::Fetch {
                 resource: Resource::Members(chat),
                 trigger: Trigger::Opened,
-            }) if chat == "19:g"
+            })) if chat == "19:g"
         ));
     }
 
@@ -4161,7 +2304,7 @@ mod tests {
         let (mut app, _commands) = group_app();
         let ctx = egui::Context::default();
         app.handle(
-            Event::Members {
+            AccountEvent::Members {
                 chat: "19:g".into(),
                 members: vec![person("u-me"), person("u-ada"), person("u-grace")],
             },
@@ -4178,7 +2321,7 @@ mod tests {
             &ctx,
         );
         app.handle(
-            Event::Members {
+            AccountEvent::Members {
                 chat: "19:g".into(),
                 members: vec![person("u-me")],
             },
@@ -4212,7 +2355,7 @@ mod tests {
         assert_eq!(app.chats[0].members.len(), 3);
         assert!(matches!(
             commands.try_recv(),
-            Ok(Command::AddMembers { chat, users, history: true })
+            Ok(Command::Account(AccountCommand::AddMembers { chat, users, history: true }))
                 if chat == "19:g" && users == ["u-alan"]
         ));
     }
@@ -4230,7 +2373,7 @@ mod tests {
             &ctx,
         );
         app.handle(
-            Event::MembersAdded {
+            AccountEvent::MembersAdded {
                 chat: "19:g".into(),
                 added: vec!["u-alan".into()],
                 failed: vec!["u-hedy".into()],
@@ -4266,11 +2409,11 @@ mod tests {
         assert_eq!(app.open, None);
         assert!(matches!(
             commands.try_recv(),
-            Ok(Command::LeaveChat(chat)) if chat == "19:g"
+            Ok(Command::Account(AccountCommand::LeaveChat(chat))) if chat == "19:g"
         ));
         // A chat list refresh does not bring it back meanwhile.
         app.handle(
-            Event::Chats {
+            AccountEvent::Chats {
                 chats: vec![Chat {
                     id: "19:g".into(),
                     ..Default::default()
@@ -4288,7 +2431,7 @@ mod tests {
         let ctx = egui::Context::default();
         app.apply(Action::LeaveChat("19:g".into()), &ctx);
         app.handle(
-            Event::LeaveFailed {
+            AccountEvent::LeaveFailed {
                 chat: "19:g".into(),
                 admin: false,
             },
@@ -4300,7 +2443,7 @@ mod tests {
 
         app.apply(Action::LeaveChat("19:g".into()), &ctx);
         app.handle(
-            Event::LeaveFailed {
+            AccountEvent::LeaveFailed {
                 chat: "19:g".into(),
                 admin: true,
             },
@@ -4319,7 +2462,7 @@ mod tests {
         let (mut app, _commands) = group_app();
         let ctx = egui::Context::default();
         app.apply(Action::LeaveChat("19:g".into()), &ctx);
-        app.handle(Event::LeftChat("19:g".into()), &ctx);
+        app.handle(AccountEvent::LeftChat("19:g".into()), &ctx);
         assert!(app.leaving.is_empty());
         assert!(app.chats.is_empty());
     }
@@ -4353,7 +2496,7 @@ mod tests {
         let chat = ConversationId::Chat("19:images".into());
         let image = crate::clipboard::encode_rgba(1, 1, &[0, 128, 255, 255]).unwrap();
         app.handle(
-            Event::Pasted {
+            AccountEvent::Pasted {
                 conversation: chat.clone(),
                 range: (0, 0),
                 text: String::new(),
@@ -4373,9 +2516,11 @@ mod tests {
             },
             &ctx,
         );
-        let Command::Send {
-            local_id, images, ..
-        } = next_command(&mut commands)
+        let Command::Account(AccountCommand::Send(crate::outbox::SendPayload {
+            local_id,
+            images,
+            ..
+        })) = next_command(&mut commands)
         else {
             panic!("send expected")
         };
@@ -4385,7 +2530,7 @@ mod tests {
             1
         );
         app.handle(
-            Event::SendFailed {
+            AccountEvent::SendFailed {
                 conversation: chat.clone(),
                 local_id: local_id.clone(),
                 reason: "offline".into(),
@@ -4399,7 +2544,9 @@ mod tests {
             },
             &ctx,
         );
-        let Command::Send { images, .. } = commands.try_recv().unwrap() else {
+        let Command::Account(AccountCommand::Send(crate::outbox::SendPayload { images, .. })) =
+            commands.try_recv().unwrap()
+        else {
             panic!("retry expected")
         };
         assert_eq!(images, [image]);
@@ -4419,7 +2566,7 @@ mod tests {
         );
         app.open = Some(ConversationId::Chat("19:elsewhere".into()));
         app.handle(
-            Event::Pasted {
+            AccountEvent::Pasted {
                 conversation: chat.clone(),
                 range: (1, 2),
                 text: "é".into(),
@@ -4443,14 +2590,14 @@ mod tests {
         app.apply(Action::LoadOlder(chat.clone()), &ctx);
         assert!(matches!(
             commands.try_recv().unwrap(),
-            Command::LoadOlder {
+            Command::Account(AccountCommand::LoadOlder {
                 before: Some(200),
                 ..
-            }
+            })
         ));
         assert!(commands.try_recv().is_err());
         app.handle(
-            Event::Messages {
+            AccountEvent::Messages {
                 conversation: chat.clone(),
                 messages: vec![message("earlier", 100)],
                 merge: Merge::Older,
@@ -4479,13 +2626,15 @@ mod tests {
         app.form_relay_key = " office-relay-key-0123 ".into();
         app.apply(Action::SetRelayKey(Some(app.form_relay_key.clone())), &ctx);
         match service_commands.try_recv().unwrap() {
-            Command::SaveRelayKey(Some(key)) => assert_eq!(key.0, "office-relay-key-0123"),
+            Command::Service(ServiceCommand::SaveRelayKey(Some(key))) => {
+                assert_eq!(key.0, "office-relay-key-0123")
+            }
             other => panic!("unexpected {other:?}"),
         }
         // Accounts reconnect only once the key is stored.
         assert!(account_commands.try_recv().is_err());
-        app.handle(
-            Event::RelayKeySaved {
+        app.handle_service(
+            ServiceEvent::RelayKeySaved {
                 set: true,
                 ok: true,
             },
@@ -4495,17 +2644,17 @@ mod tests {
         assert!(app.form_relay_key.is_empty());
         assert!(matches!(
             account_commands.try_recv().unwrap(),
-            Command::Relay(Some(url)) if url == "https://relay.example.com"
+            Command::Account(AccountCommand::Relay(Some(url))) if url == "https://relay.example.com"
         ));
 
         // A failed store write changes nothing and says so.
         app.apply(Action::SetRelayKey(None), &ctx);
         assert!(matches!(
             service_commands.try_recv().unwrap(),
-            Command::SaveRelayKey(None)
+            Command::Service(ServiceCommand::SaveRelayKey(None))
         ));
-        app.handle(
-            Event::RelayKeySaved {
+        app.handle_service(
+            ServiceEvent::RelayKeySaved {
                 set: false,
                 ok: false,
             },
@@ -4525,7 +2674,7 @@ mod tests {
         app.apply(Action::CheckUpdate, &ctx);
         assert!(matches!(
             commands.try_recv().unwrap(),
-            Command::CheckUpdate { download: true }
+            Command::Service(ServiceCommand::CheckUpdate { download: true })
         ));
         assert!(!app.quit_requested);
         let prepared = fastframe_update::Prepared::sample(
@@ -4535,8 +2684,8 @@ mod tests {
             },
             "0.1.1",
         );
-        app.handle(
-            Event::Update(crate::updates::Event::Status(
+        app.handle_service(
+            ServiceEvent::Update(crate::updates::Event::Status(
                 crate::updates::Status::Ready(Box::new(prepared)),
             )),
             &ctx,
@@ -4552,13 +2701,13 @@ mod tests {
         app.apply(Action::InstallUpdate, &ctx);
         assert!(matches!(
             commands.try_recv().unwrap(),
-            Command::InstallUpdate(_)
+            Command::Service(ServiceCommand::InstallUpdate(_))
         ));
         assert!(
             !app.quit_requested,
             "only a successful helper handoff may quit"
         );
-        app.handle(Event::Update(crate::updates::Event::Quit), &ctx);
+        app.handle_service(ServiceEvent::Update(crate::updates::Event::Quit), &ctx);
         assert!(app.quit_requested);
     }
 
@@ -4597,14 +2746,19 @@ mod tests {
         );
         let shown = &app.conversations[&chat].messages[0];
         assert_eq!(shown.delivery, Delivery::Sending);
-        let Command::Send { local_id, html, .. } = next_command(&mut commands) else {
+        let Command::Account(AccountCommand::Send(crate::outbox::SendPayload {
+            local_id,
+            html,
+            ..
+        })) = next_command(&mut commands)
+        else {
             panic!("send command expected");
         };
         assert_eq!(html, "<p><strong>hi</strong></p>");
         let mut confirmed = message("1700", crate::time::now());
         confirmed.author_id = Some("u-me".into());
         app.handle(
-            Event::Sent {
+            AccountEvent::Sent {
                 conversation: chat.clone(),
                 local_id,
                 message: Box::new(confirmed),
@@ -4651,12 +2805,10 @@ mod tests {
         while let Ok(command) = commands.try_recv() {
             seen.push(format!("{command:?}"));
         }
-        assert!(
-            seen.iter()
-                .any(|c| c
-                    .starts_with("Fetch { resource: Messages(Chat(\"19:a\")), trigger: Opened"))
-        );
-        assert!(seen.iter().any(|c| c == "MarkRead(\"19:a\")"));
+        assert!(seen.iter().any(|c| {
+            c.starts_with("Account(Fetch { resource: Messages(Chat(\"19:a\")), trigger: Opened")
+        }));
+        assert!(seen.iter().any(|c| c == "Account(MarkRead(\"19:a\"))"));
         assert!(!app.chats[0].is_unread("u-me"));
     }
 
@@ -4664,10 +2816,10 @@ mod tests {
     fn losing_the_connection_is_a_quiet_marker_not_a_toast() {
         let (mut app, _commands) = app();
         let ctx = egui::Context::default();
-        app.handle(Event::Reachable(false), &ctx);
+        app.handle(AccountEvent::Reachable(false), &ctx);
         assert!(app.unreachable);
         assert!(app.toasts.is_empty());
-        app.handle(Event::Reachable(true), &ctx);
+        app.handle(AccountEvent::Reachable(true), &ctx);
         assert!(!app.unreachable);
     }
 
@@ -4694,7 +2846,7 @@ mod tests {
             ..message(id, at)
         };
         app.handle(
-            Event::Messages {
+            AccountEvent::Messages {
                 conversation: chat.clone(),
                 messages: vec![incoming("2", 300)],
                 merge: Merge::Latest,
@@ -4707,12 +2859,12 @@ mod tests {
         while let Ok(command) = commands.try_recv() {
             seen.push(format!("{command:?}"));
         }
-        assert!(!seen.iter().any(|c| c.starts_with("MarkRead")));
+        assert!(!seen.iter().any(|c| c.starts_with("Account(MarkRead")));
         assert!(app.chats[0].is_unread("u-me"));
 
         app.window_focused = true;
         app.handle(
-            Event::Messages {
+            AccountEvent::Messages {
                 conversation: chat,
                 messages: vec![incoming("3", 400)],
                 merge: Merge::Latest,
@@ -4725,7 +2877,7 @@ mod tests {
         while let Ok(command) = commands.try_recv() {
             seen.push(format!("{command:?}"));
         }
-        assert!(seen.iter().any(|c| c == "MarkRead(\"19:a\")"));
+        assert!(seen.iter().any(|c| c == "Account(MarkRead(\"19:a\"))"));
         assert!(!app.chats[0].is_unread("u-me"));
     }
 
@@ -4777,13 +2929,13 @@ mod tests {
             },
             &ctx,
         );
-        let Command::Send {
+        let Command::Account(AccountCommand::Send(crate::outbox::SendPayload {
             html,
             mentions,
             files,
             recipients,
             ..
-        } = next_command(&mut commands)
+        })) = next_command(&mut commands)
         else {
             panic!("send command expected");
         };
@@ -4811,19 +2963,19 @@ mod tests {
 
         // Consent arrives while the page is open: look once.
         app.handle(
-            Event::Granted("User.Read MailboxSettings.ReadWrite".into()),
+            AccountEvent::Granted("User.Read MailboxSettings.ReadWrite".into()),
             &ctx,
         );
         assert!(matches!(
             commands.try_recv(),
-            Ok(Command::Fetch {
+            Ok(Command::Account(AccountCommand::Fetch {
                 resource: Resource::OutOfOffice,
                 trigger: Trigger::Opened
-            })
+            }))
         ));
         // A later session restore with the scope already held looks no more.
         app.handle(
-            Event::Granted("User.Read MailboxSettings.ReadWrite".into()),
+            AccountEvent::Granted("User.Read MailboxSettings.ReadWrite".into()),
             &ctx,
         );
         assert!(commands.try_recv().is_err());
@@ -4832,7 +2984,7 @@ mod tests {
             internal: "Away".into(),
             ..Default::default()
         };
-        app.handle(Event::OutOfOffice(away.clone()), &ctx);
+        app.handle(AccountEvent::OutOfOffice(away.clone()), &ctx);
         assert_eq!(app.form_out_of_office.internal, "Away");
 
         // Saving shows as under way until Graph answers; a failure keeps
@@ -4841,22 +2993,24 @@ mod tests {
         let off = app.form_out_of_office.value().unwrap();
         app.apply(Action::SetOutOfOffice(off.clone()), &ctx);
         assert!(app.out_of_office_saving);
-        assert!(matches!(commands.try_recv(), Ok(Command::SetOutOfOffice(v)) if v == off));
+        assert!(
+            matches!(commands.try_recv(), Ok(Command::Account(AccountCommand::SetOutOfOffice(v))) if v == off)
+        );
         app.apply(Action::SetOutOfOffice(off.clone()), &ctx);
         assert!(commands.try_recv().is_err(), "one save at a time");
-        app.handle(Event::OutOfOfficeNotSaved, &ctx);
+        app.handle(AccountEvent::OutOfOfficeNotSaved, &ctx);
         assert!(!app.out_of_office_saving);
         assert_eq!(app.form_out_of_office.replies, AutoReplies::Off);
         assert!(app.form_out_of_office.changed_from(&away));
 
         // A fetch while the person edits leaves the edit alone.
-        app.handle(Event::OutOfOffice(away.clone()), &ctx);
+        app.handle(AccountEvent::OutOfOffice(away.clone()), &ctx);
         assert_eq!(app.form_out_of_office.replies, AutoReplies::Off);
-        app.handle(Event::OutOfOffice(off.clone()), &ctx);
+        app.handle(AccountEvent::OutOfOffice(off.clone()), &ctx);
         assert_eq!(app.out_of_office, Some(off));
         assert_eq!(app.form_out_of_office.replies, AutoReplies::Off);
 
-        app.handle(Event::OutOfOfficeUnavailable, &ctx);
+        app.handle(AccountEvent::OutOfOfficeUnavailable, &ctx);
         assert!(app.no_mailbox);
     }
 
@@ -4879,7 +3033,8 @@ mod tests {
             Action::RequestScope(crate::auth::PRESENCE_WRITE_SCOPE),
             &ctx,
         );
-        let Ok(Command::SignIn { extra_scopes, .. }) = commands.try_recv() else {
+        let Ok(Command::Account(AccountCommand::SignIn { extra_scopes, .. })) = commands.try_recv()
+        else {
             panic!("consent sign-in expected");
         };
         assert_eq!(extra_scopes, vec!["Presence.ReadWrite".to_owned()]);
@@ -4887,7 +3042,9 @@ mod tests {
         app.apply(Action::SetAvailability(Some(Availability::Busy)), &ctx);
         assert!(matches!(
             commands.try_recv(),
-            Ok(Command::SetAvailability(Some(Availability::Busy)))
+            Ok(Command::Account(AccountCommand::SetAvailability(Some(
+                Availability::Busy
+            ))))
         ));
         assert_eq!(
             app.my_presence.as_ref().unwrap().availability,
@@ -4911,7 +3068,7 @@ mod tests {
         app.active = 1;
         app.hidden = true;
         app.handle(
-            Event::Chats {
+            AccountEvent::Chats {
                 chats: vec![Chat {
                     id: "19:b".into(),
                     ..Default::default()
@@ -4939,7 +3096,7 @@ mod tests {
         app.active = 1;
         let ctx = egui::Context::default();
         app.handle(
-            Event::Auth(AuthStatus::SignedIn {
+            AccountEvent::Auth(AuthStatus::SignedIn {
                 account: "u-me.t1".into(),
                 name: "Me".into(),
                 username: "me@contoso.com".into(),
@@ -5017,7 +3174,10 @@ mod tests {
 
         // Cancelling goes back to the cached workspace.
         app.apply(Action::SignIn, &ctx);
-        assert!(matches!(commands.try_recv(), Ok(Command::SignIn { .. })));
+        assert!(matches!(
+            commands.try_recv(),
+            Ok(Command::Account(AccountCommand::SignIn { .. }))
+        ));
         app.on_auth(AuthStatus::WaitingForBrowser { url: "u".into() });
         assert!(app.shows_workspace());
         app.apply(Action::CancelSignIn, &ctx);
@@ -5050,16 +3210,18 @@ mod tests {
 
     fn entry(local_id: &str, text: &str, created: i64) -> crate::outbox::OutboxEntry {
         crate::outbox::OutboxEntry {
-            local_id: local_id.into(),
-            conversation: ConversationId::Chat("19:a".into()),
+            payload: crate::outbox::SendPayload {
+                local_id: local_id.into(),
+                conversation: ConversationId::Chat("19:a".into()),
+                html: html::compose(text),
+                reply_to: None,
+                mentions: Vec::new(),
+                files: Vec::new(),
+                images: Vec::new(),
+                recipients: Vec::new(),
+            },
             created,
-            html: html::compose(text),
             text: text.into(),
-            reply_to: None,
-            mentions: Vec::new(),
-            files: Vec::new(),
-            images: Vec::new(),
-            recipients: Vec::new(),
         }
     }
 
@@ -5075,7 +3237,7 @@ mod tests {
         let saved = drain(&mut commands);
         assert_eq!(saved.len(), 1, "one save, none when unchanged");
         assert!(
-            matches!(&saved[0], Command::SaveDraft { conversation, draft: Some(d) }
+            matches!(&saved[0], Command::Account(AccountCommand::SaveDraft { conversation, draft: Some(d) })
             if conversation == &chat && d.text == "hel")
         );
         app.drafts.entry(chat.clone()).or_default().text = "hello".into();
@@ -5091,7 +3253,10 @@ mod tests {
         app.sync_drafts();
         assert!(matches!(
             drain(&mut commands).as_slice(),
-            [Command::SaveDraft { draft: None, .. }]
+            [Command::Account(AccountCommand::SaveDraft {
+                draft: None,
+                ..
+            })]
         ));
         // An edit in progress does not touch the saved draft.
         app.drafts.get_mut(&chat).unwrap().editing = Some("m1".into());
@@ -5118,11 +3283,20 @@ mod tests {
         });
         app.apply_actions(&ctx);
         let sent = drain(&mut commands);
-        assert!(matches!(sent[0], Command::SaveOutbox(_)));
-        assert!(matches!(sent[1], Command::Send { .. }));
+        assert!(matches!(
+            sent[0],
+            Command::Account(AccountCommand::SaveOutbox(_))
+        ));
+        assert!(matches!(
+            sent[1],
+            Command::Account(AccountCommand::Send(crate::outbox::SendPayload { .. }))
+        ));
         assert!(matches!(
             sent.last(),
-            Some(Command::SaveDraft { draft: None, .. })
+            Some(Command::Account(AccountCommand::SaveDraft {
+                draft: None,
+                ..
+            }))
         ));
     }
 
@@ -5138,7 +3312,7 @@ mod tests {
             mentions: Vec::new(),
         };
         app.handle(
-            Event::Restored {
+            AccountEvent::Restored {
                 drafts: vec![(chat.clone(), draft.clone())],
                 outbox: vec![
                     entry("local-7", "young", now - 1_000),
@@ -5159,12 +3333,15 @@ mod tests {
         let resent: Vec<&str> = sent
             .iter()
             .filter_map(|c| match c {
-                Command::Resend(e) => Some(e.local_id.as_str()),
+                Command::Account(AccountCommand::Resend(e)) => Some(e.payload.local_id.as_str()),
                 _ => None,
             })
             .collect();
         assert_eq!(resent, ["local-7"], "only the young entry resends");
-        assert!(sent.iter().any(|c| matches!(c, Command::CachedMessages(_))));
+        assert!(
+            sent.iter()
+                .any(|c| matches!(c, Command::Account(AccountCommand::CachedMessages(_))))
+        );
         // The restored draft is already saved: nothing is written back.
         app.sync_drafts();
         assert!(drain(&mut commands).is_empty());
@@ -5178,7 +3355,7 @@ mod tests {
         );
         assert!(matches!(
             drain(&mut commands).as_slice(),
-            [Command::Send { local_id, .. }] if local_id == "local-3"
+            [Command::Account(AccountCommand::Send(crate::outbox::SendPayload { local_id, .. }))] if local_id == "local-3"
         ));
         app.apply(
             Action::Send {
@@ -5191,7 +3368,9 @@ mod tests {
             },
             &ctx,
         );
-        let Command::Send { local_id, .. } = next_command(&mut commands) else {
+        let Command::Account(AccountCommand::Send(crate::outbox::SendPayload { local_id, .. })) =
+            next_command(&mut commands)
+        else {
             panic!("send expected")
         };
         assert_eq!(local_id, "local-8");
@@ -5203,7 +3382,7 @@ mod tests {
         let chat = ConversationId::Chat("19:a".into());
         app.drafts.entry(chat.clone()).or_default().text = "typing".into();
         app.handle(
-            Event::Restored {
+            AccountEvent::Restored {
                 drafts: vec![(
                     chat.clone(),
                     crate::outbox::StoredDraft {
@@ -5224,7 +3403,7 @@ mod tests {
         let ctx = egui::Context::default();
         let chat = ConversationId::Chat("19:a".into());
         app.handle(
-            Event::Restored {
+            AccountEvent::Restored {
                 drafts: Vec::new(),
                 outbox: vec![entry("local-3", "old", 5)],
             },
@@ -5243,7 +3422,7 @@ mod tests {
         assert!(app.pending_sends.is_empty());
         assert!(matches!(
             drain(&mut commands).as_slice(),
-            [Command::DropOutbox(id)] if id == "local-3"
+            [Command::Account(AccountCommand::DropOutbox(id))] if id == "local-3"
         ));
     }
 
@@ -5260,8 +3439,8 @@ mod tests {
             },
             "0.1.1",
         );
-        app.handle(
-            Event::Update(crate::updates::Event::Status(
+        app.handle_service(
+            ServiceEvent::Update(crate::updates::Event::Status(
                 crate::updates::Status::Ready(Box::new(prepared)),
             )),
             &ctx,
@@ -5287,7 +3466,10 @@ mod tests {
         app.pending_sends.clear();
         app.apply(Action::InstallUpdate, &ctx);
         assert!(
-            matches!(commands.try_recv(), Ok(Command::InstallUpdate(_))),
+            matches!(
+                commands.try_recv(),
+                Ok(Command::Service(ServiceCommand::InstallUpdate(_)))
+            ),
             "a saved text draft no longer blocks"
         );
     }
@@ -5323,7 +3505,7 @@ mod tests {
         app.apply(Action::Find(Some("lu".into())), &ctx);
         assert!(matches!(
             commands.try_recv(),
-            Ok(Command::SearchIn { conversation, query, remote: false }) if conversation == chat && query == "lu"
+            Ok(Command::Account(AccountCommand::SearchIn { conversation, query, remote: false })) if conversation == chat && query == "lu"
         ));
         app.apply(Action::Find(Some("lu".into())), &ctx);
         assert!(
@@ -5352,8 +3534,10 @@ mod tests {
         }
         assert_eq!(sent.len(), 4, "local searches for lu, lun, lunc, lunch");
         assert!(
-            sent.iter()
-                .all(|c| matches!(c, Command::SearchIn { remote: false, .. })),
+            sent.iter().all(|c| matches!(
+                c,
+                Command::Account(AccountCommand::SearchIn { remote: false, .. })
+            )),
             "typing sends local searches only"
         );
         // Not yet due: still nothing.
@@ -5364,7 +3548,7 @@ mod tests {
         app.send_due_find_search(later, &ctx);
         assert!(matches!(
             commands.try_recv(),
-            Ok(Command::SearchIn { conversation, query, remote: true })
+            Ok(Command::Account(AccountCommand::SearchIn { conversation, query, remote: true }))
                 if conversation == chat && query == "lunch"
         ));
         app.send_due_find_search(later, &ctx);
@@ -5378,7 +3562,7 @@ mod tests {
         app.apply(Action::FindNext(1), &ctx);
         assert!(matches!(
             commands.try_recv(),
-            Ok(Command::SearchIn { query, remote: true, .. }) if query == "lunch"
+            Ok(Command::Account(AccountCommand::SearchIn { query, remote: true, .. })) if query == "lunch"
         ));
         app.apply(Action::FindNext(1), &ctx);
         app.send_due_find_search(Instant::now() + Duration::from_secs(1), &ctx);
@@ -5415,7 +3599,7 @@ mod tests {
         let ctx = egui::Context::default();
         let chat = ConversationId::Chat("19:a".into());
         app.handle(
-            Event::ConversationHits {
+            AccountEvent::ConversationHits {
                 conversation: chat.clone(),
                 query: "lun".into(),
                 hits: vec![hit("19:a", "old", 1)],
@@ -5423,7 +3607,7 @@ mod tests {
             &ctx,
         );
         app.handle(
-            Event::ConversationHits {
+            AccountEvent::ConversationHits {
                 conversation: ConversationId::Chat("19:b".into()),
                 query: "lunch".into(),
                 hits: vec![hit("19:b", "other", 1)],
@@ -5433,7 +3617,7 @@ mod tests {
         assert!(app.find.as_ref().unwrap().hits.is_empty());
         // Hits for another chat inside the right event are dropped too.
         app.handle(
-            Event::ConversationHits {
+            AccountEvent::ConversationHits {
                 conversation: chat,
                 query: "lunch".into(),
                 hits: vec![hit("19:a", "a1", 1), hit("19:b", "stray", 2)],
@@ -5459,7 +3643,7 @@ mod tests {
         let (mut app, _) = finding("lunch");
         let ctx = egui::Context::default();
         app.handle(
-            Event::ConversationHits {
+            AccountEvent::ConversationHits {
                 conversation: ConversationId::Chat("19:a".into()),
                 query: "lunch".into(),
                 hits: vec![
@@ -5487,7 +3671,7 @@ mod tests {
         let (mut app, _) = finding("lunch");
         let ctx = egui::Context::default();
         app.handle(
-            Event::ConversationHits {
+            AccountEvent::ConversationHits {
                 conversation: ConversationId::Chat("19:a".into()),
                 query: "lunch".into(),
                 hits: vec![hit("19:a", "new", 2), hit("19:a", "old", 1)],
@@ -5499,7 +3683,7 @@ mod tests {
         assert_eq!(app.jump_to.as_deref(), Some("old"));
         // A later batch (Microsoft Search) keeps the hit being shown.
         app.handle(
-            Event::ConversationHits {
+            AccountEvent::ConversationHits {
                 conversation: ConversationId::Chat("19:a".into()),
                 query: "lunch".into(),
                 hits: vec![

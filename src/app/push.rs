@@ -4,7 +4,7 @@
 //! plugin sends; bodies, channels and addresses are never logged.
 
 use super::App;
-use crate::backend::{Command, PushRoute};
+use crate::backend::{AccountCommand, PushRoute};
 use crate::plugin::event::PushEvent;
 use crate::plugin::protocol::HostMessage;
 use crate::plugin::registry::{self, Capability, Need};
@@ -171,7 +171,7 @@ impl App {
                     for account in &self.accounts {
                         account
                             .backend
-                            .send(Command::PushPlugin(Some(PushRoute::new(
+                            .send(AccountCommand::PushPlugin(Some(PushRoute::new(
                                 url.clone(),
                                 account.push_channel.clone(),
                             ))));
@@ -181,7 +181,7 @@ impl App {
             None => {
                 if self.push_plugin.active.is_some() {
                     for account in &self.accounts {
-                        account.backend.send(Command::PushPlugin(None));
+                        account.backend.send(AccountCommand::PushPlugin(None));
                     }
                 }
                 // A running plugin is told to accept nothing; one that
@@ -204,13 +204,13 @@ impl App {
     }
 
     /// The route a newly started account backend is given, if one is up.
-    pub(super) fn push_route_for(&self, index: usize) -> Option<Command> {
+    pub(super) fn push_route_for(&self, index: usize) -> Option<AccountCommand> {
         if self.demo {
             return None;
         }
         let (_, url) = self.push_plugin.active.as_ref()?;
         let account = self.accounts.get(index)?;
-        Some(Command::PushPlugin(Some(PushRoute::new(
+        Some(AccountCommand::PushPlugin(Some(PushRoute::new(
             url.clone(),
             account.push_channel.clone(),
         ))))
@@ -303,7 +303,7 @@ impl App {
                     .iter()
                     .find(|account| account.push_channel == channel)
                 {
-                    account.backend.send(Command::PushBody(body));
+                    account.backend.send(AccountCommand::PushBody(body));
                 }
             }
         }
@@ -314,7 +314,7 @@ impl App {
 mod tests {
     use super::*;
     use crate::app::{Account, PluginState};
-    use crate::backend::{Backend, Waker};
+    use crate::backend::{AccountCommand, Backend, Command, ServiceCommand, Waker};
     use crate::model::{Action, PluginAction};
     use crate::paths::AppDirs;
     use crate::plugin::event::PluginEvent;
@@ -404,14 +404,17 @@ mod tests {
     }
 
     fn route(url: &str, channel: &str) -> Command {
-        Command::PushPlugin(Some(PushRoute::new(url.into(), channel.into())))
+        Command::Account(AccountCommand::PushPlugin(Some(PushRoute::new(
+            url.into(),
+            channel.into(),
+        ))))
     }
 
     fn told(list: Vec<String>) -> Command {
-        Command::PluginSend {
+        Command::Service(ServiceCommand::PluginSend {
             id: "pr".into(),
             message: HostMessage::PushChannels { channels: list },
-        }
+        })
     }
 
     #[test]
@@ -480,7 +483,10 @@ mod tests {
                 body: "{}".into(),
             },
         );
-        same(drain(&mut second), vec![Command::PushBody("{}".into())]);
+        same(
+            drain(&mut second),
+            vec![Command::Account(AccountCommand::PushBody("{}".into()))],
+        );
         assert!(drain(&mut first).is_empty());
     }
 
@@ -581,12 +587,12 @@ mod tests {
         let sent = drain(&mut service);
         assert!(has(
             sent,
-            Command::PluginSend {
+            Command::Service(ServiceCommand::PluginSend {
                 id: "other".into(),
                 message: HostMessage::PushChannels {
                     channels: list.clone()
                 },
-            }
+            })
         ));
         assert!(has(
             drain(&mut first),
@@ -617,8 +623,14 @@ mod tests {
         drain(&mut second);
         app.settings.plugins[0].approved_needs.clear();
         app.sync_push_route(false);
-        same(drain(&mut first), vec![Command::PushPlugin(None)]);
-        same(drain(&mut second), vec![Command::PushPlugin(None)]);
+        same(
+            drain(&mut first),
+            vec![Command::Account(AccountCommand::PushPlugin(None))],
+        );
+        same(
+            drain(&mut second),
+            vec![Command::Account(AccountCommand::PushPlugin(None))],
+        );
         same(drain(&mut service), vec![told(vec![])]);
     }
 
@@ -681,8 +693,14 @@ mod tests {
                 reason: Some("cloudflared stopped".into()),
             },
         );
-        same(drain(&mut first), vec![Command::PushPlugin(None)]);
-        same(drain(&mut second), vec![Command::PushPlugin(None)]);
+        same(
+            drain(&mut first),
+            vec![Command::Account(AccountCommand::PushPlugin(None))],
+        );
+        same(
+            drain(&mut second),
+            vec![Command::Account(AccountCommand::PushPlugin(None))],
+        );
         same(drain(&mut service), vec![told(vec![])]);
         assert_eq!(
             app.push_plugin_view().unwrap().state,
@@ -719,8 +737,14 @@ mod tests {
                 message: None,
             },
         );
-        same(drain(&mut first), vec![Command::PushPlugin(None)]);
-        same(drain(&mut second), vec![Command::PushPlugin(None)]);
+        same(
+            drain(&mut first),
+            vec![Command::Account(AccountCommand::PushPlugin(None))],
+        );
+        same(
+            drain(&mut second),
+            vec![Command::Account(AccountCommand::PushPlugin(None))],
+        );
         // The stopped plugin forgot the list; nothing is sent to it.
         assert!(drain(&mut service).is_empty());
         assert_eq!(
@@ -741,15 +765,21 @@ mod tests {
             Action::Plugin(PluginAction::SetEnabled("pr".into(), false)),
             &ctx,
         );
-        same(drain(&mut first), vec![Command::PushPlugin(None)]);
-        same(drain(&mut second), vec![Command::PushPlugin(None)]);
+        same(
+            drain(&mut first),
+            vec![Command::Account(AccountCommand::PushPlugin(None))],
+        );
+        same(
+            drain(&mut second),
+            vec![Command::Account(AccountCommand::PushPlugin(None))],
+        );
         assert!(
             !drain(&mut service).iter().any(|c| matches!(
                 c,
-                Command::PluginSend {
+                Command::Service(ServiceCommand::PluginSend {
                     message: HostMessage::PushChannels { .. },
                     ..
-                }
+                })
             )),
             "a plugin being stopped is not told anything"
         );
@@ -759,8 +789,14 @@ mod tests {
         drain(&mut first);
         drain(&mut second);
         app.apply(Action::Plugin(PluginAction::Remove("pr".into())), &ctx);
-        same(drain(&mut first), vec![Command::PushPlugin(None)]);
-        same(drain(&mut second), vec![Command::PushPlugin(None)]);
+        same(
+            drain(&mut first),
+            vec![Command::Account(AccountCommand::PushPlugin(None))],
+        );
+        same(
+            drain(&mut second),
+            vec![Command::Account(AccountCommand::PushPlugin(None))],
+        );
         assert!(app.push_plugin_view().is_none());
     }
 
@@ -791,8 +827,14 @@ mod tests {
             Action::SetRelay("https://relay.example.com".into()),
             &egui::Context::default(),
         );
-        assert!(has(drain(&mut first), Command::PushPlugin(None)));
-        assert!(has(drain(&mut second), Command::PushPlugin(None)));
+        assert!(has(
+            drain(&mut first),
+            Command::Account(AccountCommand::PushPlugin(None))
+        ));
+        assert!(has(
+            drain(&mut second),
+            Command::Account(AccountCommand::PushPlugin(None))
+        ));
         same(drain(&mut service), vec![told(vec![])]);
     }
 
@@ -815,7 +857,7 @@ mod tests {
         let started = drain(&mut third);
         let relay = started
             .iter()
-            .position(|c| matches!(c, Command::Relay(_)))
+            .position(|c| matches!(c, Command::Account(AccountCommand::Relay(_))))
             .unwrap();
         let pushed = started
             .iter()
@@ -863,7 +905,10 @@ mod tests {
         // A restart (new generation) invalidates the old address.
         app.plugins_started.clear();
         app.sync_plugins();
-        same(drain(&mut first), vec![Command::PushPlugin(None)]);
+        same(
+            drain(&mut first),
+            vec![Command::Account(AccountCommand::PushPlugin(None))],
+        );
         assert_eq!(
             app.push_plugin_view().unwrap().state,
             PushPluginState::Waiting

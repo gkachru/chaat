@@ -1,7 +1,7 @@
 //! Backend events of the setup file flow.
 
 use super::{App, SetupStage};
-use crate::backend::{AuthStatus, Event};
+use crate::backend::{AuthStatus, ServiceEvent};
 use crate::model::ToastKind;
 
 const NOT_A_SETUP_FILE: &str = "This isn't a Chaat setup file.";
@@ -11,9 +11,9 @@ const KEY_NOT_SAVED: &str =
 impl App {
     /// Applies a `SetupOpened`, `SetupApplied` or `SetupExported` event.
     /// Answers for an older token are ignored.
-    pub fn on_setup_event(&mut self, event: Event) {
+    pub fn on_setup_event(&mut self, event: ServiceEvent) {
         match event {
-            Event::SetupOpened { token, result } => {
+            ServiceEvent::SetupOpened { token, result } => {
                 if token != self.setup.token {
                     return;
                 }
@@ -33,7 +33,7 @@ impl App {
                     }
                 };
             }
-            Event::SetupApplied { token, ok } => {
+            ServiceEvent::SetupApplied { token, ok } => {
                 if token != self.setup.token || self.setup.stage != SetupStage::Applying {
                     return;
                 }
@@ -54,7 +54,7 @@ impl App {
                 self.setup.key_included = false;
                 self.continue_to_sign_in();
             }
-            Event::SetupExported(result) => self.on_setup_exported(result),
+            ServiceEvent::SetupExported(result) => self.on_setup_exported(result),
             _ => {}
         }
     }
@@ -84,7 +84,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::{Backend, Command, Waker};
+    use crate::backend::{AccountCommand, Backend, Command, Waker};
     use crate::paths::AppDirs;
     use crate::settings::Settings;
     use crate::setup_file::SetupSummary;
@@ -120,12 +120,12 @@ mod tests {
         let (mut app, _) = app();
         app.setup.token = 3;
         app.setup.stage = SetupStage::Opening(PathBuf::from("a.chaatsetup"));
-        app.on_setup_event(Event::SetupOpened {
+        app.on_setup_event(ServiceEvent::SetupOpened {
             token: 2,
             result: Ok(summary()),
         });
         assert!(matches!(app.setup.stage, SetupStage::Opening(_)));
-        app.on_setup_event(Event::SetupOpened {
+        app.on_setup_event(ServiceEvent::SetupOpened {
             token: 3,
             result: Err("wrong passphrase".into()),
         });
@@ -135,19 +135,19 @@ mod tests {
         );
         assert_eq!(app.setup.error.as_deref(), Some("wrong passphrase"));
         app.setup.stage = SetupStage::Opening(PathBuf::from("a.chaatsetup"));
-        app.on_setup_event(Event::SetupOpened {
+        app.on_setup_event(ServiceEvent::SetupOpened {
             token: 3,
             result: Err(NOT_A_SETUP_FILE.into()),
         });
         assert_eq!(app.setup.stage, SetupStage::Failed(NOT_A_SETUP_FILE.into()));
         app.setup.stage = SetupStage::Opening(PathBuf::from("a.chaatsetup"));
-        app.on_setup_event(Event::SetupOpened {
+        app.on_setup_event(ServiceEvent::SetupOpened {
             token: 3,
             result: Ok(summary()),
         });
         assert!(matches!(app.setup.stage, SetupStage::Review(_)));
         app.setup.stage = SetupStage::Applying;
-        app.on_setup_event(Event::SetupApplied { token: 2, ok: true });
+        app.on_setup_event(ServiceEvent::SetupApplied { token: 2, ok: true });
         assert_eq!(app.setup.stage, SetupStage::Applying);
     }
 
@@ -160,11 +160,14 @@ mod tests {
         app.setup.token = 1;
         app.setup.stage = SetupStage::Applying;
         app.setup.key_included = true;
-        app.on_setup_event(Event::SetupApplied { token: 1, ok: true });
+        app.on_setup_event(ServiceEvent::SetupApplied { token: 1, ok: true });
         assert!(app.settings.relay_key_set);
         assert_eq!(app.setup.stage, SetupStage::Idle);
         assert!(
-            matches!(commands.try_recv(), Ok(Command::Relay(Some(_)))),
+            matches!(
+                commands.try_recv(),
+                Ok(Command::Account(AccountCommand::Relay(Some(_))))
+            ),
             "the relay goes to the accounts again"
         );
     }
@@ -175,7 +178,7 @@ mod tests {
         app.setup.token = 1;
         app.setup.stage = SetupStage::Applying;
         app.setup.key_included = true;
-        app.on_setup_event(Event::SetupApplied {
+        app.on_setup_event(ServiceEvent::SetupApplied {
             token: 1,
             ok: false,
         });
@@ -206,7 +209,7 @@ mod tests {
         app.setup.sign_in_after = true;
         // The account is still restoring: wait for it.
         app.auth = AuthStatus::Restoring;
-        app.on_setup_event(Event::SetupApplied { token: 5, ok: true });
+        app.on_setup_event(ServiceEvent::SetupApplied { token: 5, ok: true });
         assert!(!app.actions.contains(&crate::model::Action::SignIn));
         // Ready to sign in: sign-in starts, once.
         app.auth = AuthStatus::SignedOut;
@@ -226,13 +229,13 @@ mod tests {
         app.setup.token = 2;
         app.setup.passphrase = "apple banana".into();
         app.setup.stage = SetupStage::Opening(PathBuf::from("a.chaatsetup"));
-        app.on_setup_event(Event::SetupOpened {
+        app.on_setup_event(ServiceEvent::SetupOpened {
             token: 2,
             result: Err("wrong".into()),
         });
         assert_eq!(app.setup.passphrase, "apple banana");
         app.setup.stage = SetupStage::Opening(PathBuf::from("a.chaatsetup"));
-        app.on_setup_event(Event::SetupOpened {
+        app.on_setup_event(ServiceEvent::SetupOpened {
             token: 2,
             result: Ok(summary()),
         });

@@ -214,7 +214,7 @@ impl eframe::App for Window {
             app.perf.first_frame = Some(elapsed);
             if let Some(receipt) = app.update_receipt.take() {
                 app.service
-                    .send(chaat::backend::Command::AcknowledgeUpdate(receipt));
+                    .send(chaat::backend::ServiceCommand::AcknowledgeUpdate(receipt));
             }
             log::info!("first frame after {} ms", elapsed.as_millis());
             log::debug!(

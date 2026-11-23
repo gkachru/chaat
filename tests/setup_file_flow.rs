@@ -4,14 +4,17 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use chaat::backend::{Backend, BackendOptions, Command, Event, Waker};
+use chaat::backend::{Backend, BackendOptions, ServiceCommand, ServiceEvent, ServiceRole, Waker};
 use chaat::paths::AppDirs;
 use chaat::secrets::{MemoryStore, RELAY_KEY, SecretStore};
 use chaat::setup_file::SetupPayload;
 
 const KEY: &str = "office-relay-key-0123456789";
 
-fn wait_for<T>(backend: &Backend, mut pick: impl FnMut(Event) -> Option<T>) -> T {
+fn wait_for<T>(
+    backend: &Backend<ServiceRole>,
+    mut pick: impl FnMut(ServiceEvent) -> Option<T>,
+) -> T {
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         for event in backend.poll() {
@@ -24,7 +27,7 @@ fn wait_for<T>(backend: &Backend, mut pick: impl FnMut(Event) -> Option<T>) -> T
     }
 }
 
-fn start(store: Arc<MemoryStore>) -> (Backend, tempfile::TempDir) {
+fn start(store: Arc<MemoryStore>) -> (Backend<ServiceRole>, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let secrets: Arc<dyn SecretStore> = store;
     let backend = Backend::spawn_with(
@@ -55,40 +58,40 @@ fn payload() -> SetupPayload {
     }
 }
 
-fn export(backend: &Backend, path: std::path::PathBuf) -> String {
-    backend.send(Command::ExportSetup {
+fn export(backend: &Backend<ServiceRole>, path: std::path::PathBuf) -> String {
+    backend.send(ServiceCommand::ExportSetup {
         path,
         payload: payload(),
         include_relay_key: true,
     });
     wait_for(backend, |e| match e {
-        Event::SetupExported(result) => Some(result),
+        ServiceEvent::SetupExported(result) => Some(result),
         _ => None,
     })
     .expect("export succeeds")
 }
 
 fn open(
-    backend: &Backend,
+    backend: &Backend<ServiceRole>,
     path: std::path::PathBuf,
     passphrase: String,
     token: u64,
 ) -> Result<chaat::setup_file::SetupSummary, String> {
-    backend.send(Command::OpenSetupFile {
+    backend.send(ServiceCommand::OpenSetupFile {
         path,
         passphrase,
         token,
     });
     wait_for(backend, |e| match e {
-        Event::SetupOpened { token: t, result } if t == token => Some(result),
+        ServiceEvent::SetupOpened { token: t, result } if t == token => Some(result),
         _ => None,
     })
 }
 
-fn apply(backend: &Backend, token: u64) -> bool {
-    backend.send(Command::ApplySetup { token });
+fn apply(backend: &Backend<ServiceRole>, token: u64) -> bool {
+    backend.send(ServiceCommand::ApplySetup { token });
     wait_for(backend, |e| match e {
-        Event::SetupApplied { token: t, ok } if t == token => Some(ok),
+        ServiceEvent::SetupApplied { token: t, ok } if t == token => Some(ok),
         _ => None,
     })
 }

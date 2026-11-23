@@ -495,7 +495,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::{Event, Merge, Waker};
+    use crate::backend::{AccountEvent, Merge, Waker};
     use crate::model::{Chat, Meeting, Message};
     use crate::notify::Clicked;
     use crate::paths::AppDirs;
@@ -756,7 +756,10 @@ mod tests {
         let ctx = egui::Context::default();
         app.follow_available("u-ada".into(), "Ada".into(), true);
         let set = |app: &mut App, a| {
-            app.handle(Event::Presence(vec![("u-ada".into(), presence(a))]), &ctx)
+            app.handle(
+                AccountEvent::Presence(vec![("u-ada".into(), presence(a))]),
+                &ctx,
+            )
         };
         set(&mut app, Availability::Busy);
         set(&mut app, Availability::Away);
@@ -811,7 +814,7 @@ mod tests {
             ..Default::default()
         });
         app.handle(
-            Event::Chats {
+            AccountEvent::Chats {
                 chats,
                 cached: false,
             },
@@ -833,7 +836,7 @@ mod tests {
         };
         let batch = |app: &mut App, messages| {
             app.handle(
-                Event::Messages {
+                AccountEvent::Messages {
                     conversation: chat(LAUNCH),
                     messages,
                     merge: Merge::Latest,

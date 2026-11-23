@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use chaat::auth::session::AccountRecord;
-use chaat::backend::{AuthStatus, Backend, BackendOptions, Command, Event, Waker};
+use chaat::backend::{AccountCommand, AccountEvent, AuthStatus, Backend, BackendOptions, Waker};
 use chaat::model::{
     AutoReplies, Availability, ConversationId, ExternalAudience, MentionRef, OutOfOffice,
 };
@@ -200,7 +200,7 @@ async fn chats_mentions_files_and_status() {
     }
     .save(&dirs.account(ACCOUNT).join("account.json"))
     .unwrap();
-    let backend = Backend::spawn_with(
+    let backend: Backend = Backend::spawn_with(
         dirs,
         Waker::default(),
         BackendOptions {
@@ -212,28 +212,28 @@ async fn chats_mentions_files_and_status() {
             relay_connect_timeout: std::time::Duration::from_secs(20),
         },
     );
-    backend.send(Command::Start {
+    backend.send(AccountCommand::Start {
         client_id: CLIENT.into(),
         tenant: "organizations".into(),
         account: Some(ACCOUNT.into()),
     });
     wait_for(&backend, 5, |e| {
-        matches!(e, Event::Auth(AuthStatus::SignedIn { .. })).then_some(())
+        matches!(e, AccountEvent::Auth(AuthStatus::SignedIn { .. })).then_some(())
     });
 
     // Find Barbara and start a chat.
-    backend.send(Command::SearchPeople("barb".into()));
+    backend.send(AccountCommand::SearchPeople("barb".into()));
     let people = wait_for(&backend, 5, |e| match e {
-        Event::People { people, .. } => Some(people),
+        AccountEvent::People { people, .. } => Some(people),
         _ => None,
     });
     assert_eq!(people[0].display_name, "Barbara Liskov");
-    backend.send(Command::CreateChat {
+    backend.send(AccountCommand::CreateChat {
         others: vec![people[0].user_id.clone()],
         topic: None,
     });
     let chat = wait_for(&backend, 5, |e| match e {
-        Event::ChatCreated(chat) => Some(*chat),
+        AccountEvent::ChatCreated(chat) => Some(*chat),
         _ => None,
     });
     assert_eq!(chat.title("u-me"), "Barbara Liskov");
@@ -263,7 +263,7 @@ async fn chats_mentions_files_and_status() {
             name: "Barbara Liskov".into(),
         }],
     );
-    backend.send(Command::Send {
+    backend.send(AccountCommand::Send(chaat::outbox::SendPayload {
         conversation: ConversationId::Chat(chat.id.clone()),
         local_id: "local-1".into(),
         html,
@@ -272,10 +272,10 @@ async fn chats_mentions_files_and_status() {
         files: vec![file],
         images: Vec::new(),
         recipients: vec!["barbara@contoso.com".into()],
-    });
+    }));
     let sent = wait_for(&backend, 10, |e| match e {
-        Event::Sent { message, .. } => Some(*message),
-        Event::SendFailed { reason, .. } => panic!("send failed: {reason}"),
+        AccountEvent::Sent { message, .. } => Some(*message),
+        AccountEvent::SendFailed { reason, .. } => panic!("send failed: {reason}"),
         _ => None,
     });
     assert_eq!(sent.id, "1800");
@@ -297,9 +297,11 @@ async fn chats_mentions_files_and_status() {
     );
 
     // Status: availability, then a message; each reads presence back.
-    backend.send(Command::SetAvailability(Some(Availability::DoNotDisturb)));
+    backend.send(AccountCommand::SetAvailability(Some(
+        Availability::DoNotDisturb,
+    )));
     let presence = wait_for(&backend, 5, |e| match e {
-        Event::MyPresence(presence) => Some(presence),
+        AccountEvent::MyPresence(presence) => Some(presence),
         _ => None,
     });
     assert_eq!(presence.availability, Availability::DoNotDisturb);
@@ -313,20 +315,20 @@ async fn chats_mentions_files_and_status() {
         serde_json::from_slice::<serde_json::Value>(&preferred.body).unwrap(),
         serde_json::json!({"availability": "DoNotDisturb", "activity": "DoNotDisturb"})
     );
-    backend.send(Command::SetStatusMessage {
+    backend.send(AccountCommand::SetStatusMessage {
         text: "Heads down".into(),
         expires: None,
     });
     wait_for(&backend, 5, |e| {
-        matches!(e, Event::MyPresence(_)).then_some(())
+        matches!(e, AccountEvent::MyPresence(_)).then_some(())
     });
 
-    backend.send(Command::Fetch {
+    backend.send(AccountCommand::Fetch {
         resource: Resource::OutOfOffice,
         trigger: Trigger::Opened,
     });
     let replies = wait_for(&backend, 5, |e| match e {
-        Event::OutOfOffice(value) => Some(value),
+        AccountEvent::OutOfOffice(value) => Some(value),
         _ => None,
     });
     assert_eq!(replies.replies, AutoReplies::On);
@@ -341,9 +343,9 @@ async fn chats_mentions_files_and_status() {
     };
     // A read-back within a second of the last fetch counts as the same look.
     std::thread::sleep(Duration::from_millis(1100));
-    backend.send(Command::SetOutOfOffice(saved.clone()));
+    backend.send(AccountCommand::SetOutOfOffice(saved.clone()));
     let shown = wait_for(&backend, 5, |e| match e {
-        Event::OutOfOffice(value) => Some(value),
+        AccountEvent::OutOfOffice(value) => Some(value),
         _ => None,
     });
     assert_eq!(shown, saved);
@@ -359,13 +361,13 @@ async fn chats_mentions_files_and_status() {
     );
     // The person's own change is read back.
     wait_for(&backend, 5, |e| {
-        matches!(e, Event::OutOfOffice(_)).then_some(())
+        matches!(e, AccountEvent::OutOfOffice(_)).then_some(())
     });
 
     // Joining a meeting whose chat Chaat has not seen: look it up.
-    backend.send(Command::FindMeetingChat(JOIN.into()));
+    backend.send(AccountCommand::FindMeetingChat(JOIN.into()));
     let (join_url, chat) = wait_for(&backend, 5, |e| match e {
-        Event::MeetingChat { join_url, chat } => Some((join_url, chat)),
+        AccountEvent::MeetingChat { join_url, chat } => Some((join_url, chat)),
         _ => None,
     });
     assert_eq!(join_url, JOIN);
@@ -378,8 +380,8 @@ async fn chats_mentions_files_and_status() {
     ));
 
     // Using Chaat keeps a presence session; quitting ends it.
-    backend.send(Command::PresenceActive);
-    backend.send(Command::PresenceActive);
+    backend.send(AccountCommand::PresenceActive);
+    backend.send(AccountCommand::PresenceActive);
     let deadline = Instant::now() + Duration::from_secs(5);
     while requests_to(&server, "/v1.0/users/u-me/presence/setPresence")
         .await

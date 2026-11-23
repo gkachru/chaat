@@ -15,8 +15,8 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 use crate::model::{
-    Access, Availability, Channel, Chat, ConversationId, Meeting, Member, MentionRef, Message,
-    Millis, PinnedMessage, Presence, Profile, SearchHit, Team,
+    Access, Availability, Channel, Chat, ConversationId, Meeting, Member, Message, Millis,
+    PinnedMessage, Presence, Profile, SearchHit, Team,
 };
 use crate::paths::AppDirs;
 use crate::sync::{Resource, Trigger};
@@ -71,8 +71,36 @@ impl AuthStatus {
     }
 }
 
+/// A message to the interface's one backend: the service backend (updates,
+/// plugins, setup files and the shared credential entry) or an account's.
+/// Each [`Backend`] accepts only its own kind, so a command cannot be sent to
+/// the wrong one.
 #[derive(Debug)]
 pub enum Command {
+    /// For the service backend.
+    Service(ServiceCommand),
+    /// For one account's backend.
+    Account(AccountCommand),
+    /// Stops either kind of backend.
+    Shutdown,
+}
+
+impl From<ServiceCommand> for Command {
+    fn from(command: ServiceCommand) -> Self {
+        Self::Service(command)
+    }
+}
+
+impl From<AccountCommand> for Command {
+    fn from(command: AccountCommand) -> Self {
+        Self::Account(command)
+    }
+}
+
+/// What the service backend handles: app updates, plugins, setup files and
+/// the relay key in the credential store.
+#[derive(Debug)]
+pub enum ServiceCommand {
     CheckUpdate {
         download: bool,
     },
@@ -80,6 +108,80 @@ pub enum Command {
     InstallUpdate(Box<fastframe_update::Prepared>),
     AcknowledgeUpdate(fastframe_update::Receipt),
     DiscardUpdate(Box<fastframe_update::Prepared>),
+    /// Stores the relay's access key in the credential store, or removes it
+    /// (`None`). Sent to the service backend; answered with `RelayKeySaved`.
+    SaveRelayKey(Option<crate::realtime::RelayKey>),
+    /// Launch (or relaunch) one plugin of the plugin list. Replaces only the
+    /// host with this id.
+    StartPlugin {
+        id: String,
+        path: std::path::PathBuf,
+        hello: crate::plugin::protocol::HostMessage,
+        /// The file's pin, if it has one (`PluginEntry::sha256`): a file that
+        /// does not match is not run.
+        expected_sha256: Option<String>,
+        /// Names this start. Events from it carry it back, so the interface
+        /// can drop what an older run of the same plugin said.
+        generation: u64,
+    },
+    /// Sends a message to one running plugin.
+    PluginSend {
+        id: String,
+        message: crate::plugin::protocol::HostMessage,
+    },
+    /// Changes what one plugin's restart hello holds, for each part given.
+    PluginHello {
+        id: String,
+        accounts: Option<Vec<crate::plugin::protocol::PluginAccount>>,
+        forget: Option<Vec<String>>,
+    },
+    /// Sends a plugin its option values. The worker adds the values of the
+    /// `secrets` options from the credential store; a missing one is left out.
+    PluginOptions {
+        id: String,
+        values: std::collections::BTreeMap<String, serde_json::Value>,
+        secrets: Vec<String>,
+    },
+    /// Stores one secret option's value in the credential store, or removes
+    /// it (`None`). Answered with `PluginSecretSaved`.
+    SavePluginSecret {
+        plugin: String,
+        /// The plugin entry's `instance`, echoed in the answer so a late
+        /// answer for a removed plugin of the same id can be ignored.
+        instance: String,
+        option: String,
+        value: Option<String>,
+    },
+    /// Stop one plugin, if it runs. The others keep running.
+    StopPlugin {
+        id: String,
+    },
+    /// Open a setup file with its passphrase; the answer is `Event::SetupOpened`.
+    OpenSetupFile {
+        path: std::path::PathBuf,
+        passphrase: String,
+        token: u64,
+    },
+    /// Apply the setup file opened under `token`; the answer is `Event::SetupApplied`.
+    ApplySetup {
+        token: u64,
+    },
+    /// Forget the setup file opened under `token`.
+    DiscardSetup {
+        token: u64,
+    },
+    /// Write a setup file; the answer is `Event::SetupExported`.
+    ExportSetup {
+        path: std::path::PathBuf,
+        payload: crate::setup_file::SetupPayload,
+        include_relay_key: bool,
+    },
+}
+
+/// What an account's backend handles: sign-in, Graph fetches, sends, the
+/// cache, presence and push.
+#[derive(Debug)]
+pub enum AccountCommand {
     /// The app registration and the account to restore, once at start and
     /// whenever the registration changes.
     Start {
@@ -119,20 +221,7 @@ pub enum Command {
         conversation: ConversationId,
         root: String,
     },
-    Send {
-        conversation: ConversationId,
-        local_id: String,
-        html: String,
-        /// A chat message to quote, or a channel post to reply under.
-        reply_to: Option<String>,
-        /// The people `<at id="n">` tags in `html` name, by index.
-        mentions: Vec<MentionRef>,
-        /// Files to upload to OneDrive and share in the message.
-        files: Vec<std::path::PathBuf>,
-        images: Vec<crate::clipboard::InlineImage>,
-        /// Who to share the files with (the chat's members' addresses).
-        recipients: Vec<String>,
-    },
+    Send(crate::outbox::SendPayload),
     /// Saves (or with `None` removes) the draft of one conversation.
     SaveDraft {
         conversation: ConversationId,
@@ -220,9 +309,6 @@ pub enum Command {
     PushPlugin(Option<PushRoute>),
     /// A body the push plugin forwarded; dropped when no plugin loop runs.
     PushBody(String),
-    /// Stores the relay's access key in the credential store, or removes it
-    /// (`None`). Sent to the service backend; answered with `RelayKeySaved`.
-    SaveRelayKey(Option<crate::realtime::RelayKey>),
     Presence(Vec<String>),
     Photo(String),
     /// A person's display name, for a system event Graph left it out of.
@@ -237,72 +323,6 @@ pub enum Command {
         query: String,
         remote: bool,
     },
-    /// Launch (or relaunch) one plugin of the plugin list. Replaces only the
-    /// host with this id.
-    StartPlugin {
-        id: String,
-        path: std::path::PathBuf,
-        hello: crate::plugin::protocol::HostMessage,
-        /// The file's pin, if it has one (`PluginEntry::sha256`): a file that
-        /// does not match is not run.
-        expected_sha256: Option<String>,
-        /// Names this start. Events from it carry it back, so the interface
-        /// can drop what an older run of the same plugin said.
-        generation: u64,
-    },
-    /// Sends a message to one running plugin.
-    PluginSend {
-        id: String,
-        message: crate::plugin::protocol::HostMessage,
-    },
-    /// Changes what one plugin's restart hello holds, for each part given.
-    PluginHello {
-        id: String,
-        accounts: Option<Vec<crate::plugin::protocol::PluginAccount>>,
-        forget: Option<Vec<String>>,
-    },
-    /// Sends a plugin its option values. The worker adds the values of the
-    /// `secrets` options from the credential store; a missing one is left out.
-    PluginOptions {
-        id: String,
-        values: std::collections::BTreeMap<String, serde_json::Value>,
-        secrets: Vec<String>,
-    },
-    /// Stores one secret option's value in the credential store, or removes
-    /// it (`None`). Answered with `PluginSecretSaved`.
-    SavePluginSecret {
-        plugin: String,
-        /// The plugin entry's `instance`, echoed in the answer so a late
-        /// answer for a removed plugin of the same id can be ignored.
-        instance: String,
-        option: String,
-        value: Option<String>,
-    },
-    /// Stop one plugin, if it runs. The others keep running.
-    StopPlugin {
-        id: String,
-    },
-    /// Open a setup file with its passphrase; the answer is `Event::SetupOpened`.
-    OpenSetupFile {
-        path: std::path::PathBuf,
-        passphrase: String,
-        token: u64,
-    },
-    /// Apply the setup file opened under `token`; the answer is `Event::SetupApplied`.
-    ApplySetup {
-        token: u64,
-    },
-    /// Forget the setup file opened under `token`.
-    DiscardSetup {
-        token: u64,
-    },
-    /// Write a setup file; the answer is `Event::SetupExported`.
-    ExportSetup {
-        path: std::path::PathBuf,
-        payload: crate::setup_file::SetupPayload,
-        include_relay_key: bool,
-    },
-    Shutdown,
 }
 
 /// How a batch of messages relates to what the interface already holds.
@@ -317,8 +337,71 @@ pub enum Merge {
     Older,
 }
 
+/// A message from a backend: from the service backend or from an account's.
+/// A [`Backend`] hands out only its own kind.
 #[derive(Debug)]
 pub enum Event {
+    Service(ServiceEvent),
+    Account(AccountEvent),
+}
+
+impl From<ServiceEvent> for Event {
+    fn from(event: ServiceEvent) -> Self {
+        Self::Service(event)
+    }
+}
+
+impl From<AccountEvent> for Event {
+    fn from(event: AccountEvent) -> Self {
+        Self::Account(event)
+    }
+}
+
+/// What the service backend reports: app updates, plugins, setup files and
+/// the relay key.
+#[derive(Debug)]
+pub enum ServiceEvent {
+    Update(crate::updates::Event),
+    /// Whether `SaveRelayKey` worked; `set` says whether a key is now stored.
+    RelayKeySaved {
+        set: bool,
+        ok: bool,
+    },
+    /// Something a plugin did, by the plugin's id.
+    Plugin {
+        id: String,
+        /// The `generation` of the `StartPlugin` whose host reported this.
+        generation: u64,
+        event: crate::plugin::event::PluginEvent,
+    },
+    /// Whether `SavePluginSecret` worked; `set` says whether a value is now
+    /// stored.
+    PluginSecretSaved {
+        plugin: String,
+        /// The `instance` of the `SavePluginSecret` this answers.
+        instance: String,
+        option: String,
+        set: bool,
+        ok: bool,
+    },
+    /// A setup file was opened (the summary) or could not be (a fixed text).
+    SetupOpened {
+        token: u64,
+        result: Result<crate::setup_file::SetupSummary, String>,
+    },
+    /// Whether the setup file opened under `token` was applied.
+    SetupApplied {
+        token: u64,
+        ok: bool,
+    },
+    /// A setup file was written (the passphrase) or could not be (a fixed text).
+    SetupExported(Result<String, String>),
+}
+
+/// What an account's backend reports: sign-in, Graph data, sends, presence
+/// and push.
+#[derive(Debug)]
+pub enum AccountEvent {
     /// The answer to `Command::AgentRead`. The error is one of
     /// `not_allowed`, `not_found`, `bad_request`, `busy`.
     AgentAnswer {
@@ -326,7 +409,6 @@ pub enum Event {
         request: u64,
         data: Result<serde_json::Value, &'static str>,
     },
-    Update(crate::updates::Event),
     Pasted {
         conversation: ConversationId,
         range: (usize, usize),
@@ -417,28 +499,6 @@ pub enum Event {
     Loading(Resource, bool),
     /// The push relay's state.
     Push(crate::realtime::PushStatus),
-    /// Whether `SaveRelayKey` worked; `set` says whether a key is now stored.
-    RelayKeySaved {
-        set: bool,
-        ok: bool,
-    },
-    /// Something a plugin did, by the plugin's id.
-    Plugin {
-        id: String,
-        /// The `generation` of the `StartPlugin` whose host reported this.
-        generation: u64,
-        event: crate::plugin::event::PluginEvent,
-    },
-    /// Whether `SavePluginSecret` worked; `set` says whether a value is now
-    /// stored.
-    PluginSecretSaved {
-        plugin: String,
-        /// The `instance` of the `SavePluginSecret` this answers.
-        instance: String,
-        option: String,
-        set: bool,
-        ok: bool,
-    },
     /// Directory search results for `query`.
     People {
         query: String,
@@ -498,18 +558,6 @@ pub enum Event {
     /// Whether Microsoft could be reached on the last fetch. Sent only when it
     /// changes; a lost connection is shown quietly, not as an error.
     Reachable(bool),
-    /// A setup file was opened (the summary) or could not be (a fixed text).
-    SetupOpened {
-        token: u64,
-        result: Result<crate::setup_file::SetupSummary, String>,
-    },
-    /// Whether the setup file opened under `token` was applied.
-    SetupApplied {
-        token: u64,
-        ok: bool,
-    },
-    /// A setup file was written (the passphrase) or could not be (a fixed text).
-    SetupExported(Result<String, String>),
     /// Something the person should hear about, in plain words.
     Error(String),
 }
@@ -561,14 +609,56 @@ impl Default for BackendOptions {
     }
 }
 
-pub struct Backend {
+/// Which kind of backend a [`Backend`] is, and so which commands it takes.
+pub trait Role {
+    /// What the interface may send this kind of backend.
+    type Cmd: Into<Command>;
+    /// What this kind of backend reports.
+    type Evt;
+    /// The events of this kind out of the shared channel; `None` for the
+    /// other kind.
+    fn event(event: Event) -> Option<Self::Evt>;
+}
+
+/// The one backend for updates, plugins, setup files and secrets.
+pub enum ServiceRole {}
+
+/// A backend for one signed-in account.
+pub enum AccountRole {}
+
+impl Role for ServiceRole {
+    type Cmd = ServiceCommand;
+    type Evt = ServiceEvent;
+
+    fn event(event: Event) -> Option<ServiceEvent> {
+        match event {
+            Event::Service(event) => Some(event),
+            Event::Account(_) => None,
+        }
+    }
+}
+
+impl Role for AccountRole {
+    type Cmd = AccountCommand;
+    type Evt = AccountEvent;
+
+    fn event(event: Event) -> Option<AccountEvent> {
+        match event {
+            Event::Account(event) => Some(event),
+            Event::Service(_) => None,
+        }
+    }
+}
+
+pub struct Backend<R: Role = AccountRole> {
     commands: mpsc::UnboundedSender<Command>,
     events: std::sync::mpsc::Receiver<Event>,
     thread: Option<std::thread::JoinHandle<()>>,
     detached: bool,
+    role: std::marker::PhantomData<fn() -> R>,
 }
 
-impl Backend {
+impl<R: Role> Backend<R> {
     pub fn spawn(dirs: AppDirs, waker: Waker) -> Self {
         Self::spawn_with(dirs, waker, BackendOptions::default())
     }
@@ -594,6 +684,7 @@ impl Backend {
             events: event_rx,
             thread: Some(thread),
             detached: false,
+            role: std::marker::PhantomData,
         }
     }
 
@@ -608,6 +699,7 @@ impl Backend {
                 events: event_rx,
                 thread: None,
                 detached: true,
+                role: std::marker::PhantomData,
             },
             event_tx,
         )
@@ -623,6 +715,7 @@ impl Backend {
                 events: event_rx,
                 thread: None,
                 detached: false,
+                role: std::marker::PhantomData,
             },
             command_rx,
         )
@@ -632,12 +725,21 @@ impl Backend {
         self.detached
     }
 
-    pub fn send(&self, command: Command) {
-        let _ = self.commands.send(command);
+    pub fn send(&self, command: R::Cmd) {
+        let _ = self.commands.send(command.into());
     }
 
-    pub fn poll(&self) -> Vec<Event> {
-        self.events.try_iter().collect()
+    pub fn poll(&self) -> Vec<R::Evt> {
+        self.events
+            .try_iter()
+            .filter_map(|event| {
+                let event = R::event(event);
+                if event.is_none() {
+                    log::error!("a backend reported an event of the other kind");
+                }
+                event
+            })
+            .collect()
     }
 
     /// Asks the backend to stop without waiting for it, so several can wind
@@ -654,8 +756,53 @@ impl Backend {
     }
 }
 
-impl Drop for Backend {
+impl<R: Role> Drop for Backend<R> {
     fn drop(&mut self) {
         self.shutdown();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn commands_are_wrapped_by_kind() {
+        let (service, mut service_rx) = Backend::<ServiceRole>::recording();
+        service.send(ServiceCommand::StopPlugin { id: "p".into() });
+        assert!(matches!(
+            service_rx.try_recv(),
+            Ok(Command::Service(ServiceCommand::StopPlugin { .. }))
+        ));
+        let (account, mut account_rx) = Backend::<AccountRole>::recording();
+        account.send(AccountCommand::CancelSignIn);
+        assert!(matches!(
+            account_rx.try_recv(),
+            Ok(Command::Account(AccountCommand::CancelSignIn))
+        ));
+    }
+
+    #[test]
+    fn poll_hands_out_only_its_own_kind() {
+        let (service, tx) = Backend::<ServiceRole>::detached();
+        tx.send(AccountEvent::Reachable(true).into()).unwrap();
+        tx.send(
+            ServiceEvent::RelayKeySaved {
+                set: true,
+                ok: true,
+            }
+            .into(),
+        )
+        .unwrap();
+        let events = service.poll();
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], ServiceEvent::RelayKeySaved { .. }));
+        let (account, tx) = Backend::<AccountRole>::detached();
+        tx.send(ServiceEvent::SetupExported(Err("x".into())).into())
+            .unwrap();
+        tx.send(AccountEvent::Reachable(false).into()).unwrap();
+        let events = account.poll();
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], AccountEvent::Reachable(false)));
     }
 }

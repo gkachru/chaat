@@ -588,7 +588,7 @@ fn large_pasted_text_stays_scrollable_and_sendable_inside_the_composer() {
                         .collect::<Vec<_>>()
                         .join(separator);
                     h.app.handle(
-                        chaat::backend::Event::Pasted {
+                        chaat::backend::AccountEvent::Pasted {
                             conversation: chat.clone(),
                             range: (0, 0),
                             text: pasted.clone(),
@@ -686,7 +686,7 @@ fn pasted_image_preview_and_image_only_send_draw() {
     let chat = h.app.open.clone().unwrap();
     let image = chaat::clipboard::encode_rgba(2, 2, &[0, 128, 255, 255].repeat(4)).unwrap();
     h.app.handle(
-        chaat::backend::Event::Pasted {
+        chaat::backend::AccountEvent::Pasted {
             conversation: chat.clone(),
             range: (0, 0),
             text: String::new(),
@@ -760,7 +760,7 @@ fn clicking_received_images_opens_the_shared_viewer_at_their_original_size() {
                     .unwrap();
                 let bytes = bytes.into_inner();
                 h.app.handle(
-                    chaat::backend::Event::Media {
+                    chaat::backend::AccountEvent::Media {
                         url: url.into(),
                         bytes: Some(bytes.clone()),
                     },
@@ -867,7 +867,7 @@ fn clicking_an_optimistic_image_message_opens_the_same_viewer_as_its_draft() {
     let image =
         chaat::clipboard::encode_rgba(640, 480, &[0, 128, 255, 255].repeat(640 * 480)).unwrap();
     h.app.handle(
-        chaat::backend::Event::Pasted {
+        chaat::backend::AccountEvent::Pasted {
             conversation: chat.clone(),
             range: (0, 0),
             text: String::new(),
@@ -937,7 +937,7 @@ fn composer_images_have_usable_thumbnails_and_open_full_previews() {
                 )
                 .unwrap();
                 h.app.handle(
-                    chaat::backend::Event::Pasted {
+                    chaat::backend::AccountEvent::Pasted {
                         conversation: chat.clone(),
                         range: (0, 0),
                         text: String::new(),
@@ -1048,7 +1048,7 @@ fn multiple_pasted_images_wrap_without_clipping() {
                 )
                 .unwrap();
                 h.app.handle(
-                    chaat::backend::Event::Pasted {
+                    chaat::backend::AccountEvent::Pasted {
                         conversation: chat.clone(),
                         range: (0, 0),
                         text: String::new(),
@@ -1332,7 +1332,7 @@ fn prepending_history_preserves_the_visible_row() {
     h.frames(25);
     let before = h.app.conversations[&chat].history_anchor.clone().unwrap();
     h.app.handle(
-        chaat::backend::Event::Messages {
+        chaat::backend::AccountEvent::Messages {
             conversation: chat.clone(),
             messages: vec![chaat::model::Message {
                 id: "prepended".into(),
@@ -2542,7 +2542,7 @@ fn an_evicted_draft_image_reopens_at_original_resolution_without_losing_the_draf
     let image =
         chaat::clipboard::encode_rgba(1200, 800, &[15, 50, 90, 255].repeat(1200 * 800)).unwrap();
     h.app.handle(
-        chaat::backend::Event::Pasted {
+        chaat::backend::AccountEvent::Pasted {
             conversation: chat.clone(),
             range: (0, 0),
             text: String::new(),
@@ -3216,8 +3216,8 @@ fn a_ring_toast_offers_place_call_and_open_chat_in_both_themes_and_widths() {
             h.app.section = Section::Calls;
             h.frames(2);
             let ctx = h.ctx.clone();
-            h.app.handle(
-                chaat::backend::Event::Plugin {
+            h.app.handle_service(
+                chaat::backend::ServiceEvent::Plugin {
                     id: "demo-alerts".into(),
                     generation: 0,
                     event: chaat::plugin::event::PluginEvent::IncomingCall(
@@ -3284,8 +3284,8 @@ fn the_call_alerts_sign_in_panel_shows_the_code_in_both_themes_and_widths() {
                 state.running = true;
                 state.offers = vec!["call_alerts"];
             }
-            h.app.handle(
-                chaat::backend::Event::Plugin {
+            h.app.handle_service(
+                chaat::backend::ServiceEvent::Plugin {
                     id: "ca".into(),
                     generation: 0,
                     event: chaat::plugin::event::PluginEvent::SignIn {
@@ -4042,8 +4042,8 @@ fn a_plugin_sign_in_card_names_chaats_account_not_the_plugins_claim() {
                 .clear();
             let me = h.app.plugin_accounts()[0].id.clone();
             let ctx = h.ctx.clone();
-            h.app.handle(
-                chaat::backend::Event::Plugin {
+            h.app.handle_service(
+                chaat::backend::ServiceEvent::Plugin {
                     id: "demo-alerts".into(),
                     generation: 0,
                     event: chaat::plugin::event::PluginEvent::SignIn {
@@ -4858,8 +4858,8 @@ fn push_plugin_harness(width: f32, theme: ThemeChoice, allowed: bool) -> Harness
 
 fn push_plugin_event(h: &mut Harness, event: chaat::plugin::event::PushEvent) {
     let ctx = h.ctx.clone();
-    h.app.handle(
-        chaat::backend::Event::Plugin {
+    h.app.handle_service(
+        chaat::backend::ServiceEvent::Plugin {
             id: "demo-alerts".into(),
             generation: 0,
             event: chaat::plugin::event::PluginEvent::Push(event),
@@ -7017,7 +7017,7 @@ fn status_dialog_clear_after() {
 
 #[test]
 fn join_box_accepts_meeting_id() {
-    use chaat::backend::Event;
+    use chaat::backend::AccountEvent;
     for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
         for width in CHAT_ACTION_WIDTHS {
             let mut h = themed(&theme, width);
@@ -7047,7 +7047,7 @@ fn join_box_accepts_meeting_id() {
             // A lookup that finds nothing says so and keeps the page.
             let ctx = h.ctx.clone();
             h.app.handle(
-                Event::MeetingById {
+                AccountEvent::MeetingById {
                     id: "123456789012".into(),
                     join_url: None,
                 },

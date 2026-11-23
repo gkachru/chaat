@@ -9,7 +9,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use chaat::backend::{AuthStatus, Backend, BackendOptions, Command, Event, Waker};
+use chaat::backend::{AccountCommand, AccountEvent, AuthStatus, Backend, BackendOptions, Waker};
 use chaat::model::ConversationId;
 use chaat::paths::AppDirs;
 use chaat::secrets::{MemoryStore, SecretStore};
@@ -130,23 +130,23 @@ async fn sign_in_sync_send_restore_and_sign_out() {
     };
 
     // First run: no account yet.
-    let backend = Backend::spawn_with(dirs.clone(), Waker::default(), options.clone());
-    backend.send(Command::Start {
+    let backend: Backend = Backend::spawn_with(dirs.clone(), Waker::default(), options.clone());
+    backend.send(AccountCommand::Start {
         client_id: CLIENT.into(),
         tenant: "organizations".into(),
         account: None,
     });
     wait_for(&backend, 5, |e| {
-        matches!(e, Event::Auth(AuthStatus::SignedOut)).then_some(())
+        matches!(e, AccountEvent::Auth(AuthStatus::SignedOut)).then_some(())
     });
 
     // Sign in: play the browser's part by following the redirect.
-    backend.send(Command::SignIn {
+    backend.send(AccountCommand::SignIn {
         extra_scopes: Vec::new(),
         device_code: false,
     });
     let url = wait_for(&backend, 5, |e| match e {
-        Event::Auth(AuthStatus::WaitingForBrowser { url }) => Some(url),
+        AccountEvent::Auth(AuthStatus::WaitingForBrowser { url }) => Some(url),
         _ => None,
     });
     assert!(url.starts_with(&format!(
@@ -167,11 +167,11 @@ async fn sign_in_sync_send_restore_and_sign_out() {
     .unwrap();
     assert!(landing.contains("signed in"));
     let account = wait_for(&backend, 10, |e| match e {
-        Event::Auth(AuthStatus::SignedIn { account, name, .. }) => {
+        AccountEvent::Auth(AuthStatus::SignedIn { account, name, .. }) => {
             assert_eq!(name, "Alex Rivera");
             Some(account)
         }
-        Event::Auth(AuthStatus::Failed(reason)) => panic!("sign-in failed: {reason}"),
+        AccountEvent::Auth(AuthStatus::Failed(reason)) => panic!("sign-in failed: {reason}"),
         _ => None,
     });
     assert_eq!(account, "u-me.t-1");
@@ -184,12 +184,12 @@ async fn sign_in_sync_send_restore_and_sign_out() {
     );
 
     // Chats, then the chat's messages, then a send.
-    backend.send(Command::Fetch {
+    backend.send(AccountCommand::Fetch {
         resource: Resource::Chats,
         trigger: Trigger::Start,
     });
     let chats = wait_for(&backend, 10, |e| match e {
-        Event::Chats {
+        AccountEvent::Chats {
             chats,
             cached: false,
         } => Some(chats),
@@ -200,12 +200,12 @@ async fn sign_in_sync_send_restore_and_sign_out() {
     assert!(chats[0].is_unread("u-me"));
 
     let conversation = ConversationId::Chat(CHAT.into());
-    backend.send(Command::Fetch {
+    backend.send(AccountCommand::Fetch {
         resource: Resource::Messages(conversation.clone()),
         trigger: Trigger::Opened,
     });
     let messages = wait_for(&backend, 10, |e| match e {
-        Event::Messages {
+        AccountEvent::Messages {
             messages,
             cached: false,
             ..
@@ -215,7 +215,7 @@ async fn sign_in_sync_send_restore_and_sign_out() {
     assert_eq!(messages.len(), 2);
     assert_eq!(messages[0].body.to_plain(), "Ship it?");
 
-    backend.send(Command::Send {
+    backend.send(AccountCommand::Send(chaat::outbox::SendPayload {
         conversation: conversation.clone(),
         local_id: "local-1".into(),
         html: chaat::html::compose("Shipping **today**"),
@@ -224,12 +224,12 @@ async fn sign_in_sync_send_restore_and_sign_out() {
         files: Vec::new(),
         images: Vec::new(),
         recipients: Vec::new(),
-    });
+    }));
     let sent = wait_for(&backend, 10, |e| match e {
-        Event::Sent {
+        AccountEvent::Sent {
             local_id, message, ..
         } => Some((local_id, message)),
-        Event::SendFailed { reason, .. } => panic!("send failed: {reason}"),
+        AccountEvent::SendFailed { reason, .. } => panic!("send failed: {reason}"),
         _ => None,
     });
     assert_eq!(sent.0, "local-1");
@@ -239,14 +239,14 @@ async fn sign_in_sync_send_restore_and_sign_out() {
 
     // Second run: the session comes back from the credential store, and the
     // cache is shown before any request.
-    let backend = Backend::spawn_with(dirs.clone(), Waker::default(), options.clone());
-    backend.send(Command::Start {
+    let backend: Backend = Backend::spawn_with(dirs.clone(), Waker::default(), options.clone());
+    backend.send(AccountCommand::Start {
         client_id: CLIENT.into(),
         tenant: "organizations".into(),
         account: Some(account.clone()),
     });
     let cached = wait_for(&backend, 5, |e| match e {
-        Event::Chats {
+        AccountEvent::Chats {
             chats,
             cached: true,
         } => Some(chats),
@@ -254,24 +254,24 @@ async fn sign_in_sync_send_restore_and_sign_out() {
     });
     assert_eq!(cached.len(), 1);
     wait_for(&backend, 5, |e| {
-        matches!(e, Event::Auth(AuthStatus::SignedIn { .. })).then_some(())
+        matches!(e, AccountEvent::Auth(AuthStatus::SignedIn { .. })).then_some(())
     });
     // Saving the same registration starts the account again: the window
     // shows it as restoring until the backend says it is still signed in.
-    backend.send(Command::Start {
+    backend.send(AccountCommand::Start {
         client_id: CLIENT.into(),
         tenant: "organizations".into(),
         account: Some(account.clone()),
     });
     wait_for(&backend, 5, |e| {
-        matches!(e, Event::Auth(AuthStatus::SignedIn { .. })).then_some(())
+        matches!(e, AccountEvent::Auth(AuthStatus::SignedIn { .. })).then_some(())
     });
-    backend.send(Command::Fetch {
+    backend.send(AccountCommand::Fetch {
         resource: Resource::Messages(conversation.clone()),
         trigger: Trigger::Opened,
     });
     let cached_messages = wait_for(&backend, 5, |e| match e {
-        Event::Messages {
+        AccountEvent::Messages {
             messages,
             cached: true,
             more: Some(true),
@@ -283,7 +283,7 @@ async fn sign_in_sync_send_restore_and_sign_out() {
     // Opening serves the cache before its Graph refresh completes. Wait for
     // that refresh so its requests cannot be mistaken for a cache-only reopen.
     wait_for(&backend, 5, |e| match e {
-        Event::Messages {
+        AccountEvent::Messages {
             conversation: fetched,
             cached: false,
             ..
@@ -292,9 +292,9 @@ async fn sign_in_sync_send_restore_and_sign_out() {
     });
     // RAM eviction can reopen a conversation without claiming a Graph fetch.
     let requests_before = server.received_requests().await.unwrap().len();
-    backend.send(Command::CachedMessages(conversation.clone()));
+    backend.send(AccountCommand::CachedMessages(conversation.clone()));
     let reopened = wait_for(&backend, 5, |e| match e {
-        Event::Messages {
+        AccountEvent::Messages {
             messages,
             cached: true,
             ..
@@ -323,12 +323,12 @@ async fn sign_in_sync_send_restore_and_sign_out() {
         .with_priority(1)
         .mount(&server)
         .await;
-    backend.send(Command::LoadOlder {
+    backend.send(AccountCommand::LoadOlder {
         conversation: conversation.clone(),
         before: Some(before),
     });
     let earlier = wait_for(&backend, 5, |e| match e {
-        Event::Messages {
+        AccountEvent::Messages {
             messages,
             merge: chaat::backend::Merge::Older,
             more: Some(false),
@@ -366,18 +366,18 @@ async fn sign_in_sync_send_restore_and_sign_out() {
         .await;
     let media_url = format!("{}/v1.0/hosted-image", server.uri());
     for _ in 0..2 {
-        backend.send(Command::Media(media_url.clone()));
+        backend.send(AccountCommand::Media(media_url.clone()));
         let bytes = wait_for(&backend, 5, |e| match e {
-            Event::Media { url, bytes } if url == media_url => Some(bytes),
+            AccountEvent::Media { url, bytes } if url == media_url => Some(bytes),
             _ => None,
         });
         assert_eq!(bytes, Some(b"image fixture".to_vec()));
     }
 
     // Sign out: the token and the cache are gone.
-    backend.send(Command::SignOut);
+    backend.send(AccountCommand::SignOut);
     wait_for(&backend, 5, |e| {
-        matches!(e, Event::Auth(AuthStatus::SignedOut)).then_some(())
+        matches!(e, AccountEvent::Auth(AuthStatus::SignedOut)).then_some(())
     });
     assert_eq!(
         secrets
@@ -413,12 +413,12 @@ async fn members_fetch_sends_event_and_updates_store() {
         .mount(&server)
         .await;
     let session = signed_in(&server).await;
-    session.backend.send(Command::Fetch {
+    session.backend.send(AccountCommand::Fetch {
         resource: Resource::Members(CHAT.into()),
         trigger: Trigger::Opened,
     });
     let members = wait_for(&session.backend, 10, |e| match e {
-        Event::Members { chat, members } if chat == CHAT => Some(members),
+        AccountEvent::Members { chat, members } if chat == CHAT => Some(members),
         _ => None,
     });
     assert_eq!(members.len(), 3);
@@ -455,13 +455,13 @@ async fn add_members_reports_partial_failure() {
         .mount(&server)
         .await;
     let session = signed_in(&server).await;
-    session.backend.send(Command::AddMembers {
+    session.backend.send(AccountCommand::AddMembers {
         chat: CHAT.into(),
         users: vec!["u1".into(), "u2".into()],
         history: false,
     });
     let (added, failed) = wait_for(&session.backend, 20, |e| match e {
-        Event::MembersAdded {
+        AccountEvent::MembersAdded {
             chat,
             added,
             failed,
@@ -472,7 +472,7 @@ async fn add_members_reports_partial_failure() {
     assert_eq!(failed, vec!["u2".to_string()]);
     // Then the members are read back.
     let members = wait_for(&session.backend, 10, |e| match e {
-        Event::Members { chat, members } if chat == CHAT => Some(members),
+        AccountEvent::Members { chat, members } if chat == CHAT => Some(members),
         _ => None,
     });
     assert_eq!(members.len(), 2);
@@ -498,10 +498,10 @@ async fn leave_finds_my_membership_and_deletes() {
         .mount(&server)
         .await;
     let session = signed_in(&server).await;
-    session.backend.send(Command::LeaveChat(CHAT.into()));
+    session.backend.send(AccountCommand::LeaveChat(CHAT.into()));
     wait_for(&session.backend, 10, |e| match e {
-        Event::LeftChat(chat) if chat == CHAT => Some(()),
-        Event::LeaveFailed { .. } => panic!("leave failed"),
+        AccountEvent::LeftChat(chat) if chat == CHAT => Some(()),
+        AccountEvent::LeaveFailed { .. } => panic!("leave failed"),
         _ => None,
     });
     std::thread::sleep(Duration::from_millis(200));
@@ -528,9 +528,9 @@ async fn leave_403_reports_admin() {
         .mount(&server)
         .await;
     let session = signed_in(&server).await;
-    session.backend.send(Command::LeaveChat(CHAT.into()));
+    session.backend.send(AccountCommand::LeaveChat(CHAT.into()));
     let admin = wait_for(&session.backend, 10, |e| match e {
-        Event::LeaveFailed { chat, admin } if chat == CHAT => Some(admin),
+        AccountEvent::LeaveFailed { chat, admin } if chat == CHAT => Some(admin),
         _ => None,
     });
     assert!(admin);
@@ -554,9 +554,9 @@ async fn leave_without_my_membership_fails() {
         .mount(&server)
         .await;
     let session = signed_in(&server).await;
-    session.backend.send(Command::LeaveChat(CHAT.into()));
+    session.backend.send(AccountCommand::LeaveChat(CHAT.into()));
     let admin = wait_for(&session.backend, 10, |e| match e {
-        Event::LeaveFailed { chat, admin } if chat == CHAT => Some(admin),
+        AccountEvent::LeaveFailed { chat, admin } if chat == CHAT => Some(admin),
         _ => None,
     });
     assert!(!admin);
@@ -566,16 +566,18 @@ async fn leave_without_my_membership_fails() {
 
 fn outbox_entry(local_id: &str, text: &str, created: i64) -> chaat::outbox::OutboxEntry {
     chaat::outbox::OutboxEntry {
-        local_id: local_id.into(),
-        conversation: ConversationId::Chat(CHAT.into()),
+        payload: chaat::outbox::SendPayload {
+            local_id: local_id.into(),
+            conversation: ConversationId::Chat(CHAT.into()),
+            html: chaat::html::compose(text),
+            reply_to: None,
+            mentions: Vec::new(),
+            files: Vec::new(),
+            images: Vec::new(),
+            recipients: Vec::new(),
+        },
         created,
-        html: chaat::html::compose(text),
         text: text.into(),
-        reply_to: None,
-        mentions: Vec::new(),
-        files: Vec::new(),
-        images: Vec::new(),
-        recipients: Vec::new(),
     }
 }
 
@@ -597,13 +599,15 @@ async fn resend_checks_first() {
     let session = signed_in(&server).await;
     // "Build is green" (1690, mine) was created at 2026-10-11T09:50:00Z.
     let entry = outbox_entry("local-9", "Build is green", 1_791_712_201_000);
-    session.backend.send(Command::SaveOutbox(entry.clone()));
-    session.backend.send(Command::Resend(entry));
+    session
+        .backend
+        .send(AccountCommand::SaveOutbox(entry.clone()));
+    session.backend.send(AccountCommand::Resend(entry));
     let found = wait_for(&session.backend, 10, |e| match e {
-        Event::Sent {
+        AccountEvent::Sent {
             local_id, message, ..
         } => Some((local_id, message)),
-        Event::SendFailed { reason, .. } => panic!("resend failed: {reason}"),
+        AccountEvent::SendFailed { reason, .. } => panic!("resend failed: {reason}"),
         _ => None,
     });
     assert_eq!(found.0, "local-9");
@@ -617,13 +621,15 @@ async fn resend_posts_when_absent() {
     let server = mock_server(true).await;
     let session = signed_in(&server).await;
     let entry = outbox_entry("local-4", "Shipping **today**", chaat::time::now());
-    session.backend.send(Command::SaveOutbox(entry.clone()));
-    session.backend.send(Command::Resend(entry));
+    session
+        .backend
+        .send(AccountCommand::SaveOutbox(entry.clone()));
+    session.backend.send(AccountCommand::Resend(entry));
     let sent = wait_for(&session.backend, 10, |e| match e {
-        Event::Sent {
+        AccountEvent::Sent {
             local_id, message, ..
         } => Some((local_id, message)),
-        Event::SendFailed { reason, .. } => panic!("resend failed: {reason}"),
+        AccountEvent::SendFailed { reason, .. } => panic!("resend failed: {reason}"),
         _ => None,
     });
     assert_eq!(sent.0, "local-4");
@@ -639,14 +645,14 @@ async fn resend_posts_when_absent() {
     } = session;
     drop(backend);
     common::clear_pending();
-    let backend = Backend::spawn_with(dirs, Waker::default(), options);
-    backend.send(Command::Start {
+    let backend: Backend = Backend::spawn_with(dirs, Waker::default(), options);
+    backend.send(AccountCommand::Start {
         client_id: CLIENT.into(),
         tenant: "organizations".into(),
         account: Some(account),
     });
     let outbox = wait_for(&backend, 10, |e| match e {
-        Event::Restored { outbox, .. } => Some(outbox),
+        AccountEvent::Restored { outbox, .. } => Some(outbox),
         _ => None,
     });
     assert!(outbox.is_empty());
@@ -662,13 +668,15 @@ async fn restored_after_chats() {
         reply_to: None,
         mentions: Vec::new(),
     };
-    session.backend.send(Command::SaveDraft {
+    session.backend.send(AccountCommand::SaveDraft {
         conversation: conversation.clone(),
         draft: Some(draft.clone()),
     });
     session
         .backend
-        .send(Command::SaveOutbox(outbox_entry("local-2", "unsent", 5)));
+        .send(AccountCommand::SaveOutbox(outbox_entry(
+            "local-2", "unsent", 5,
+        )));
     let Session {
         backend,
         dirs,
@@ -678,25 +686,25 @@ async fn restored_after_chats() {
     } = session;
     drop(backend);
     common::clear_pending();
-    let backend = Backend::spawn_with(dirs, Waker::default(), options);
-    backend.send(Command::Start {
+    let backend: Backend = Backend::spawn_with(dirs, Waker::default(), options);
+    backend.send(AccountCommand::Start {
         client_id: CLIENT.into(),
         tenant: "organizations".into(),
         account: Some(account.clone()),
     });
     // Chats first: Restored would be skipped by this wait if it came earlier.
     wait_for(&backend, 5, |e| {
-        matches!(e, Event::Chats { cached: true, .. }).then_some(())
+        matches!(e, AccountEvent::Chats { cached: true, .. }).then_some(())
     });
     let (drafts, outbox) = wait_for(&backend, 10, |e| match e {
-        Event::Restored { drafts, outbox } => Some((drafts, outbox)),
+        AccountEvent::Restored { drafts, outbox } => Some((drafts, outbox)),
         _ => None,
     });
     assert_eq!(drafts, vec![(conversation, draft)]);
     assert_eq!(outbox.len(), 1);
-    assert_eq!(outbox[0].local_id, "local-2");
+    assert_eq!(outbox[0].payload.local_id, "local-2");
     // Once per start: saving the same registration again does not repeat it.
-    backend.send(Command::Start {
+    backend.send(AccountCommand::Start {
         client_id: CLIENT.into(),
         tenant: "organizations".into(),
         account: Some(account),
@@ -706,7 +714,7 @@ async fn restored_after_chats() {
         !backend
             .poll()
             .iter()
-            .any(|e| matches!(e, Event::Restored { .. }))
+            .any(|e| matches!(e, AccountEvent::Restored { .. }))
     );
 }
 
@@ -735,19 +743,19 @@ async fn find_local_first_then_microsoft_search_filtered() {
         .await;
     let session = signed_in(&server).await;
     let conversation = ConversationId::Chat(CHAT.into());
-    session.backend.send(Command::Fetch {
+    session.backend.send(AccountCommand::Fetch {
         resource: Resource::Messages(conversation.clone()),
         trigger: Trigger::Opened,
     });
     wait_for(&session.backend, 10, |e| {
-        matches!(e, Event::Messages { cached: false, .. }).then_some(())
+        matches!(e, AccountEvent::Messages { cached: false, .. }).then_some(())
     });
-    session.backend.send(Command::SearchIn {
+    session.backend.send(AccountCommand::SearchIn {
         conversation: conversation.clone(),
         query: "build".into(),
         remote: false,
     });
-    session.backend.send(Command::SearchIn {
+    session.backend.send(AccountCommand::SearchIn {
         conversation: conversation.clone(),
         query: "build".into(),
         remote: true,
@@ -755,7 +763,7 @@ async fn find_local_first_then_microsoft_search_filtered() {
     let mut batches = Vec::new();
     for _ in 0..2 {
         let hits = wait_for(&session.backend, 10, |e| match e {
-            Event::ConversationHits {
+            AccountEvent::ConversationHits {
                 conversation: c,
                 query,
                 hits,
@@ -776,13 +784,13 @@ async fn find_local_first_then_microsoft_search_filtered() {
         "other chats are dropped"
     );
     // Two letters search locally only.
-    session.backend.send(Command::SearchIn {
+    session.backend.send(AccountCommand::SearchIn {
         conversation: conversation.clone(),
         query: "bu".into(),
         remote: false,
     });
     wait_for(&session.backend, 10, |e| match e {
-        Event::ConversationHits { query, .. } if query == "bu" => Some(()),
+        AccountEvent::ConversationHits { query, .. } if query == "bu" => Some(()),
         _ => None,
     });
 }
@@ -806,7 +814,7 @@ async fn drafts_save_while_the_session_is_expired() {
         ..options
     };
     let start = |backend: &Backend| {
-        backend.send(Command::Start {
+        backend.send(AccountCommand::Start {
             client_id: CLIENT.into(),
             tenant: "organizations".into(),
             account: Some(account.clone()),
@@ -816,11 +824,11 @@ async fn drafts_save_while_the_session_is_expired() {
     let backend = Backend::spawn_with(dirs.clone(), Waker::default(), expired.clone());
     start(&backend);
     wait_for(&backend, 10, |e| {
-        matches!(e, Event::Auth(AuthStatus::Expired { .. })).then_some(())
+        matches!(e, AccountEvent::Auth(AuthStatus::Expired { .. })).then_some(())
     });
     // Typed quickly, only the last one needs to survive.
     for text in ["h", "he", "hel", "help"] {
-        backend.send(Command::SaveDraft {
+        backend.send(AccountCommand::SaveDraft {
             conversation: conversation.clone(),
             draft: Some(chaat::outbox::StoredDraft {
                 text: text.into(),
@@ -828,14 +836,16 @@ async fn drafts_save_while_the_session_is_expired() {
             }),
         });
     }
-    backend.send(Command::SaveOutbox(outbox_entry("local-5", "kept", 5)));
-    backend.send(Command::DropOutbox("local-5".into()));
+    backend.send(AccountCommand::SaveOutbox(outbox_entry(
+        "local-5", "kept", 5,
+    )));
+    backend.send(AccountCommand::DropOutbox("local-5".into()));
     drop(backend);
     common::clear_pending();
     let backend = Backend::spawn_with(dirs, Waker::default(), expired);
     start(&backend);
     let (drafts, outbox) = wait_for(&backend, 10, |e| match e {
-        Event::Restored { drafts, outbox } => Some((drafts, outbox)),
+        AccountEvent::Restored { drafts, outbox } => Some((drafts, outbox)),
         _ => None,
     });
     assert_eq!(drafts.len(), 1);

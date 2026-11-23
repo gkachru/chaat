@@ -101,7 +101,7 @@ Signing out deletes that account's refresh token and folder.
 ## Agents data flow
 
 ```
-agent ─► plugin ─ agent_query ─► App::on_agent_query ─(plugin approved, account known)─► Command::AgentRead
+agent ─► plugin ─ agent_query ─► App::on_agent_query ─(plugin approved, account known)─► AccountCommand::AgentRead
                                                                                              │ cache only
 plugin ◄─ agent_result ◄─ Event ◄───────── backend/agents.rs (filters by allow list again) ◄─┘
 plugin ─ agent_propose ─► App (allow list, propose switch) ─► Proposals (memory) ─► card / pill

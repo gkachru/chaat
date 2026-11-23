@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use super::App;
 use super::PushPluginState;
-use crate::backend::Command;
+use crate::backend::ServiceCommand;
 use crate::model::{PluginAction, PluginSignIn, SettingsPage, ToastKind};
 use crate::plugin::event::PluginEvent;
 use crate::plugin::options;
@@ -171,7 +171,7 @@ fn stored_map(entry: &PluginEntry) -> serde_json::Map<String, serde_json::Value>
 
 impl App {
     /// Sends to the service backend, except in the demo.
-    pub(super) fn send_service(&self, command: Command) {
+    pub(super) fn send_service(&self, command: ServiceCommand) {
         if !self.demo {
             self.service.send(command);
         }
@@ -217,7 +217,7 @@ impl App {
         if !self.plugin_may_receive(id, &message) {
             return;
         }
-        self.send_service(Command::PluginSend {
+        self.send_service(ServiceCommand::PluginSend {
             id: id.to_owned(),
             message,
         });
@@ -364,7 +364,8 @@ impl App {
             self.plugins_started.remove(&id);
             self.plugin_started_at.remove(&id);
             self.retire_plugin_generation(&id);
-            self.service.send(Command::StopPlugin { id: id.clone() });
+            self.service
+                .send(ServiceCommand::StopPlugin { id: id.clone() });
             if let Some(state) = self.plugins.get_mut(&id) {
                 state.stopped();
             }
@@ -389,7 +390,7 @@ impl App {
             // The host checks the file again and reports a change again.
             state.file_changed = None;
             let generation = self.next_plugin_generation(&id);
-            self.service.send(Command::StartPlugin {
+            self.service.send(ServiceCommand::StartPlugin {
                 id,
                 path,
                 hello,
@@ -494,7 +495,7 @@ impl App {
             return;
         }
         self.send_to_plugin(id, message);
-        self.send_service(Command::PluginHello {
+        self.send_service(ServiceCommand::PluginHello {
             id: id.to_owned(),
             accounts: Some(accounts),
             forget: None,
@@ -518,7 +519,7 @@ impl App {
                 Vec::new()
             };
             self.mark_settings_dirty();
-            self.send_service(Command::PluginHello {
+            self.send_service(ServiceCommand::PluginHello {
                 id: id.to_owned(),
                 accounts: None,
                 forget: Some(forget),
@@ -562,7 +563,7 @@ impl App {
                         account: account.to_owned(),
                     },
                 );
-                self.send_service(Command::PluginHello {
+                self.send_service(ServiceCommand::PluginHello {
                     id,
                     accounts: None,
                     forget: Some(forget),
@@ -640,7 +641,7 @@ impl App {
                 secrets.push(spec.id.clone());
             }
         }
-        self.send_service(Command::PluginOptions {
+        self.send_service(ServiceCommand::PluginOptions {
             id: id.to_owned(),
             values,
             secrets,
@@ -896,7 +897,7 @@ impl App {
         if dropped_accounts {
             // A later `ready` that needs them again must be sent them, and a
             // crash-restart must not hand them to a plugin that stopped asking.
-            self.send_service(Command::PluginHello {
+            self.send_service(ServiceCommand::PluginHello {
                 id: id.to_owned(),
                 accounts: Some(Vec::new()),
                 forget: Some(Vec::new()),
@@ -1060,7 +1061,7 @@ impl App {
             }
         }
         for option in secrets {
-            self.send_service(Command::SavePluginSecret {
+            self.send_service(ServiceCommand::SavePluginSecret {
                 plugin: id.to_owned(),
                 instance: entry.instance.clone(),
                 option,
@@ -1077,7 +1078,7 @@ impl App {
         }
         if self.plugins_started.remove(id).is_some() {
             self.retire_plugin_generation(id);
-            self.send_service(Command::StopPlugin { id: id.to_owned() });
+            self.send_service(ServiceCommand::StopPlugin { id: id.to_owned() });
         }
         self.settings.plugins.retain(|e| e.id != id);
         self.plugins.remove(id);
@@ -1101,7 +1102,7 @@ impl App {
         }
         if self.plugins_started.remove(id).is_some() {
             self.retire_plugin_generation(id);
-            self.send_service(Command::StopPlugin { id: id.to_owned() });
+            self.send_service(ServiceCommand::StopPlugin { id: id.to_owned() });
         }
         self.plugin_started_at.remove(id);
         if let Some(state) = self.plugins.get_mut(id) {
@@ -1266,7 +1267,7 @@ impl App {
             .find(|e| e.id == plugin)
             .map(|e| e.instance.clone());
         if let Some(instance) = instance {
-            self.send_service(Command::SavePluginSecret {
+            self.send_service(ServiceCommand::SavePluginSecret {
                 plugin,
                 instance,
                 option,
@@ -1376,7 +1377,7 @@ impl App {
             }
             self.send_plugin_accounts(id, accounts);
             if !forget.is_empty() {
-                self.send_service(Command::PluginHello {
+                self.send_service(ServiceCommand::PluginHello {
                     id: id.to_owned(),
                     accounts: None,
                     forget: Some(forget),

@@ -539,7 +539,7 @@ impl Store {
         self.db.execute(
             "INSERT INTO outbox (local_id, created, json) VALUES (?1, ?2, ?3)
              ON CONFLICT(local_id) DO UPDATE SET created = excluded.created, json = excluded.json",
-            params![entry.local_id, entry.created, to_json(entry)],
+            params![entry.payload.local_id, entry.created, to_json(entry)],
         )?;
         Ok(())
     }
@@ -846,16 +846,18 @@ mod tests {
 
     fn entry(local_id: &str, created: i64) -> OutboxEntry {
         OutboxEntry {
-            local_id: local_id.into(),
-            conversation: ConversationId::Chat("19:a".into()),
+            payload: crate::outbox::SendPayload {
+                local_id: local_id.into(),
+                conversation: ConversationId::Chat("19:a".into()),
+                html: "<p>hi</p>".into(),
+                reply_to: None,
+                mentions: vec![],
+                files: vec![],
+                images: vec![],
+                recipients: vec![],
+            },
             created,
-            html: "<p>hi</p>".into(),
             text: "hi".into(),
-            reply_to: None,
-            mentions: vec![],
-            files: vec![],
-            images: vec![],
-            recipients: vec![],
         }
     }
 
@@ -868,7 +870,7 @@ mod tests {
             .outbox()
             .unwrap()
             .into_iter()
-            .map(|e| e.local_id)
+            .map(|e| e.payload.local_id)
             .collect();
         assert_eq!(ids, ["a", "b"]);
         store.delete_outbox("a").unwrap();
@@ -880,11 +882,11 @@ mod tests {
         let store = Store::in_memory().unwrap();
         let image = crate::clipboard::encode_rgba(2, 2, &[255; 16]).unwrap();
         let mut e = entry("a", 10);
-        e.images = vec![image.clone()];
-        e.files = vec!["C:/x/y.txt".into()];
+        e.payload.images = vec![image.clone()];
+        e.payload.files = vec!["C:/x/y.txt".into()];
         store.save_outbox(&e).unwrap();
         let back = store.outbox().unwrap().remove(0);
-        assert_eq!(back.images, vec![image]);
+        assert_eq!(back.payload.images, vec![image]);
         assert_eq!(back, e);
     }
 

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chaat::agents::access::{Access, AgentAccess};
-use chaat::backend::{AuthStatus, Backend, BackendOptions, Command, Event, Waker};
+use chaat::backend::{AccountCommand, AccountEvent, AuthStatus, Backend, BackendOptions, Waker};
 use chaat::model::ConversationId;
 use chaat::paths::AppDirs;
 use chaat::plugin::agent::AgentQuery;
@@ -69,14 +69,14 @@ async fn mock_graph() -> MockServer {
 }
 
 fn ask(backend: &Backend, request: u64, query: AgentQuery, access: &AgentAccess) -> Value {
-    backend.send(Command::AgentRead {
+    backend.send(AccountCommand::AgentRead {
         plugin: "agents".into(),
         request,
         query,
         access: access.clone(),
     });
     let data = wait_for(backend, 5, |event| match event {
-        Event::AgentAnswer {
+        AccountEvent::AgentAnswer {
             plugin,
             request: id,
             data,
@@ -105,20 +105,20 @@ async fn no_fetch_on_agent_read() {
         relay_connect_timeout: Duration::from_secs(20),
     };
     let backend = Backend::spawn_with(AppDirs::under(dir.path()), Waker::default(), options);
-    backend.send(Command::Start {
+    backend.send(AccountCommand::Start {
         client_id: CLIENT.into(),
         tenant: "organizations".into(),
         account: None,
     });
     wait_for(&backend, 5, |e| {
-        matches!(e, Event::Auth(AuthStatus::SignedOut)).then_some(())
+        matches!(e, AccountEvent::Auth(AuthStatus::SignedOut)).then_some(())
     });
-    backend.send(Command::SignIn {
+    backend.send(AccountCommand::SignIn {
         extra_scopes: Vec::new(),
         device_code: false,
     });
     let url = wait_for(&backend, 5, |e| match e {
-        Event::Auth(AuthStatus::WaitingForBrowser { url }) => Some(url),
+        AccountEvent::Auth(AuthStatus::WaitingForBrowser { url }) => Some(url),
         _ => None,
     });
     let redirect = query_value(&url, "redirect_uri");
@@ -130,23 +130,23 @@ async fn no_fetch_on_agent_read() {
     .await
     .unwrap();
     wait_for(&backend, 10, |e| {
-        matches!(e, Event::Auth(AuthStatus::SignedIn { .. })).then_some(())
+        matches!(e, AccountEvent::Auth(AuthStatus::SignedIn { .. })).then_some(())
     });
     // Seed the cache the ordinary way: the person opens the chat.
-    backend.send(Command::Fetch {
+    backend.send(AccountCommand::Fetch {
         resource: Resource::Chats,
         trigger: Trigger::Start,
     });
     wait_for(&backend, 10, |e| {
-        matches!(e, Event::Chats { cached: false, .. }).then_some(())
+        matches!(e, AccountEvent::Chats { cached: false, .. }).then_some(())
     });
     let conversation = ConversationId::Chat(CHAT.into());
-    backend.send(Command::Fetch {
+    backend.send(AccountCommand::Fetch {
         resource: Resource::Messages(conversation.clone()),
         trigger: Trigger::Opened,
     });
     wait_for(&backend, 10, |e| {
-        matches!(e, Event::Messages { cached: false, .. }).then_some(())
+        matches!(e, AccountEvent::Messages { cached: false, .. }).then_some(())
     });
     // Let the start-up work settle before counting.
     tokio::time::sleep(Duration::from_millis(500)).await;

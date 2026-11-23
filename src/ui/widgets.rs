@@ -467,7 +467,8 @@ pub fn request_photos(app: &mut App, ctx: &egui::Context) {
         };
         if missing {
             app.photos.insert(user.clone(), Image::Loading);
-            app.backend.send(crate::backend::Command::Photo(user));
+            app.backend
+                .send(crate::backend::AccountCommand::Photo(user));
         }
     }
 }

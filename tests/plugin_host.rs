@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
-use chaat::backend::{Backend, BackendOptions, Command, Event, Waker};
+use chaat::backend::{Backend, BackendOptions, ServiceCommand, ServiceEvent, ServiceRole, Waker};
 use chaat::paths::AppDirs;
 use chaat::plugin::event::PluginEvent;
 use chaat::plugin::host::{HostEvent, Plugin};
@@ -559,11 +559,11 @@ async fn chaat_variables_are_not_inherited() {
 
 // The worker: a backend with fake plugins and a memory credential store.
 
-fn backend(dir: &Path, store: Arc<MemoryStore>) -> Backend {
+fn backend(dir: &Path, store: Arc<MemoryStore>) -> Backend<ServiceRole> {
     backend_with(dir, store)
 }
 
-fn backend_with(dir: &Path, store: Arc<dyn SecretStore>) -> Backend {
+fn backend_with(dir: &Path, store: Arc<dyn SecretStore>) -> Backend<ServiceRole> {
     Backend::spawn_with(
         AppDirs::under(dir),
         Waker::default(),
@@ -575,8 +575,8 @@ fn backend_with(dir: &Path, store: Arc<dyn SecretStore>) -> Backend {
     )
 }
 
-fn start_command(id: &str, path: PathBuf) -> Command {
-    Command::StartPlugin {
+fn start_command(id: &str, path: PathBuf) -> ServiceCommand {
+    ServiceCommand::StartPlugin {
         id: id.into(),
         path,
         hello: hello(),
@@ -588,10 +588,13 @@ fn start_command(id: &str, path: PathBuf) -> Command {
 thread_local! {
     /// Events polled but not yet picked by a wait: a wait takes the first
     /// match and keeps the rest for the next one.
-    static PENDING: std::cell::RefCell<std::collections::VecDeque<Event>> = Default::default();
+    static PENDING: std::cell::RefCell<std::collections::VecDeque<ServiceEvent>> = Default::default();
 }
 
-fn wait_for<T>(backend: &Backend, mut pick: impl FnMut(&Event) -> Option<T>) -> T {
+fn wait_for<T>(
+    backend: &Backend<ServiceRole>,
+    mut pick: impl FnMut(&ServiceEvent) -> Option<T>,
+) -> T {
     let deadline = std::time::Instant::now() + PATIENCE;
     loop {
         PENDING.with(|pending| pending.borrow_mut().extend(backend.poll()));
@@ -614,9 +617,9 @@ fn wait_for<T>(backend: &Backend, mut pick: impl FnMut(&Event) -> Option<T>) -> 
     }
 }
 
-fn wait_ready(backend: &Backend, plugin: &str) {
+fn wait_ready(backend: &Backend<ServiceRole>, plugin: &str) {
     wait_for(backend, |event| match event {
-        Event::Plugin {
+        ServiceEvent::Plugin {
             id,
             event: PluginEvent::Ready { .. },
             ..
@@ -651,10 +654,10 @@ fn two_plugins_run_and_stopping_one_keeps_the_other() {
     backend.send(start_command("b", fake(dir.path(), "echo")));
     wait_ready(&backend, "a");
     wait_ready(&backend, "b");
-    backend.send(Command::StopPlugin { id: "a".into() });
+    backend.send(ServiceCommand::StopPlugin { id: "a".into() });
     wait_log(dir.path(), "display", &[r#""type":"shutdown""#]);
     // b still takes messages.
-    backend.send(Command::PluginSend {
+    backend.send(ServiceCommand::PluginSend {
         id: "b".into(),
         message: HostMessage::Forget {
             account: "o2.t2".into(),
@@ -714,7 +717,7 @@ fn options_include_stored_secrets() {
     let mut backend = backend(dir.path(), store);
     backend.send(start_command("b", fake(dir.path(), "echo")));
     wait_ready(&backend, "b");
-    backend.send(Command::PluginOptions {
+    backend.send(ServiceCommand::PluginOptions {
         id: "b".into(),
         values: [("ip".to_owned(), serde_json::json!("10.0.0.5"))].into(),
         secrets: vec!["local_key".into()],
@@ -734,7 +737,7 @@ fn a_missing_secret_is_left_out() {
     let mut backend = backend(dir.path(), Arc::default());
     backend.send(start_command("b", fake(dir.path(), "echo")));
     wait_ready(&backend, "b");
-    backend.send(Command::PluginOptions {
+    backend.send(ServiceCommand::PluginOptions {
         id: "b".into(),
         values: [("ip".to_owned(), serde_json::json!("10.0.0.5"))].into(),
         secrets: vec!["local_key".into()],
@@ -750,15 +753,15 @@ fn saving_a_plugin_secret_writes_and_deletes_the_store_key() {
     let dir = tempfile::tempdir().unwrap();
     let store = Arc::new(MemoryStore::default());
     let mut backend = backend(dir.path(), store.clone());
-    let save = |backend: &Backend, value: Option<&str>| {
-        backend.send(Command::SavePluginSecret {
+    let save = |backend: &Backend<ServiceRole>, value: Option<&str>| {
+        backend.send(ServiceCommand::SavePluginSecret {
             plugin: "b".into(),
             instance: String::new(),
             option: "local_key".into(),
             value: value.map(str::to_owned),
         });
         wait_for(backend, |event| match event {
-            Event::PluginSecretSaved { set, ok, .. } => Some((*set, *ok)),
+            ServiceEvent::PluginSecretSaved { set, ok, .. } => Some((*set, *ok)),
             _ => None,
         })
     };
@@ -779,13 +782,13 @@ fn options_follow_the_secret_saved_before_them_in_order() {
     backend.send(start_command("b", fake(dir.path(), "echo")));
     wait_ready(&backend, "b");
     for i in 0..30 {
-        backend.send(Command::SavePluginSecret {
+        backend.send(ServiceCommand::SavePluginSecret {
             plugin: "b".into(),
             instance: String::new(),
             option: "local_key".into(),
             value: Some(format!("k{i}")),
         });
-        backend.send(Command::PluginOptions {
+        backend.send(ServiceCommand::PluginOptions {
             id: "b".into(),
             values: Default::default(),
             secrets: vec!["local_key".into()],
@@ -817,8 +820,8 @@ fn stopping_a_stubborn_plugin_does_not_stall_other_commands() {
     wait_ready(&backend, "a");
     wait_ready(&backend, "b");
     let asked = std::time::Instant::now();
-    backend.send(Command::StopPlugin { id: "a".into() });
-    backend.send(Command::PluginSend {
+    backend.send(ServiceCommand::StopPlugin { id: "a".into() });
+    backend.send(ServiceCommand::PluginSend {
         id: "b".into(),
         message: HostMessage::Forget {
             account: "o3.t3".into(),
@@ -844,8 +847,8 @@ fn a_start_for_an_id_that_is_stopping_runs_after_the_old_run_ended() {
     let stubborn = fake(dir.path(), "stubborn");
     backend.send(start_command("a", stubborn.clone()));
     wait_ready(&backend, "a");
-    backend.send(Command::StopPlugin { id: "a".into() });
-    backend.send(Command::StartPlugin {
+    backend.send(ServiceCommand::StopPlugin { id: "a".into() });
+    backend.send(ServiceCommand::StartPlugin {
         id: "a".into(),
         path: stubborn,
         hello: hello(),
@@ -855,7 +858,7 @@ fn a_start_for_an_id_that_is_stopping_runs_after_the_old_run_ended() {
     // The old run is killed after about three seconds; only then does the
     // new one start, and its events carry its generation.
     let generation = wait_for(&backend, |event| match event {
-        Event::Plugin {
+        ServiceEvent::Plugin {
             id,
             generation,
             event: PluginEvent::Ready { .. },
@@ -915,7 +918,7 @@ fn a_blocked_secret_store_for_one_plugin_does_not_hold_another() {
     });
     let mut backend = backend_with(dir.path(), store.clone());
     let save = |plugin: &str| {
-        backend.send(Command::SavePluginSecret {
+        backend.send(ServiceCommand::SavePluginSecret {
             plugin: plugin.into(),
             instance: String::new(),
             option: "key".into(),
@@ -925,7 +928,7 @@ fn a_blocked_secret_store_for_one_plugin_does_not_hold_another() {
     save("a");
     save("b");
     let first = wait_for(&backend, |event| match event {
-        Event::PluginSecretSaved { plugin, ok, .. } => Some((plugin.clone(), *ok)),
+        ServiceEvent::PluginSecretSaved { plugin, ok, .. } => Some((plugin.clone(), *ok)),
         _ => None,
     });
     assert_eq!(
@@ -935,7 +938,7 @@ fn a_blocked_secret_store_for_one_plugin_does_not_hold_another() {
     );
     store.release();
     let second = wait_for(&backend, |event| match event {
-        Event::PluginSecretSaved { plugin, ok, .. } => Some((plugin.clone(), *ok)),
+        ServiceEvent::PluginSecretSaved { plugin, ok, .. } => Some((plugin.clone(), *ok)),
         _ => None,
     });
     assert_eq!(second, ("a".to_owned(), true));

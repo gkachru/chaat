@@ -7,7 +7,9 @@ use super::*;
 
 const MESSAGES: &str = "messages";
 use crate::app::PluginState;
-use crate::backend::{Backend, Event, Merge, Waker};
+use crate::backend::{
+    AccountCommand, AccountEvent, Backend, Command, Merge, ServiceCommand, Waker,
+};
 use crate::model::{Delivery, Message};
 use crate::paths::AppDirs;
 use crate::plugin::registry;
@@ -89,7 +91,7 @@ fn conversation() -> ConversationId {
 fn lines(rx: &mut UnboundedReceiver<Command>) -> Vec<(String, Value)> {
     let mut out = Vec::new();
     while let Ok(command) = rx.try_recv() {
-        if let Command::PluginSend { id, message } = command {
+        if let Command::Service(ServiceCommand::PluginSend { id, message }) = command {
             let line = message.to_line();
             out.push((id, serde_json::from_str(&line).unwrap()));
         }
@@ -155,7 +157,10 @@ fn query_needs_messages_need() {
     query(&mut rig.app, ACCOUNT);
     assert!(matches!(
         rig.account.try_recv(),
-        Ok(Command::AgentRead { request: 7, .. })
+        Ok(Command::Account(AccountCommand::AgentRead {
+            request: 7,
+            ..
+        }))
     ));
     assert!(lines(&mut rig.service).is_empty());
 }
@@ -257,8 +262,16 @@ fn send_goes_optimistic() {
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].delivery, Delivery::Sending);
     // The send is saved to the outbox first, then sent.
-    assert!(matches!(rig.account.try_recv(), Ok(Command::SaveOutbox(_))));
-    assert!(matches!(rig.account.try_recv(), Ok(Command::Send { .. })));
+    assert!(matches!(
+        rig.account.try_recv(),
+        Ok(Command::Account(AccountCommand::SaveOutbox(_)))
+    ));
+    assert!(matches!(
+        rig.account.try_recv(),
+        Ok(Command::Account(AccountCommand::Send(
+            crate::outbox::SendPayload { .. }
+        )))
+    ));
     let sent = lines(&mut rig.service);
     assert_eq!(sent[0].1["outcome"], "sent");
     assert!(
@@ -313,7 +326,7 @@ fn land(
     cached: bool,
 ) {
     app.handle(
-        Event::Messages {
+        AccountEvent::Messages {
             conversation: chat,
             messages: vec![incoming("2", at)],
             merge,
@@ -331,7 +344,7 @@ fn events_only_allowed() {
     let other = ConversationId::Chat("19:b@thread.v2".into());
     for chat in [conversation(), other.clone()] {
         rig.app.handle(
-            Event::Messages {
+            AccountEvent::Messages {
                 conversation: chat,
                 messages: vec![incoming("1", 1000)],
                 merge: Merge::Latest,
@@ -510,7 +523,7 @@ fn discard_and_accept_reaction() {
     assert_eq!(outcomes, ["discarded", "accepted"]);
     assert!(matches!(
         rig.account.try_recv(),
-        Ok(Command::React { on: true, .. })
+        Ok(Command::Account(AccountCommand::React { on: true, .. }))
     ));
 }
 
@@ -618,7 +631,7 @@ fn oversized_new_message_event_stays_under_the_line_limit() {
     let mut rig = rig(true);
     let ctx = rig.ctx.clone();
     rig.app.handle(
-        Event::Messages {
+        AccountEvent::Messages {
             conversation: conversation(),
             messages: vec![incoming("1", 1000)],
             merge: Merge::Latest,
@@ -632,7 +645,7 @@ fn oversized_new_message_event_stays_under_the_line_limit() {
     let mut big = incoming("2", 2000);
     big.body = crate::html::RichText::plain(&"x".repeat(200_000));
     rig.app.handle(
-        Event::Messages {
+        AccountEvent::Messages {
             conversation: conversation(),
             messages: vec![big],
             merge: Merge::Latest,
@@ -642,7 +655,9 @@ fn oversized_new_message_event_stays_under_the_line_limit() {
         &ctx,
     );
     let mut sent = Vec::new();
-    while let Ok(Command::PluginSend { message, .. }) = rig.service.try_recv() {
+    while let Ok(Command::Service(ServiceCommand::PluginSend { message, .. })) =
+        rig.service.try_recv()
+    {
         sent.push(message.to_line());
     }
     let event = sent.iter().find(|l| l.contains("new_message")).unwrap();

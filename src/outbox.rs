@@ -33,25 +33,38 @@ impl StoredDraft {
     }
 }
 
-/// A message handed to the backend that Graph has not confirmed.
+/// A message to send: what the backend needs to deliver it. Also the part of
+/// an [`OutboxEntry`] that is saved to disk (flattened, so the file keeps its
+/// field names).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct OutboxEntry {
-    pub local_id: String,
+pub struct SendPayload {
     pub conversation: ConversationId,
-    pub created: i64,
+    pub local_id: String,
     pub html: String,
-    /// The plain text, for the duplicate check and the failed row.
-    pub text: String,
+    /// A chat message to quote, or a channel post to reply under.
     #[serde(default)]
     pub reply_to: Option<String>,
+    /// The people `<at id="n">` tags in `html` name, by index.
     #[serde(default)]
     pub mentions: Vec<MentionRef>,
+    /// Files to upload to OneDrive and share in the message.
     #[serde(default)]
     pub files: Vec<std::path::PathBuf>,
     #[serde(default)]
     pub images: Vec<InlineImage>,
+    /// Who to share the files with (the chat's members' addresses).
     #[serde(default)]
     pub recipients: Vec<String>,
+}
+
+/// A message handed to the backend that Graph has not confirmed.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OutboxEntry {
+    #[serde(flatten)]
+    pub payload: SendPayload,
+    pub created: i64,
+    /// The plain text, for the duplicate check and the failed row.
+    pub text: String,
 }
 
 impl OutboxEntry {
@@ -85,16 +98,18 @@ mod tests {
 
     fn entry() -> OutboxEntry {
         OutboxEntry {
-            local_id: "local-3".into(),
-            conversation: ConversationId::Chat("19:a".into()),
+            payload: SendPayload {
+                local_id: "local-3".into(),
+                conversation: ConversationId::Chat("19:a".into()),
+                html: "<p>hi</p>".into(),
+                reply_to: None,
+                mentions: vec![],
+                files: vec![],
+                images: vec![],
+                recipients: vec![],
+            },
             created: 1_700_000_000_000,
-            html: "<p>hi</p>".into(),
             text: "hi".into(),
-            reply_to: None,
-            mentions: vec![],
-            files: vec![],
-            images: vec![],
-            recipients: vec![],
         }
     }
 
@@ -134,5 +149,46 @@ mod tests {
         let e = entry();
         assert!(e.resendable(e.created + 599_999));
         assert!(!e.resendable(e.created + 600_000));
+    }
+
+    #[test]
+    fn outbox_json_unchanged() {
+        // An entry as it is written today, every field present.
+        let written = serde_json::json!({
+            "local_id": "local-3",
+            "conversation": {"Channel": {"team": "t1", "channel": "c1"}},
+            "created": 1_700_000_000_000_i64,
+            "html": "<p>hi @Ada</p>",
+            "text": "hi @Ada",
+            "reply_to": "m9",
+            "mentions": [{"user_id": "u-ada", "name": "Ada"}],
+            "files": ["C:/x/y.txt"],
+            "images": [{"png": "AQID", "width": 1, "height": 2, "uri": "cid:img1"}],
+            "recipients": ["ada@example.com"]
+        });
+        let entry: OutboxEntry = serde_json::from_value(written.clone()).unwrap();
+        assert_eq!(entry.payload.reply_to.as_deref(), Some("m9"));
+        assert_eq!(entry.payload.files.len(), 1);
+        assert_eq!(serde_json::to_value(&entry).unwrap(), written);
+        let text = serde_json::to_string(&entry).unwrap();
+        let again: OutboxEntry = serde_json::from_str(&text).unwrap();
+        assert_eq!(again, entry);
+    }
+
+    #[test]
+    fn outbox_missing_optional_fields_loads() {
+        let written = serde_json::json!({
+            "local_id": "local-4",
+            "conversation": {"Chat": "19:a"},
+            "created": 5,
+            "html": "<p>x</p>",
+            "text": "x"
+        });
+        let entry: OutboxEntry = serde_json::from_value(written).unwrap();
+        assert_eq!(entry.payload.reply_to, None);
+        assert!(entry.payload.mentions.is_empty());
+        assert!(entry.payload.files.is_empty());
+        assert!(entry.payload.images.is_empty());
+        assert!(entry.payload.recipients.is_empty());
     }
 }

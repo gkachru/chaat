@@ -6,7 +6,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use chaat::auth::session::AccountRecord;
-use chaat::backend::{AuthStatus, Backend, BackendOptions, Command, Event, PushRoute, Waker};
+use chaat::backend::{
+    AccountCommand, AccountEvent, AuthStatus, Backend, BackendOptions, PushRoute, Waker,
+};
 use chaat::model::ConversationId;
 use chaat::paths::AppDirs;
 use chaat::realtime::PushStatus;
@@ -22,12 +24,12 @@ const URL: &str = "https://a.trycloudflare.com";
 struct Fixture {
     server: MockServer,
     backend: Backend,
-    pending: Vec<Event>,
+    pending: Vec<AccountEvent>,
     _dir: tempfile::TempDir,
 }
 
 impl Fixture {
-    fn wait_for<T>(&mut self, seconds: u64, mut pick: impl FnMut(Event) -> Option<T>) -> T {
+    fn wait_for<T>(&mut self, seconds: u64, mut pick: impl FnMut(AccountEvent) -> Option<T>) -> T {
         let deadline = Instant::now() + Duration::from_secs(seconds);
         loop {
             self.pending.extend(self.backend.poll());
@@ -43,16 +45,16 @@ impl Fixture {
 
     fn live(&mut self) {
         self.wait_for(10, |e| match e {
-            Event::Push(PushStatus::Live) => Some(()),
-            Event::Push(PushStatus::Failed(reason)) => panic!("push failed: {reason}"),
+            AccountEvent::Push(PushStatus::Live) => Some(()),
+            AccountEvent::Push(PushStatus::Failed(reason)) => panic!("push failed: {reason}"),
             _ => None,
         });
     }
 
     fn off(&mut self) {
         self.wait_for(5, |e| match e {
-            Event::Push(PushStatus::Off) => Some(()),
-            Event::Push(PushStatus::Failed(reason)) => panic!("push failed: {reason}"),
+            AccountEvent::Push(PushStatus::Off) => Some(()),
+            AccountEvent::Push(PushStatus::Failed(reason)) => panic!("push failed: {reason}"),
             _ => None,
         });
     }
@@ -160,7 +162,7 @@ async fn fixture() -> Fixture {
             relay_connect_timeout: Duration::from_secs(20),
         },
     );
-    backend.send(Command::Start {
+    backend.send(AccountCommand::Start {
         client_id: CLIENT.into(),
         tenant: "organizations".into(),
         account: Some(ACCOUNT.into()),
@@ -172,7 +174,7 @@ async fn fixture() -> Fixture {
         _dir: dir,
     };
     f.wait_for(5, |e| {
-        matches!(e, Event::Auth(AuthStatus::SignedIn { .. })).then_some(())
+        matches!(e, AccountEvent::Auth(AuthStatus::SignedIn { .. })).then_some(())
     });
     f
 }
@@ -189,7 +191,8 @@ fn body(client_state: &str) -> String {
 async fn forwarded_body_fetches_the_chat() {
     let mut f = fixture().await;
     let route = route(URL);
-    f.backend.send(Command::PushPlugin(Some(route.clone())));
+    f.backend
+        .send(AccountCommand::PushPlugin(Some(route.clone())));
     f.live();
     let posts = f.posts().await;
     assert_eq!(
@@ -201,9 +204,9 @@ async fn forwarded_body_fetches_the_chat() {
         format!("{URL}/lifecycle/{}", route.channel)
     );
     let state = posts[0]["clientState"].as_str().unwrap().to_owned();
-    f.backend.send(Command::PushBody(body(&state)));
+    f.backend.send(AccountCommand::PushBody(body(&state)));
     let messages = f.wait_for(10, |e| match e {
-        Event::Messages {
+        AccountEvent::Messages {
             conversation,
             messages,
             cached: false,
@@ -217,10 +220,11 @@ async fn forwarded_body_fetches_the_chat() {
 #[tokio::test(flavor = "multi_thread")]
 async fn body_with_wrong_client_state_is_ignored() {
     let mut f = fixture().await;
-    f.backend.send(Command::PushPlugin(Some(route(URL))));
+    f.backend.send(AccountCommand::PushPlugin(Some(route(URL))));
     f.live();
     let chat = format!("/v1.0/chats/{CHAT}/messages");
-    f.backend.send(Command::PushBody(body("not-the-state")));
+    f.backend
+        .send(AccountCommand::PushBody(body("not-the-state")));
     tokio::time::sleep(Duration::from_secs(2)).await;
     assert_eq!(f.count("GET", &chat).await, 0);
 }
@@ -228,8 +232,8 @@ async fn body_with_wrong_client_state_is_ignored() {
 #[tokio::test(flavor = "multi_thread")]
 async fn body_without_a_plugin_loop_is_dropped() {
     let mut f = fixture().await;
-    f.backend.send(Command::PushBody(body("x")));
-    f.backend.send(Command::PushPlugin(None));
+    f.backend.send(AccountCommand::PushBody(body("x")));
+    f.backend.send(AccountCommand::PushPlugin(None));
     f.off();
     assert_eq!(f.count("POST", "/v1.0/subscriptions").await, 0);
 }
@@ -237,9 +241,9 @@ async fn body_without_a_plugin_loop_is_dropped() {
 #[tokio::test(flavor = "multi_thread")]
 async fn route_none_deletes_subscriptions() {
     let mut f = fixture().await;
-    f.backend.send(Command::PushPlugin(Some(route(URL))));
+    f.backend.send(AccountCommand::PushPlugin(Some(route(URL))));
     f.live();
-    f.backend.send(Command::PushPlugin(None));
+    f.backend.send(AccountCommand::PushPlugin(None));
     f.off();
     assert!(f.count("DELETE", "/v1.0/subscriptions/sub-1").await >= 1);
 }
@@ -247,10 +251,11 @@ async fn route_none_deletes_subscriptions() {
 #[tokio::test(flavor = "multi_thread")]
 async fn new_route_resubscribes() {
     let mut f = fixture().await;
-    f.backend.send(Command::PushPlugin(Some(route(URL))));
+    f.backend.send(AccountCommand::PushPlugin(Some(route(URL))));
     f.live();
     let other = "https://b.trycloudflare.com";
-    f.backend.send(Command::PushPlugin(Some(route(other))));
+    f.backend
+        .send(AccountCommand::PushPlugin(Some(route(other))));
     f.live();
     assert!(f.count("DELETE", "/v1.0/subscriptions/sub-1").await >= 1);
     let posts = f.posts().await;
@@ -277,8 +282,8 @@ async fn relay_wins_over_plugin_route() {
             });
         }
     });
-    f.backend.send(Command::Relay(Some(relay.clone())));
-    f.backend.send(Command::PushPlugin(Some(route(URL))));
+    f.backend.send(AccountCommand::Relay(Some(relay.clone())));
+    f.backend.send(AccountCommand::PushPlugin(Some(route(URL))));
     f.live();
     let posts = f.posts().await;
     assert!(
@@ -307,16 +312,16 @@ async fn route_change_with_relay_set_does_not_resubscribe() {
             });
         }
     });
-    f.backend.send(Command::Relay(Some(relay)));
+    f.backend.send(AccountCommand::Relay(Some(relay)));
     f.live();
     tokio::time::sleep(Duration::from_millis(500)).await;
     let before = f.count("POST", "/v1.0/subscriptions").await;
     assert!(before >= 1);
     // What the interface sends when a relay is set by hand, and then a
     // plugin route coming and going: the relay session is not restarted.
-    f.backend.send(Command::PushPlugin(None));
-    f.backend.send(Command::PushPlugin(Some(route(URL))));
-    f.backend.send(Command::PushPlugin(None));
+    f.backend.send(AccountCommand::PushPlugin(None));
+    f.backend.send(AccountCommand::PushPlugin(Some(route(URL))));
+    f.backend.send(AccountCommand::PushPlugin(None));
     tokio::time::sleep(Duration::from_secs(2)).await;
     assert_eq!(f.count("POST", "/v1.0/subscriptions").await, before);
 }
@@ -325,9 +330,9 @@ async fn route_change_with_relay_set_does_not_resubscribe() {
 async fn stopping_the_route_is_not_reported_as_a_failure() {
     let mut f = fixture().await;
     for _ in 0..4 {
-        f.backend.send(Command::PushPlugin(Some(route(URL))));
+        f.backend.send(AccountCommand::PushPlugin(Some(route(URL))));
         f.live();
-        f.backend.send(Command::PushPlugin(None));
+        f.backend.send(AccountCommand::PushPlugin(None));
         f.off();
     }
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -335,7 +340,7 @@ async fn stopping_the_route_is_not_reported_as_a_failure() {
     assert!(
         !f.pending
             .iter()
-            .any(|e| matches!(e, Event::Push(PushStatus::Failed(_)))),
+            .any(|e| matches!(e, AccountEvent::Push(PushStatus::Failed(_)))),
         "a stop must not surface as Failed"
     );
 }
@@ -360,18 +365,18 @@ async fn a_flood_of_bodies_is_bounded() {
         .mount(&f.server)
         .await;
 
-    f.backend.send(Command::PushPlugin(Some(route(URL))));
+    f.backend.send(AccountCommand::PushPlugin(Some(route(URL))));
     for _ in 0..1000 {
-        f.backend.send(Command::PushBody(body("junk")));
+        f.backend.send(AccountCommand::PushBody(body("junk")));
     }
     // The backend still answers a later command: stopping the route reports
     // Off. A full queue must not hold the command loop up. The deadline is
     // generous, since stopping waits for the slow subscribe (3 s at most).
-    f.backend.send(Command::PushPlugin(None));
+    f.backend.send(AccountCommand::PushPlugin(None));
     f.wait_for(30, |e| {
-        matches!(e, Event::Push(PushStatus::Off)).then_some(())
+        matches!(e, AccountEvent::Push(PushStatus::Off)).then_some(())
     });
-    f.backend.send(Command::PushPlugin(Some(route(URL))));
+    f.backend.send(AccountCommand::PushPlugin(Some(route(URL))));
     f.live();
     // A valid body after Live still fetches. The loop that was stopped while
     // subscribing may have posted too, so try every client state seen: only
@@ -387,14 +392,14 @@ async fn a_flood_of_bodies_is_bounded() {
         states.sort();
         states.dedup();
         for state in &states {
-            f.backend.send(Command::PushBody(body(state)));
+            f.backend.send(AccountCommand::PushBody(body(state)));
         }
         let until = Instant::now() + Duration::from_millis(500);
         let mut found = None;
         while found.is_none() && Instant::now() < until {
             f.pending.extend(f.backend.poll());
             while !f.pending.is_empty() {
-                if let Event::Messages {
+                if let AccountEvent::Messages {
                     conversation,
                     messages,
                     cached: false,
@@ -433,7 +438,7 @@ async fn lifecycle_notices_count_only_for_held_subscriptions_and_are_limited() {
         .respond_with(ResponseTemplate::new(204))
         .mount(&f.server)
         .await;
-    f.backend.send(Command::PushPlugin(Some(route(URL))));
+    f.backend.send(AccountCommand::PushPlugin(Some(route(URL))));
     f.live();
     let state = f.posts().await[0]["clientState"]
         .as_str()
@@ -442,12 +447,15 @@ async fn lifecycle_notices_count_only_for_held_subscriptions_and_are_limited() {
     let subscribed = f.count("POST", "/v1.0/subscriptions").await;
     // Someone else's subscription: neither reauthorized nor remade.
     for event in ["reauthorizationRequired", "subscriptionRemoved"] {
-        f.backend
-            .send(Command::PushBody(lifecycle(&state, event, "sub-other")));
+        f.backend.send(AccountCommand::PushBody(lifecycle(
+            &state,
+            event,
+            "sub-other",
+        )));
     }
     // Ours, again and again: reauthorized once.
     for _ in 0..5 {
-        f.backend.send(Command::PushBody(lifecycle(
+        f.backend.send(AccountCommand::PushBody(lifecycle(
             &state,
             "reauthorizationRequired",
             "sub-1",
@@ -466,7 +474,7 @@ async fn lifecycle_notices_count_only_for_held_subscriptions_and_are_limited() {
 #[tokio::test(flavor = "multi_thread")]
 async fn chat_fetches_from_pushes_stay_within_the_budget() {
     let mut f = fixture().await;
-    f.backend.send(Command::PushPlugin(Some(route(URL))));
+    f.backend.send(AccountCommand::PushPlugin(Some(route(URL))));
     f.live();
     let state = f.posts().await[0]["clientState"]
         .as_str()
@@ -483,7 +491,7 @@ async fn chat_fetches_from_pushes_stay_within_the_budget() {
                 })
             })
             .collect();
-        f.backend.send(Command::PushBody(
+        f.backend.send(AccountCommand::PushBody(
             serde_json::json!({ "value": items }).to_string(),
         ));
     }

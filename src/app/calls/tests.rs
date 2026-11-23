@@ -1,5 +1,6 @@
 use super::*;
 use crate::app::tests::*;
+use crate::backend::{AccountCommand, Command};
 use crate::calling::session::GRACE;
 
 fn demo() -> (App, tempfile::TempDir) {
@@ -244,7 +245,7 @@ fn id_needs_scope_then_sends_find() {
     assert!(app.overlay.is_none());
     assert!(matches!(
         commands.try_recv(),
-        Ok(Command::FindMeetingById(id)) if id == "123456789"
+        Ok(Command::Account(AccountCommand::FindMeetingById(id))) if id == "123456789"
     ));
     assert!(app.call.is_none());
 }
@@ -464,9 +465,9 @@ fn each_account_gets_its_own_sign_in_card() {
     let ask = |app: &App, account: &str, code: &str| {
         plugin_event(app, "ca", sign_in_event(Some(account), code))
     };
-    app.handle(ask(&app, "u-me.demo", "ONE"), &ctx);
-    app.handle(ask(&app, FABRIKAM, "TWO"), &ctx);
-    app.handle(ask(&app, FABRIKAM, "THREE"), &ctx);
+    app.handle_service(ask(&app, "u-me.demo", "ONE"), &ctx);
+    app.handle_service(ask(&app, FABRIKAM, "TWO"), &ctx);
+    app.handle_service(ask(&app, FABRIKAM, "THREE"), &ctx);
     assert_eq!(app.plugins["ca"].sign_in.len(), 2);
     let fabrikam = app.plugins["ca"]
         .sign_in
@@ -475,12 +476,12 @@ fn each_account_gets_its_own_sign_in_card() {
         .unwrap();
     assert_eq!(fabrikam.user_code, "THREE");
     assert_eq!(fabrikam.username.as_deref(), Some("alex@fabrikam.com"));
-    app.handle(
+    app.handle_service(
         plugin_event(&app, "ca", signed_in_event(Some(FABRIKAM))),
         &ctx,
     );
     assert_eq!(app.plugins["ca"].sign_in.len(), 1);
-    app.handle(
+    app.handle_service(
         plugin_event(
             &app,
             "ca",

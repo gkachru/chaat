@@ -9,7 +9,7 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 use chaat::app::{App, Image};
-use chaat::backend::{Event as BackendEvent, Waker};
+use chaat::backend::{AccountEvent as BackendEvent, Waker};
 use chaat::model::{Action, ConversationId, Section};
 use chaat::paths::AppDirs;
 use chaat::settings::{Settings, ThemeChoice};

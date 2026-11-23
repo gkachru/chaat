@@ -9,7 +9,7 @@ use serde_json::json;
 use super::App;
 use crate::agents::access::{Access, AgentAccess};
 use crate::agents::proposals::{Proposal, ProposalKind};
-use crate::backend::Command;
+use crate::backend::AccountCommand;
 use crate::model::{Action, AgentAction, ConversationId, Message, ToastKind};
 use crate::plugin::agent::{AgentProposal, AgentQuery, result_line};
 use crate::plugin::protocol::HostMessage;
@@ -84,12 +84,14 @@ impl App {
         };
         let access = self.agent_access_of(&account);
         if !self.demo {
-            self.accounts[index].backend.send(Command::AgentRead {
-                plugin: plugin.to_owned(),
-                request,
-                query,
-                access,
-            });
+            self.accounts[index]
+                .backend
+                .send(AccountCommand::AgentRead {
+                    plugin: plugin.to_owned(),
+                    request,
+                    query,
+                    access,
+                });
         }
     }
 

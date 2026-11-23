@@ -1,20 +1,22 @@
 //! Pinned messages and links to messages.
 
 use super::App;
-use crate::backend::Command;
+use crate::backend::AccountCommand;
 use crate::model::{ConversationId, Message, NOTES_CHAT, PinnedMessage, ToastKind};
 use crate::sync::{Resource, Trigger};
 
 impl App {
     pub(super) fn pin_message(&mut self, chat: String, message: String) {
-        self.backend.send(Command::PinMessage { chat, message });
+        self.backend
+            .send(AccountCommand::PinMessage { chat, message });
     }
 
     pub(super) fn unpin_message(&mut self, chat: String, pin: String) {
         if let Some(pins) = self.pins.get_mut(&chat) {
             pins.retain(|p| p.id != pin);
         }
-        self.backend.send(Command::UnpinMessage { chat, pin });
+        self.backend
+            .send(AccountCommand::UnpinMessage { chat, pin });
     }
 
     pub(super) fn copy_message_link(
@@ -80,7 +82,7 @@ pub fn message_link(
 mod tests {
     use super::*;
     use crate::app::Action;
-    use crate::backend::{Backend, Waker};
+    use crate::backend::{AccountCommand, Backend, Command, Waker};
     use crate::paths::AppDirs;
     use crate::settings::Settings;
 
@@ -150,7 +152,7 @@ mod tests {
         );
         assert!(sent(&mut rx).iter().any(|c| matches!(
             c,
-            Command::PinMessage { chat, message } if chat == "19:g" && message == "m1"
+            Command::Account(AccountCommand::PinMessage { chat, message }) if chat == "19:g" && message == "m1"
         )));
     }
 
@@ -169,16 +171,16 @@ mod tests {
         assert_eq!(app.pins["19:g"], vec![pin("b")]);
         assert!(sent(&mut rx).iter().any(|c| matches!(
             c,
-            Command::UnpinMessage { chat, pin } if chat == "19:g" && pin == "a"
+            Command::Account(AccountCommand::UnpinMessage { chat, pin }) if chat == "19:g" && pin == "a"
         )));
     }
 
     fn fetched(cmds: &[Command], chat: &str) -> Option<Trigger> {
         cmds.iter().find_map(|c| match c {
-            Command::Fetch {
+            Command::Account(AccountCommand::Fetch {
                 resource: Resource::Pins(id),
                 trigger,
-            } if id == chat => Some(*trigger),
+            }) if id == chat => Some(*trigger),
             _ => None,
         })
     }
@@ -194,10 +196,10 @@ mod tests {
         app.open_conversation(chan());
         assert!(!sent(&mut rx).iter().any(|c| matches!(
             c,
-            Command::Fetch {
+            Command::Account(AccountCommand::Fetch {
                 resource: Resource::Pins(_),
                 ..
-            }
+            })
         )));
     }
 

@@ -6,13 +6,26 @@
 //! and through `Internal` commands to this loop when its own state changes
 //! (a finished sign-in, a failed fetch to forget).
 
+mod chats;
+mod messages;
+mod people;
+mod plugins;
+mod presence;
+mod push;
+mod search;
+mod session;
+mod updates;
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use tokio::sync::{Semaphore, mpsc, watch};
 
-use super::{AuthStatus, Command, Event, Merge, Waker};
+use super::{
+    AccountCommand, AccountEvent, AuthStatus, Command, Event, Merge, ServiceCommand, ServiceEvent,
+    Waker,
+};
 use crate::auth::session::{AccountRecord, Session};
 use crate::auth::token::{self, TokenError};
 use crate::auth::{self, AuthConfig, CHANNEL_READ_SCOPE, IdClaims, loopback::Loopback};
@@ -41,8 +54,8 @@ struct Outbox {
 }
 
 impl Outbox {
-    fn send(&self, event: Event) {
-        let _ = self.events.send(event);
+    fn send(&self, event: impl Into<Event>) {
+        let _ = self.events.send(event.into());
         self.waker.wake();
     }
 
@@ -57,7 +70,7 @@ impl Outbox {
             other => format!("{context}: {other}"),
         };
         log::warn!("{text}");
-        self.send(Event::Error(text));
+        self.send(AccountEvent::Error(text));
     }
 }
 
@@ -371,211 +384,21 @@ pub(super) async fn run(
 impl Worker {
     async fn handle(&mut self, command: Command) {
         match command {
-            Command::DiscardUpdate(prepared) => {
-                tokio::task::spawn_blocking(move || prepared.discard());
-            }
-            Command::AcknowledgeUpdate(receipt) => {
-                tokio::task::spawn_blocking(move || {
-                    if receipt.acknowledge().is_err() {
-                        log::warn!("could not acknowledge the app update");
-                    }
-                });
-            }
-            Command::CheckUpdate { download } => {
-                let out = self.out.clone();
-                tokio::task::spawn_blocking(move || {
-                    let result = crate::updates::updater().and_then(|updater| {
-                        match updater.check()? {
-                            None => out.send(Event::Update(crate::updates::Event::Status(
-                                crate::updates::Status::Current,
-                            ))),
-                            Some(release) => {
-                                let reason = updater.installation().err().map(|r| r.to_string());
-                                if download && reason.is_none() {
-                                    download_update(&out, &updater, &release)?;
-                                } else {
-                                    out.send(Event::Update(crate::updates::Event::Status(
-                                        crate::updates::Status::Available { release, reason },
-                                    )));
-                                }
-                            }
-                        }
-                        Ok(())
-                    });
-                    if result.is_err() {
-                        out.send(Event::Update(crate::updates::Event::Status(crate::updates::Status::Failed("Could not check for updates. No public release may be available yet; try again later."))));
-                    }
-                });
-            }
-            Command::DownloadUpdate(release) => {
-                let out = self.out.clone();
-                tokio::task::spawn_blocking(move || {
-                    if crate::updates::updater()
-                        .and_then(|updater| download_update(&out, &updater, &release))
-                        .is_err()
-                    {
-                        out.send(Event::Update(crate::updates::Event::Status(crate::updates::Status::Failed("Could not download or verify the update. Your installed app has not changed."))));
-                    }
-                });
-            }
-            Command::InstallUpdate(prepared) => {
-                let out = self.out.clone();
-                tokio::task::spawn_blocking(move || {
-                    if crate::updates::updater()
-                        .and_then(|updater| updater.handoff(*prepared, Vec::new()))
-                        .is_ok()
-                    {
-                        out.send(Event::Update(crate::updates::Event::Quit));
-                    } else {
-                        out.send(Event::Update(crate::updates::Event::Status(
-                            crate::updates::Status::Failed(
-                                "Could not start the update. Your installed app has not changed.",
-                            ),
-                        )));
-                    }
-                });
-            }
-            Command::Start {
-                client_id,
-                tenant,
-                account,
-            } => self.start(client_id, tenant, account).await,
-            Command::SignIn {
-                extra_scopes,
-                device_code,
-            } => self.sign_in(extra_scopes, device_code),
-            Command::CancelSignIn => {
-                if let Some(cancel) = self.cancel_sign_in.take() {
-                    let _ = cancel.send(true);
-                }
-            }
-            Command::SignOut => self.sign_out().await,
-            Command::Fetch { resource, trigger } => self.fetch(resource, trigger),
-            Command::CachedMessages(conversation) => self.cached_messages(conversation),
-            Command::AgentRead {
-                plugin,
-                request,
-                query,
-                access,
-            } => self.agent_read(plugin, request, query, access),
-            Command::LoadOlder {
-                conversation,
-                before,
-            } => self.load_older(conversation, before),
-            Command::LoadReplies { conversation, root } => self.load_replies(conversation, root),
-            Command::Paste {
-                conversation,
-                range,
-                text,
-            } => {
-                let out = self.out.clone();
-                tokio::spawn(async move {
-                    let image = tokio::task::spawn_blocking(crate::clipboard::read_image)
-                        .await
-                        .unwrap_or(Err("The clipboard could not be read."));
-                    out.send(Event::Pasted {
-                        conversation,
-                        range,
-                        text,
-                        image,
-                    });
-                });
-            }
-            Command::Send {
-                conversation,
-                local_id,
-                html,
-                reply_to,
-                mentions,
-                files,
-                images,
-                recipients,
-            } => self.send(
-                conversation,
-                local_id,
-                Outgoing {
-                    html,
-                    mentions,
-                    files: Vec::new(),
-                    images,
-                },
-                reply_to,
-                files,
-                recipients,
-            ),
-            Command::SaveDraft {
-                conversation,
-                draft,
-            } => {
-                if let Some(store) = &self.store {
-                    self.drafts.push(store, conversation, draft);
-                }
-            }
-            Command::SaveOutbox(entry) => {
-                if let Some(store) = &self.store {
-                    let store = Arc::clone(store);
-                    let _ = tokio::task::spawn_blocking(move || {
-                        let store = store.lock().unwrap_or_else(|p| p.into_inner());
-                        if let Err(error) = store.save_outbox(&entry) {
-                            log::warn!("could not save an unsent message: {error}");
-                        }
-                    })
-                    .await;
-                }
-            }
-            Command::DropOutbox(local_id) => {
-                if let Some(store) = &self.store {
-                    forget_outbox(store, &local_id).await;
-                }
-            }
-            Command::Resend(entry) => self.resend(entry),
-            Command::SearchIn {
-                conversation,
-                query,
-                remote,
-            } => self.search_in(conversation, query, remote),
-            Command::SearchPeople(query) => self.search_people(query),
-            Command::CreateChat { others, topic } => self.create_chat(others, topic),
-            Command::AddMembers {
-                chat,
-                users,
-                history,
-            } => self.add_members(chat, users, history),
-            Command::LeaveChat(chat) => self.leave_chat(chat),
-            Command::SetAvailability(availability) => self.set_availability(availability),
-            Command::SetStatusMessage { text, expires } => self.set_status_message(text, expires),
-            Command::SetOutOfOffice(value) => self.set_out_of_office(value),
-            Command::PresenceActive => self.presence_active(),
-            Command::SignInBrowser(browser) => self.sign_in_browser = browser,
-            Command::FindMeetingChat(join_url) => self.find_meeting_chat(join_url),
-            Command::PresenceSession(enabled) => {
-                self.session_enabled = enabled;
-                if !enabled {
-                    self.end_presence_session().await;
-                }
-            }
-            Command::Edit {
-                conversation,
-                message,
-                html,
-            } => self.edit(conversation, message, html),
-            Command::Delete {
-                conversation,
-                message,
-            } => self.delete(conversation, message),
-            Command::React {
-                conversation,
-                message,
-                emoji,
-                on,
-            } => self.react(conversation, message, emoji, on),
-            Command::MarkRead(chat) => self.mark_read(chat),
-            Command::HideChat { chat, hide } => self.hide_chat(chat, hide),
-            Command::MarkChatUnread(chat) => self.mark_chat_unread(chat),
-            Command::PinMessage { chat, message } => self.pin_message(chat, message),
-            Command::UnpinMessage { chat, pin } => self.unpin_message(chat, pin),
-            Command::FindMeetingById(id) => self.find_meeting_by_id(id),
-            Command::SaveRelayKey(key) => {
+            Command::Service(command) => self.handle_service(command).await,
+            Command::Account(command) => self.handle_account(command).await,
+            // The loop in `run` stops before a shutdown gets here.
+            Command::Shutdown => {}
+        }
+    }
+
+    async fn handle_service(&mut self, command: ServiceCommand) {
+        match command {
+            ServiceCommand::DiscardUpdate(prepared) => self.discard_update(prepared),
+            ServiceCommand::AcknowledgeUpdate(receipt) => self.acknowledge_update(receipt),
+            ServiceCommand::CheckUpdate { download } => self.check_update(download),
+            ServiceCommand::DownloadUpdate(release) => self.download_release(release),
+            ServiceCommand::InstallUpdate(prepared) => self.install_update(prepared),
+            ServiceCommand::SaveRelayKey(key) => {
                 let secrets = Arc::clone(&self.secrets);
                 let out = self.out.clone();
                 tokio::task::spawn_blocking(move || {
@@ -587,49 +410,13 @@ impl Worker {
                     if result.is_err() {
                         log::warn!("could not save the relay access key");
                     }
-                    out.send(Event::RelayKeySaved {
+                    out.send(ServiceEvent::RelayKeySaved {
                         set,
                         ok: result.is_ok(),
                     });
                 });
             }
-            Command::Relay(relay) => {
-                self.relay = relay.as_deref().and_then(realtime::normalize_relay);
-                if relay.is_some() && self.relay.is_none() {
-                    self.out.send(Event::Push(PushStatus::Failed(
-                        "the relay must be an https:// address".into(),
-                    )));
-                }
-                self.restart_push().await;
-            }
-            Command::PushPlugin(route) => {
-                self.push_route = route.and_then(|route| {
-                    let url = realtime::normalize_relay(&route.url)?;
-                    Some(super::PushRoute::new(url, route.channel))
-                });
-                // A relay set by hand wins: the route is kept for later, and
-                // the running relay session is left alone.
-                if self.relay.is_none() {
-                    self.restart_push().await;
-                }
-            }
-            Command::PushBody(body) => {
-                // Dropped when no plugin loop is running.
-                let full = self
-                    .push_bodies
-                    .as_ref()
-                    .is_some_and(|bodies| bodies.try_send(body).is_err());
-                if full && !self.push_dropped {
-                    self.push_dropped = true;
-                    log::debug!("push: plugin bodies dropped (queue full or closed)");
-                }
-            }
-            Command::Presence(users) => self.presence(users),
-            Command::Photo(user) => self.photo(user),
-            Command::UserName(user) => self.user_name(user),
-            Command::Media(url) => self.media(url),
-            Command::Search(query) => self.search(query),
-            Command::StartPlugin {
+            ServiceCommand::StartPlugin {
                 id,
                 path,
                 hello,
@@ -644,12 +431,12 @@ impl Worker {
                     generation,
                 },
             ),
-            Command::PluginSend { id, message } => {
+            ServiceCommand::PluginSend { id, message } => {
                 if let Some(plugin) = self.plugins.get(&id) {
                     plugin.send(message);
                 }
             }
-            Command::PluginHello {
+            ServiceCommand::PluginHello {
                 id,
                 accounts,
                 forget,
@@ -660,12 +447,12 @@ impl Worker {
                     update_hello(&mut start.hello, accounts, forget);
                 }
             }
-            Command::PluginOptions {
+            ServiceCommand::PluginOptions {
                 id,
                 values,
                 secrets,
             } => self.plugin_options(id, values, secrets),
-            Command::SavePluginSecret {
+            ServiceCommand::SavePluginSecret {
                 plugin,
                 instance,
                 option,
@@ -683,7 +470,7 @@ impl Worker {
                     if result.is_err() {
                         log::warn!("could not save a plugin secret");
                     }
-                    out.send(Event::PluginSecretSaved {
+                    out.send(ServiceEvent::PluginSecretSaved {
                         plugin,
                         instance,
                         option,
@@ -692,8 +479,8 @@ impl Worker {
                     });
                 });
             }
-            Command::StopPlugin { id } => self.stop_plugin(id),
-            Command::OpenSetupFile {
+            ServiceCommand::StopPlugin { id } => self.stop_plugin(id),
+            ServiceCommand::OpenSetupFile {
                 path,
                 passphrase,
                 token,
@@ -703,23 +490,23 @@ impl Worker {
                 tokio::task::spawn_blocking(move || {
                     let today = jiff::Zoned::now().date();
                     let result = super::setup::open(&path, &passphrase, token, today, &slot);
-                    out.send(Event::SetupOpened { token, result });
+                    out.send(ServiceEvent::SetupOpened { token, result });
                 });
             }
-            Command::ApplySetup { token } => {
+            ServiceCommand::ApplySetup { token } => {
                 let slot = Arc::clone(&self.setup_slot);
                 let store = Arc::clone(&self.secrets);
                 let out = self.out.clone();
                 tokio::task::spawn_blocking(move || {
                     let ok = super::setup::apply(token, &slot, store.as_ref());
-                    out.send(Event::SetupApplied { token, ok });
+                    out.send(ServiceEvent::SetupApplied { token, ok });
                 });
             }
-            Command::DiscardSetup { token } => {
+            ServiceCommand::DiscardSetup { token } => {
                 let slot = Arc::clone(&self.setup_slot);
                 tokio::task::spawn_blocking(move || super::setup::discard(token, &slot));
             }
-            Command::ExportSetup {
+            ServiceCommand::ExportSetup {
                 path,
                 payload,
                 include_relay_key,
@@ -733,10 +520,194 @@ impl Worker {
                         include_relay_key,
                         store.as_ref(),
                     );
-                    out.send(Event::SetupExported(result));
+                    out.send(ServiceEvent::SetupExported(result));
                 });
             }
-            Command::Shutdown => {}
+        }
+    }
+
+    async fn handle_account(&mut self, command: AccountCommand) {
+        match command {
+            AccountCommand::Start {
+                client_id,
+                tenant,
+                account,
+            } => self.start(client_id, tenant, account).await,
+            AccountCommand::SignIn {
+                extra_scopes,
+                device_code,
+            } => self.sign_in(extra_scopes, device_code),
+            AccountCommand::CancelSignIn => {
+                if let Some(cancel) = self.cancel_sign_in.take() {
+                    let _ = cancel.send(true);
+                }
+            }
+            AccountCommand::SignOut => self.sign_out().await,
+            AccountCommand::Fetch { resource, trigger } => self.fetch(resource, trigger),
+            AccountCommand::CachedMessages(conversation) => self.cached_messages(conversation),
+            AccountCommand::AgentRead {
+                plugin,
+                request,
+                query,
+                access,
+            } => self.agent_read(plugin, request, query, access),
+            AccountCommand::LoadOlder {
+                conversation,
+                before,
+            } => self.load_older(conversation, before),
+            AccountCommand::LoadReplies { conversation, root } => {
+                self.load_replies(conversation, root)
+            }
+            AccountCommand::Paste {
+                conversation,
+                range,
+                text,
+            } => {
+                let out = self.out.clone();
+                tokio::spawn(async move {
+                    let image = tokio::task::spawn_blocking(crate::clipboard::read_image)
+                        .await
+                        .unwrap_or(Err("The clipboard could not be read."));
+                    out.send(AccountEvent::Pasted {
+                        conversation,
+                        range,
+                        text,
+                        image,
+                    });
+                });
+            }
+            AccountCommand::Send(crate::outbox::SendPayload {
+                conversation,
+                local_id,
+                html,
+                reply_to,
+                mentions,
+                files,
+                images,
+                recipients,
+            }) => self.send(
+                conversation,
+                local_id,
+                Outgoing {
+                    html,
+                    mentions,
+                    files: Vec::new(),
+                    images,
+                },
+                reply_to,
+                files,
+                recipients,
+            ),
+            AccountCommand::SaveDraft {
+                conversation,
+                draft,
+            } => {
+                if let Some(store) = &self.store {
+                    self.drafts.push(store, conversation, draft);
+                }
+            }
+            AccountCommand::SaveOutbox(entry) => {
+                if let Some(store) = &self.store {
+                    let store = Arc::clone(store);
+                    let _ = tokio::task::spawn_blocking(move || {
+                        let store = store.lock().unwrap_or_else(|p| p.into_inner());
+                        if let Err(error) = store.save_outbox(&entry) {
+                            log::warn!("could not save an unsent message: {error}");
+                        }
+                    })
+                    .await;
+                }
+            }
+            AccountCommand::DropOutbox(local_id) => {
+                if let Some(store) = &self.store {
+                    forget_outbox(store, &local_id).await;
+                }
+            }
+            AccountCommand::Resend(entry) => self.resend(entry),
+            AccountCommand::SearchIn {
+                conversation,
+                query,
+                remote,
+            } => self.search_in(conversation, query, remote),
+            AccountCommand::SearchPeople(query) => self.search_people(query),
+            AccountCommand::CreateChat { others, topic } => self.create_chat(others, topic),
+            AccountCommand::AddMembers {
+                chat,
+                users,
+                history,
+            } => self.add_members(chat, users, history),
+            AccountCommand::LeaveChat(chat) => self.leave_chat(chat),
+            AccountCommand::SetAvailability(availability) => self.set_availability(availability),
+            AccountCommand::SetStatusMessage { text, expires } => {
+                self.set_status_message(text, expires)
+            }
+            AccountCommand::SetOutOfOffice(value) => self.set_out_of_office(value),
+            AccountCommand::PresenceActive => self.presence_active(),
+            AccountCommand::SignInBrowser(browser) => self.sign_in_browser = browser,
+            AccountCommand::FindMeetingChat(join_url) => self.find_meeting_chat(join_url),
+            AccountCommand::PresenceSession(enabled) => {
+                self.session_enabled = enabled;
+                if !enabled {
+                    self.end_presence_session().await;
+                }
+            }
+            AccountCommand::Edit {
+                conversation,
+                message,
+                html,
+            } => self.edit(conversation, message, html),
+            AccountCommand::Delete {
+                conversation,
+                message,
+            } => self.delete(conversation, message),
+            AccountCommand::React {
+                conversation,
+                message,
+                emoji,
+                on,
+            } => self.react(conversation, message, emoji, on),
+            AccountCommand::MarkRead(chat) => self.mark_read(chat),
+            AccountCommand::HideChat { chat, hide } => self.hide_chat(chat, hide),
+            AccountCommand::MarkChatUnread(chat) => self.mark_chat_unread(chat),
+            AccountCommand::PinMessage { chat, message } => self.pin_message(chat, message),
+            AccountCommand::UnpinMessage { chat, pin } => self.unpin_message(chat, pin),
+            AccountCommand::FindMeetingById(id) => self.find_meeting_by_id(id),
+            AccountCommand::Relay(relay) => {
+                self.relay = relay.as_deref().and_then(realtime::normalize_relay);
+                if relay.is_some() && self.relay.is_none() {
+                    self.out.send(AccountEvent::Push(PushStatus::Failed(
+                        "the relay must be an https:// address".into(),
+                    )));
+                }
+                self.restart_push().await;
+            }
+            AccountCommand::PushPlugin(route) => {
+                self.push_route = route.and_then(|route| {
+                    let url = realtime::normalize_relay(&route.url)?;
+                    Some(super::PushRoute::new(url, route.channel))
+                });
+                // A relay set by hand wins: the route is kept for later, and
+                // the running relay session is left alone.
+                if self.relay.is_none() {
+                    self.restart_push().await;
+                }
+            }
+            AccountCommand::PushBody(body) => {
+                // Dropped when no plugin loop is running.
+                let full = self
+                    .push_bodies
+                    .as_ref()
+                    .is_some_and(|bodies| bodies.try_send(body).is_err());
+                if full && !self.push_dropped {
+                    self.push_dropped = true;
+                    log::debug!("push: plugin bodies dropped (queue full or closed)");
+                }
+            }
+            AccountCommand::Presence(users) => self.presence(users),
+            AccountCommand::Photo(user) => self.photo(user),
+            AccountCommand::UserName(user) => self.user_name(user),
+            AccountCommand::Media(url) => self.media(url),
+            AccountCommand::Search(query) => self.search(query),
         }
     }
 
@@ -749,21 +720,22 @@ impl Worker {
             }
             Internal::SignInFailed(reason) => {
                 self.cancel_sign_in = None;
-                self.out.send(Event::Auth(AuthStatus::Failed(reason)));
+                self.out
+                    .send(AccountEvent::Auth(AuthStatus::Failed(reason)));
             }
             Internal::FetchFailed(resource) => self.freshness.forget(&resource),
             Internal::Post(entry) => self.send(
-                entry.conversation,
-                entry.local_id,
+                entry.payload.conversation,
+                entry.payload.local_id,
                 Outgoing {
-                    html: entry.html,
-                    mentions: entry.mentions,
+                    html: entry.payload.html,
+                    mentions: entry.payload.mentions,
                     files: Vec::new(),
-                    images: entry.images,
+                    images: entry.payload.images,
                 },
-                entry.reply_to,
-                entry.files,
-                entry.recipients,
+                entry.payload.reply_to,
+                entry.payload.files,
+                entry.payload.recipients,
             ),
             Internal::Refetch(conversation) => {
                 self.fetch(Resource::Messages(conversation), Trigger::AfterAction)
@@ -821,471 +793,7 @@ impl Worker {
 
     // -- Accounts ---------------------------------------------------------
 
-    async fn start(&mut self, client_id: String, tenant: String, account: Option<String>) {
-        if !crate::settings::is_guid(client_id.trim()) {
-            self.config = None;
-            self.out.send(Event::Auth(AuthStatus::NotConfigured));
-            return;
-        }
-        let config = AuthConfig {
-            authority: self.options.authority.clone(),
-            ..AuthConfig::new(&client_id, &tenant)
-        };
-        let changed = self.config.as_ref() != Some(&config);
-        self.config = Some(config.clone());
-        if !changed && let Some(account) = &self.account {
-            // The window marks the account as restoring whenever it sends
-            // Start (saving an unchanged registration does), so say again
-            // that it is signed in.
-            let record = &account.record;
-            self.out.send(Event::Auth(AuthStatus::SignedIn {
-                account: record.id.clone(),
-                name: record.display_name.clone(),
-                username: record.username.clone(),
-            }));
-            return;
-        }
-        self.account = None;
-        self.store = None;
-        self.expired = None;
-        let Some(id) = account else {
-            self.out.send(Event::Auth(AuthStatus::SignedOut));
-            return;
-        };
-        let record_path = self.dirs.account(&id).join("account.json");
-        let Some(record) = AccountRecord::load(&record_path) else {
-            self.out.send(Event::Auth(AuthStatus::SignedOut));
-            return;
-        };
-        self.out.send(Event::Auth(AuthStatus::Restoring));
-        // The cache first, so the window has something to show at once.
-        let store = match Store::open(&self.dirs.database(&id)) {
-            Ok(store) => Arc::new(Mutex::new(store)),
-            Err(error) => {
-                log::warn!("could not open the cache: {error}");
-                match Store::in_memory() {
-                    Ok(store) => Arc::new(Mutex::new(store)),
-                    Err(_) => return,
-                }
-            }
-        };
-        self.store = Some(Arc::clone(&store));
-        emit_cache(&store, &self.out).await;
-        self.resend_checked.lock().await.clear();
-        let restored_from = Arc::clone(&store);
-        match Session::restore(
-            &record,
-            config,
-            self.http.clone(),
-            Arc::clone(&self.secrets),
-        )
-        .await
-        {
-            Ok(Some(session)) => {
-                let session = Arc::new(session);
-                self.out.send(Event::Granted(session.granted()));
-                self.out
-                    .send(Event::ChannelAccess(channel_access(&session)));
-                self.account = Some(Account {
-                    graph: Arc::new(Graph::with_base(
-                        self.http.clone(),
-                        session,
-                        &self.options.graph_base,
-                    )),
-                    record: record.clone(),
-                    store,
-                });
-                self.out.send(Event::Auth(AuthStatus::SignedIn {
-                    account: record.id.clone(),
-                    name: record.display_name.clone(),
-                    username: record.username.clone(),
-                }));
-                emit_restored(&restored_from, &self.out).await;
-                self.restart_push().await;
-            }
-            Ok(None) => {
-                self.out.send(Event::Auth(AuthStatus::Expired {
-                    username: record.username.clone(),
-                    reason: "Sign in again to get new messages.".into(),
-                }));
-                emit_restored(&restored_from, &self.out).await;
-                self.expired = Some(record);
-            }
-            Err(error) => {
-                self.out.send(Event::Auth(AuthStatus::Expired {
-                    username: record.username.clone(),
-                    reason: format!("Chaat could not read its saved session: {error}."),
-                }));
-                emit_restored(&restored_from, &self.out).await;
-                self.expired = Some(record);
-            }
-        }
-    }
-
-    fn sign_in(&mut self, extra_scopes: Vec<String>, device_code: bool) {
-        let Some(config) = self.config.clone() else {
-            self.out.send(Event::Auth(AuthStatus::NotConfigured));
-            return;
-        };
-        if let Some(previous) = self.cancel_sign_in.take() {
-            let _ = previous.send(true);
-        }
-        let (cancel, cancelled) = watch::channel(false);
-        self.cancel_sign_in = Some(cancel);
-        // Only scopes asked for now need a consent screen.
-        let consent = !extra_scopes.is_empty();
-        // Keep the scopes already granted when asking for more, and when
-        // signing an expired account in again.
-        let granted = match (&self.account, &self.expired) {
-            (Some(account), _) => account.graph.session().granted(),
-            (None, Some(record)) => record.granted.clone(),
-            (None, None) => String::new(),
-        };
-        let mut extra = extra_scopes;
-        for scope in auth::OPTIONAL_SCOPES {
-            if auth::has_scope(&granted, scope) && !extra.iter().any(|s| s == scope) {
-                extra.push((*scope).to_owned());
-            }
-        }
-        let hint = self
-            .account
-            .as_ref()
-            .map(|a| &a.record)
-            .or(self.expired.as_ref())
-            .map(|r| r.username.clone())
-            .filter(|u| !u.is_empty());
-        let http = self.http.clone();
-        let secrets = Arc::clone(&self.secrets);
-        let out = self.out.clone();
-        let internal = self.internal.clone();
-        let open_browser = self.options.open_browser;
-        let sign_in_browser = self.sign_in_browser.clone();
-        let stopped = cancelled.clone();
-        tokio::spawn(async move {
-            let result = if device_code {
-                device_code_sign_in(&http, &config, &extra, &out, cancelled).await
-            } else {
-                browser_sign_in(
-                    &http,
-                    &config,
-                    Ask {
-                        extra: &extra,
-                        hint: hint.as_deref(),
-                        consent,
-                    },
-                    &out,
-                    cancelled,
-                    open_browser.then_some(sign_in_browser),
-                )
-                .await
-            };
-            let outcome = match result {
-                Ok(response) => Session::from_sign_in(config, http, secrets, response)
-                    .await
-                    .map(|pair| Internal::SignedIn(Box::new(pair)))
-                    .unwrap_or_else(|error| Internal::SignInFailed(error.to_string())),
-                Err(reason) => Internal::SignInFailed(reason),
-            };
-            // A cancelled or replaced attempt reports nothing: the interface
-            // has already moved on.
-            if *stopped.borrow() {
-                return;
-            }
-            let _ = internal.send(outcome);
-        });
-    }
-
-    async fn install(&mut self, session: Session, claims: IdClaims) {
-        let id = session.account.clone();
-        let account_dir = self.dirs.account(&id);
-        let _ = crate::paths::create_private_dir(&account_dir);
-        let record = AccountRecord {
-            id: id.clone(),
-            display_name: claims.name.clone().unwrap_or_default(),
-            username: claims.preferred_username.clone().unwrap_or_default(),
-            tenant_id: claims.tid.clone().unwrap_or_default(),
-            granted: session.granted(),
-            client_id: session.config.client_id.clone(),
-            tenant: session.config.tenant.clone(),
-        };
-        if let Err(error) = record.save(&account_dir.join("account.json")) {
-            log::warn!("could not save the account record: {error}");
-        }
-        let store = match self.account.take() {
-            // Re-consent for more scopes keeps the same cache.
-            Some(previous) if previous.record.id == id => previous.store,
-            _ => match Store::open(&self.dirs.database(&id)).or_else(|_| Store::in_memory()) {
-                Ok(store) => Arc::new(Mutex::new(store)),
-                Err(error) => {
-                    self.out.send(Event::Auth(AuthStatus::Failed(format!(
-                        "Could not open the cache: {error}"
-                    ))));
-                    return;
-                }
-            },
-        };
-        let saved = session.token_saved();
-        let store_locked = session.store_locked();
-        let session = Arc::new(session);
-        self.out.send(Event::Granted(session.granted()));
-        self.out
-            .send(Event::ChannelAccess(channel_access(&session)));
-        self.account = Some(Account {
-            graph: Arc::new(Graph::with_base(
-                self.http.clone(),
-                session,
-                &self.options.graph_base,
-            )),
-            record: record.clone(),
-            store: Arc::clone(&store),
-        });
-        self.store = Some(Arc::clone(&store));
-        self.expired = None;
-        self.freshness.clear();
-        emit_cache(&store, &self.out).await;
-        self.out.send(Event::Auth(AuthStatus::SignedIn {
-            account: id,
-            name: record.display_name,
-            username: record.username,
-        }));
-        if !saved {
-            self.out
-                .send(Event::Error(unsaved_sign_in_text(store_locked).into()));
-        }
-        self.restart_push().await;
-    }
-
     // -- Push ---------------------------------------------------------------
-
-    /// Stops any running push loop and, when a relay is set and an account is
-    /// signed in, starts a new one.
-    async fn restart_push(&mut self) {
-        self.stop_push().await;
-        let Some(account) = &self.account else {
-            self.out.send(Event::Push(PushStatus::Off));
-            return;
-        };
-        // A relay set by hand wins over a push plugin's route.
-        let (mut source, bodies) = if let Some(relay) = self.relay.clone() {
-            (PushSource::Relay { relay, key: None }, None)
-        } else if let Some(route) = self.push_route.clone() {
-            let (tx, rx) = mpsc::channel(PUSH_BODY_QUEUE);
-            (PushSource::Plugin { route, bodies: rx }, Some(tx))
-        } else {
-            self.out.send(Event::Push(PushStatus::Off));
-            return;
-        };
-        let (stop, stopped) = watch::channel(false);
-        let graph = Arc::clone(&account.graph);
-        let me = account.record.user_id().to_owned();
-        let out = self.out.clone();
-        let internal = self.internal.clone();
-        let secrets = Arc::clone(&self.secrets);
-        if let PushSource::Relay { key, .. } = &mut source {
-            *key = tokio::task::spawn_blocking(move || secrets.read(crate::secrets::RELAY_KEY))
-                .await
-                .ok()
-                .and_then(Result::ok)
-                .flatten();
-        }
-        let target = PushTarget {
-            me,
-            source,
-            leftovers: self
-                .dirs
-                .account(&account.record.id)
-                .join(realtime::LEFTOVERS_FILE),
-            contacts: self.contacts.subscribe(),
-            refused: self
-                .dirs
-                .account(&account.record.id)
-                .join(realtime::REFUSED_FILE),
-            renew_every: self.options.push_renew_every,
-            connect_within: self.options.relay_connect_timeout,
-        };
-        let tag = account_tag(&account.record.id);
-        let task =
-            tokio::spawn(PUSH_ACCOUNT.scope(tag, push_loop(graph, target, out, internal, stopped)));
-        self.stop_push = Some((stop, task));
-        self.push_bodies = bodies;
-        self.push_dropped = false;
-    }
-
-    /// Stops the push loop and waits for it to delete its subscriptions,
-    /// so they don't keep sending notifications to a closed channel (and a
-    /// new presence subscription isn't refused as a duplicate). A slow or
-    /// unreachable Graph cannot hold up quitting for longer than
-    /// [`PUSH_CLEANUP`]; whatever is left is deleted at the next start.
-    async fn stop_push(&mut self) {
-        if let Some((stop, task)) = self.stop_push.take() {
-            // Stop first: closing the body queue before the stop flag is set
-            // would let the loop report "the push plugin stopped" as a failure.
-            let _ = stop.send(true);
-            self.push_bodies = None;
-            if tokio::time::timeout(PUSH_CLEANUP, task).await.is_err() {
-                log::info!(
-                    "push[{}]: cleanup took too long; the next start finishes it",
-                    self.me_id().as_deref().map(account_tag).unwrap_or_default()
-                );
-            }
-        }
-    }
-
-    /// Launches (or relaunches) one plugin of the plugin list. Only that id's
-    /// host is replaced. An id whose previous run is still stopping starts
-    /// when that run has ended.
-    fn start_plugin(&mut self, id: String, start: PluginStart) {
-        if self.stopping_ids.values().any(|stopping| *stopping == id) {
-            self.deferred_starts.insert(id, start);
-            return;
-        }
-        self.launch_plugin(id, start);
-    }
-
-    fn launch_plugin(&mut self, id: String, start: PluginStart) {
-        let out = self.out.clone();
-        let tag = id.clone();
-        let generation = start.generation;
-        let plugin = crate::plugin::host::Plugin::start(
-            start.path,
-            start.hello,
-            crate::plugin::registry::KNOWN,
-            start.expected_sha256,
-            move |reported| {
-                if let Some(event) = crate::plugin::event::event(reported) {
-                    out.send(Event::Plugin {
-                        id: tag.clone(),
-                        generation,
-                        event,
-                    });
-                }
-            },
-        );
-        if let Some(old) = self.plugins.insert(id, plugin) {
-            old.abort();
-        }
-    }
-
-    /// Stops one plugin without holding up the command loop: the stop runs in
-    /// a tracked task, which shutdown waits for.
-    fn stop_plugin(&mut self, id: String) {
-        self.deferred_starts.remove(&id);
-        if let Some(plugin) = self.plugins.remove(&id) {
-            let task = self.stopping.spawn(plugin.stop());
-            self.stopping_ids.insert(task.id(), id);
-        }
-        self.prune_secret_queues();
-    }
-
-    /// A stop task ended: starts what was waiting for it.
-    fn plugin_stopped(&mut self, stopped: Result<(tokio::task::Id, ()), tokio::task::JoinError>) {
-        let task = match stopped {
-            Ok((task, ())) => task,
-            Err(error) => {
-                log::warn!("plugin: a stop task failed");
-                error.id()
-            }
-        };
-        let Some(id) = self.stopping_ids.remove(&task) else {
-            return;
-        };
-        if !self.stopping_ids.values().any(|stopping| *stopping == id)
-            && let Some(start) = self.deferred_starts.remove(&id)
-        {
-            self.launch_plugin(id, start);
-        }
-        self.prune_secret_queues();
-    }
-
-    /// One plugin's credential store queue, started on first use.
-    fn secret_queue(&mut self, plugin: &str) -> &SecretQueue {
-        self.prune_secret_queues();
-        self.secret_jobs
-            .entry(plugin.to_owned())
-            .or_insert_with(SecretQueue::start)
-    }
-
-    /// Drops the queues of plugins that are not running and have nothing
-    /// queued. A queue with work left stays, so a later job for the same
-    /// plugin still runs after it.
-    fn prune_secret_queues(&mut self) {
-        let plugins = &self.plugins;
-        self.secret_jobs
-            .retain(|id, queue| !queue.idle() || plugins.contains_key(id));
-    }
-
-    /// Sends a plugin its options, with the stored secret values merged in.
-    /// Values are never logged.
-    fn plugin_options(
-        &mut self,
-        id: String,
-        mut values: std::collections::BTreeMap<String, serde_json::Value>,
-        secrets: Vec<String>,
-    ) {
-        let Some(plugin) = self.plugins.get(&id) else {
-            return;
-        };
-        let store = Arc::clone(&self.secrets);
-        let outgoing = plugin.sender();
-        self.secret_queue(&id).run(move || {
-            for option in secrets {
-                if let Ok(Some(value)) = store.read(&plugin_secret_key(&id, &option)) {
-                    values.insert(option, serde_json::Value::String(value));
-                }
-            }
-            let _ = outgoing.send(crate::plugin::protocol::HostMessage::Options { values });
-        });
-    }
-
-    /// Stops every plugin of the plugin list, all at once, and waits for
-    /// every stop, including ones already under way.
-    async fn stop_plugins(&mut self) {
-        self.deferred_starts.clear();
-        for (id, plugin) in self.plugins.drain() {
-            let task = self.stopping.spawn(plugin.stop());
-            self.stopping_ids.insert(task.id(), id);
-        }
-        let stops = &mut self.stopping;
-        let all = async { while stops.join_next().await.is_some() {} };
-        if tokio::time::timeout(PLUGIN_STOP_WAIT, all).await.is_err() {
-            log::warn!("plugin: stopping took too long; giving up on the rest");
-            self.stopping.abort_all();
-        }
-        self.stopping_ids.clear();
-    }
-
-    async fn sign_out(&mut self) {
-        self.stop_push().await;
-        self.end_presence_session().await;
-        self.store = None;
-        let Some(account) = self.account.take() else {
-            self.out.send(Event::Auth(AuthStatus::SignedOut));
-            return;
-        };
-        account.graph.session().sign_out().await;
-        // The cache holds the person's messages: remove it with the session.
-        // Fetches still running hold the database open, and Windows will
-        // not delete an open file, so wait for them to let go first.
-        let store = account.store;
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while Arc::strong_count(&store) > 1 && Instant::now() < deadline {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        drop(store);
-        let dir = self.dirs.account(&account.record.id);
-        for attempt in 1..=10 {
-            match tokio::fs::remove_dir_all(&dir).await {
-                Ok(()) => break,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
-                Err(error) if attempt == 10 => {
-                    log::warn!("could not remove the account's cache: {error}");
-                }
-                Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
-            }
-        }
-        self.freshness.clear();
-        self.out.send(Event::Auth(AuthStatus::SignedOut));
-    }
 
     // -- Fetching -----------------------------------------------------------
 
@@ -1321,7 +829,7 @@ impl Worker {
         let reachable = Arc::clone(&self.reachable);
         tokio::spawn(async move {
             use std::sync::atomic::Ordering;
-            out.send(Event::Loading(resource.clone(), true));
+            out.send(AccountEvent::Loading(resource.clone(), true));
             let result = fetch_resource(&graph, &store, &out, &resource, &record, &links).await;
             if trigger == Trigger::Push {
                 log::debug!(
@@ -1330,10 +838,10 @@ impl Worker {
                     result.is_ok()
                 );
             }
-            out.send(Event::Loading(resource.clone(), false));
+            out.send(AccountEvent::Loading(resource.clone(), false));
             let lost = result.as_ref().err().is_some_and(is_unreachable);
             if lost == reachable.swap(!lost, Ordering::Relaxed) {
-                out.send(Event::Reachable(!lost));
+                out.send(AccountEvent::Reachable(!lost));
             }
             if result.is_ok() && resource == Resource::Chats {
                 let me = record.user_id().to_owned();
@@ -1352,7 +860,7 @@ impl Worker {
                         Resource::Messages(ConversationId::Channel { .. }),
                         GraphError::Forbidden { .. },
                     ) => {
-                        out.send(Event::ChannelAccess(Access::Forbidden));
+                        out.send(AccountEvent::ChannelAccess(Access::Forbidden));
                     }
                     (Resource::MyPresence | Resource::Calendar, GraphError::Forbidden { .. }) => {
                         log::info!("{resource:?} is not permitted for this account");
@@ -1360,7 +868,7 @@ impl Worker {
                     _ => out.error(describe(&resource), &error),
                 }
                 if let GraphError::Auth(TokenError::Rejected(reason)) = &error {
-                    out.send(Event::Auth(AuthStatus::Expired {
+                    out.send(AccountEvent::Auth(AuthStatus::Expired {
                         username: String::new(),
                         reason: reason.clone(),
                     }));
@@ -1369,721 +877,11 @@ impl Worker {
         });
     }
 
-    fn load_older(&mut self, conversation: ConversationId, before: Option<i64>) {
-        let Some(account) = &self.account else { return };
-        if !self.freshness.claim(
-            Resource::Messages(conversation.clone()),
-            Trigger::History,
-            Instant::now(),
-        ) {
-            return;
-        }
-        let graph = Arc::clone(&account.graph);
-        let store = Arc::clone(&account.store);
-        let out = self.out.clone();
-        let links = Arc::clone(&self.older_links);
-        tokio::spawn(async move {
-            let resource = Resource::Messages(conversation.clone());
-            out.send(Event::Loading(resource.clone(), true));
-            let result = async {
-                let page = match &conversation {
-                    ConversationId::Chat(chat) => {
-                        let cached = {
-                            let store = store.lock().unwrap_or_else(|p| p.into_inner());
-                            store
-                                .messages_before(
-                                    &conversation,
-                                    before.unwrap_or(i64::MAX),
-                                    CACHED_MESSAGES,
-                                )
-                                .unwrap_or_default()
-                        };
-                        if !cached.is_empty() {
-                            remember_link(&links, &conversation, None);
-                            out.send(Event::Messages {
-                                conversation: conversation.clone(),
-                                messages: cached,
-                                merge: Merge::Older,
-                                more: Some(true),
-                                cached: true,
-                            });
-                            return Ok(None);
-                        }
-                        let link = links
-                            .lock()
-                            .unwrap_or_else(|p| p.into_inner())
-                            .get(&conversation)
-                            .cloned();
-                        let page = match link {
-                            Some(link) => graph.chat_message_page(chat, &link).await?,
-                            None => graph.chat_messages(chat, before).await?,
-                        };
-                        remember_link(&links, &conversation, page.older.clone());
-                        page
-                    }
-                    ConversationId::Channel { team, channel } => {
-                        let link = links
-                            .lock()
-                            .unwrap_or_else(|p| p.into_inner())
-                            .get(&conversation)
-                            .cloned();
-                        let Some(link) = link else {
-                            return Ok(Some(false));
-                        };
-                        let page = graph.channel_messages(team, channel, Some(&link)).await?;
-                        remember_link(&links, &conversation, page.older.clone());
-                        page
-                    }
-                };
-                let more = page.older.is_some() || page.messages.len() >= crate::graph::api::PAGE;
-                save(&store, &conversation, &page.messages).await;
-                out.send(Event::Messages {
-                    conversation: conversation.clone(),
-                    messages: page.messages,
-                    merge: Merge::Older,
-                    more: Some(more),
-                    cached: false,
-                });
-                Ok::<_, GraphError>(None)
-            }
-            .await;
-            out.send(Event::Loading(resource, false));
-            match result {
-                Ok(Some(more)) => out.send(Event::Messages {
-                    conversation,
-                    messages: Vec::new(),
-                    merge: Merge::Older,
-                    more: Some(more),
-                    cached: false,
-                }),
-                Ok(None) => {}
-                Err(error) => out.error("Loading older messages", &error),
-            }
-        });
-    }
-
-    fn load_replies(&mut self, conversation: ConversationId, root: String) {
-        let Some(account) = &self.account else { return };
-        let ConversationId::Channel { team, channel } = &conversation else {
-            return;
-        };
-        let (team, channel) = (team.clone(), channel.clone());
-        let graph = Arc::clone(&account.graph);
-        let out = self.out.clone();
-        tokio::spawn(async move {
-            match graph.channel_replies(&team, &channel, &root).await {
-                Ok(replies) => out.send(Event::Replies {
-                    conversation,
-                    root,
-                    replies,
-                }),
-                Err(error) => out.error("Loading replies", &error),
-            }
-        });
-    }
-
     // -- Writing ------------------------------------------------------------
-
-    fn send(
-        &mut self,
-        conversation: ConversationId,
-        local_id: String,
-        mut message: Outgoing,
-        reply_to: Option<String>,
-        files: Vec<std::path::PathBuf>,
-        recipients: Vec<String>,
-    ) {
-        let Some(account) = &self.account else {
-            self.out.send(Event::SendFailed {
-                conversation,
-                local_id,
-                reason: "Not signed in".into(),
-            });
-            return;
-        };
-        let graph = Arc::clone(&account.graph);
-        let store = Arc::clone(&account.store);
-        let out = self.out.clone();
-        tokio::spawn(async move {
-            // Files first: upload, share with the conversation, reference.
-            for path in &files {
-                let name = path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_default();
-                match share_file(&graph, &conversation, path, &recipients, &out).await {
-                    Ok(shared) => message.files.push(shared),
-                    Err(error) => {
-                        log::warn!("upload failed: {error}");
-                        out.send(Event::SendFailed {
-                            conversation,
-                            local_id,
-                            reason: format!("uploading {name} failed ({error})"),
-                        });
-                        return;
-                    }
-                }
-            }
-            let result = match &conversation {
-                ConversationId::Chat(chat) => match &reply_to {
-                    Some(quoted) => graph.reply_with_quote(chat, quoted, &message).await,
-                    None => graph.send_chat_message(chat, &message).await,
-                },
-                ConversationId::Channel { team, channel } => {
-                    graph
-                        .send_channel_message(team, channel, reply_to.as_deref(), &message)
-                        .await
-                }
-            };
-            match result {
-                Ok(message) => {
-                    if message.reply_to.is_none() {
-                        save(&store, &conversation, std::slice::from_ref(&message)).await;
-                    }
-                    forget_outbox(&store, &local_id).await;
-                    out.send(Event::Sent {
-                        conversation,
-                        local_id,
-                        message: Box::new(message),
-                    });
-                }
-                Err(error) => {
-                    log::warn!("send failed: {error}");
-                    out.send(Event::SendFailed {
-                        conversation,
-                        local_id,
-                        reason: error.to_string(),
-                    });
-                }
-            }
-        });
-    }
-
-    /// Sends a kept message again, unless the conversation already shows it.
-    fn resend(&mut self, entry: crate::outbox::OutboxEntry) {
-        let Some(account) = &self.account else {
-            self.out.send(Event::SendFailed {
-                conversation: entry.conversation,
-                local_id: entry.local_id,
-                reason: "Not signed in".into(),
-            });
-            return;
-        };
-        let resource = Resource::Messages(entry.conversation.clone());
-        let claimed = self
-            .freshness
-            .claim(resource.clone(), Trigger::Start, Instant::now());
-        let graph = Arc::clone(&account.graph);
-        let store = Arc::clone(&account.store);
-        let out = self.out.clone();
-        let internal = self.internal.clone();
-        let record = account.record.clone();
-        let links = Arc::clone(&self.older_links);
-        let checked = Arc::clone(&self.resend_checked);
-        tokio::spawn(async move {
-            let mut checked = checked.lock().await;
-            if !checked.contains(&entry.conversation) {
-                // Without a fresh look there is no telling whether Graph
-                // took the message, so it is not sent blind.
-                let fetched = claimed
-                    && fetch_resource(&graph, &store, &out, &resource, &record, &links)
-                        .await
-                        .is_ok();
-                if !fetched {
-                    if claimed {
-                        let _ = internal.send(Internal::FetchFailed(resource));
-                    }
-                    out.send(Event::SendFailed {
-                        conversation: entry.conversation,
-                        local_id: entry.local_id,
-                        reason: "Chaat could not check whether it was sent. Retry to send it."
-                            .into(),
-                    });
-                    return;
-                }
-                checked.insert(entry.conversation.clone());
-            }
-            drop(checked);
-            let me = record.user_id().to_owned();
-            let recent = {
-                let key = entry.conversation.clone();
-                let store = Arc::clone(&store);
-                tokio::task::spawn_blocking(move || {
-                    let store = store.lock().unwrap_or_else(|p| p.into_inner());
-                    store.messages(&key, CACHED_MESSAGES).unwrap_or_default()
-                })
-                .await
-                .unwrap_or_default()
-            };
-            match crate::outbox::already_sent(&entry, &recent, &me) {
-                Some(message) => {
-                    forget_outbox(&store, &entry.local_id).await;
-                    out.send(Event::Sent {
-                        conversation: entry.conversation,
-                        local_id: entry.local_id,
-                        message: Box::new(message),
-                    });
-                }
-                None => {
-                    let _ = internal.send(Internal::Post(entry));
-                }
-            }
-        });
-    }
 
     // -- People and presence --------------------------------------------------
 
-    fn search_people(&mut self, query: String) {
-        let Some(account) = &self.account else { return };
-        let graph = Arc::clone(&account.graph);
-        let out = self.out.clone();
-        tokio::spawn(async move {
-            match graph.search_people(&query).await {
-                Ok(people) => out.send(Event::People { query, people }),
-                Err(error) => log::info!("people search unavailable: {error}"),
-            }
-        });
-    }
-
-    fn create_chat(&mut self, others: Vec<String>, topic: Option<String>) {
-        let Some(account) = &self.account else { return };
-        let graph = Arc::clone(&account.graph);
-        let store = Arc::clone(&account.store);
-        let out = self.out.clone();
-        let me = account.record.user_id().to_owned();
-        tokio::spawn(async move {
-            match graph.create_chat(&me, &others, topic.as_deref()).await {
-                Ok(chat) => {
-                    {
-                        let store = store.lock().unwrap_or_else(|p| p.into_inner());
-                        let _ = store.upsert_chat(&chat);
-                    }
-                    out.send(Event::ChatCreated(Box::new(chat)));
-                }
-                Err(error) => out.error("Starting the chat", &error),
-            }
-        });
-    }
-
-    fn add_members(&mut self, chat: String, users: Vec<String>, history: bool) {
-        let Some(account) = &self.account else { return };
-        let graph = Arc::clone(&account.graph);
-        let out = self.out.clone();
-        let internal = self.internal.clone();
-        tokio::spawn(async move {
-            let mut added = Vec::new();
-            let mut failed = Vec::new();
-            for user in users {
-                match graph.add_chat_member(&chat, &user, history).await {
-                    Ok(()) => added.push(user),
-                    Err(error) => {
-                        log::info!("adding a person to a chat failed: {error}");
-                        failed.push(user);
-                    }
-                }
-            }
-            out.send(Event::MembersAdded {
-                chat: chat.clone(),
-                added,
-                failed,
-            });
-            // Read the list back, so what is shown is what Graph has.
-            let _ = internal.send(Internal::Confirm(Resource::Members(chat)));
-        });
-    }
-
-    fn leave_chat(&mut self, chat: String) {
-        let Some(account) = &self.account else { return };
-        let graph = Arc::clone(&account.graph);
-        let store = Arc::clone(&account.store);
-        let out = self.out.clone();
-        let me = account.record.user_id().to_owned();
-        tokio::spawn(async move {
-            // The membership id is read now, never kept: it changes when
-            // the person is removed and added again.
-            let result = async {
-                let mine = graph
-                    .chat_members(&chat)
-                    .await?
-                    .into_iter()
-                    .find(|(_, member)| member.user_id == me)
-                    .map(|(membership, _)| membership);
-                match mine {
-                    Some(membership) => graph.remove_chat_member(&chat, &membership).await,
-                    None => Err(GraphError::Decode),
-                }
-            }
-            .await;
-            match result {
-                Ok(()) => {
-                    {
-                        let mut store = store.lock().unwrap_or_else(|p| p.into_inner());
-                        if let Ok(mut chats) = store.chats() {
-                            chats.retain(|c| c.id != chat);
-                            let _ = store.save_chats(&chats);
-                        }
-                    }
-                    out.send(Event::LeftChat(chat));
-                }
-                Err(error) => {
-                    log::info!("leaving a chat failed: {error}");
-                    out.send(Event::LeaveFailed {
-                        chat,
-                        admin: matches!(error, GraphError::Forbidden { .. }),
-                    });
-                }
-            }
-        });
-    }
-
-    fn find_meeting_chat(&mut self, join_url: String) {
-        let Some(account) = &self.account else { return };
-        let graph = Arc::clone(&account.graph);
-        let store = Arc::clone(&account.store);
-        let out = self.out.clone();
-        tokio::spawn(async move {
-            let chat = match graph.meeting_chat(&join_url).await {
-                Ok(Some(chat)) => {
-                    let store = store.lock().unwrap_or_else(|p| p.into_inner());
-                    let _ = store.upsert_chat(&chat);
-                    Some(Box::new(chat))
-                }
-                Ok(None) => None,
-                Err(error) => {
-                    log::info!("meeting chat lookup failed: {error}");
-                    None
-                }
-            };
-            out.send(Event::MeetingChat { join_url, chat });
-        });
-    }
-
-    fn set_availability(&mut self, availability: Option<crate::model::Availability>) {
-        let Some(account) = &self.account else { return };
-        let graph = Arc::clone(&account.graph);
-        let out = self.out.clone();
-        let me = account.record.user_id().to_owned();
-        tokio::spawn(async move {
-            match graph.set_preferred_presence(&me, availability).await {
-                Ok(()) => {
-                    if let Ok(presence) = graph.my_presence().await {
-                        out.send(Event::MyPresence(presence));
-                    }
-                }
-                Err(error) => out.error("Setting your status", &error),
-            }
-        });
-    }
-
-    fn set_status_message(&mut self, text: String, expires: Option<crate::model::Millis>) {
-        let Some(account) = &self.account else { return };
-        let graph = Arc::clone(&account.graph);
-        let out = self.out.clone();
-        let me = account.record.user_id().to_owned();
-        tokio::spawn(async move {
-            match graph.set_status_message(&me, &text, expires).await {
-                Ok(()) => {
-                    if let Ok(presence) = graph.my_presence().await {
-                        out.send(Event::MyPresence(presence));
-                    }
-                }
-                Err(error) => out.error("Setting your status message", &error),
-            }
-        });
-    }
-
-    /// Saves the automatic replies, shows them as saved, and reads them back.
-    fn set_out_of_office(&mut self, value: crate::model::OutOfOffice) {
-        let Some(account) = &self.account else { return };
-        let graph = Arc::clone(&account.graph);
-        let out = self.out.clone();
-        let internal = self.internal.clone();
-        tokio::spawn(async move {
-            match graph.set_out_of_office(&value).await {
-                Ok(()) => {
-                    out.send(Event::OutOfOffice(value));
-                    let _ = internal.send(Internal::Confirm(Resource::OutOfOffice));
-                }
-                Err(error) => {
-                    if crate::graph::mailbox::no_mailbox(&error) {
-                        out.send(Event::OutOfOfficeUnavailable);
-                    } else {
-                        out.error("Saving your automatic replies", &error);
-                    }
-                    out.send(Event::OutOfOfficeNotSaved);
-                }
-            }
-        });
-    }
-
-    /// The person is using Chaat. An Available presence session turns
-    /// inactive five minutes after its last refresh and Away five minutes
-    /// later, so Chaat refreshes it only while someone is at the keyboard;
-    /// stepping away lets Graph mark them Away, as a Teams client would.
-    fn presence_active(&mut self) {
-        let Some(account) = &self.account else { return };
-        let (Some(config), true) = (&self.config, self.session_enabled) else {
-            return;
-        };
-        if !account
-            .graph
-            .session()
-            .has_scope(auth::PRESENCE_WRITE_SCOPE)
-        {
-            return;
-        }
-        let now = Instant::now();
-        if self
-            .session_refreshed
-            .is_some_and(|at| now.duration_since(at) < Duration::from_secs(4 * 60))
-        {
-            return;
-        }
-        self.session_refreshed = Some(now);
-        let graph = Arc::clone(&account.graph);
-        let me = account.record.user_id().to_owned();
-        let client = config.client_id.clone();
-        tokio::spawn(async move {
-            if let Err(error) = graph.set_presence_session(&me, &client, false, 60).await {
-                log::info!("could not refresh the presence session: {error}");
-            }
-        });
-    }
-
-    /// Ends Chaat's presence session, if it started one (at sign-out, when
-    /// turned off, and at exit).
-    async fn end_presence_session(&mut self) {
-        if self.session_refreshed.take().is_none() {
-            return;
-        }
-        let (Some(account), Some(config)) = (&self.account, &self.config) else {
-            return;
-        };
-        let me = account.record.user_id().to_owned();
-        let clear = account.graph.clear_presence_session(&me, &config.client_id);
-        if let Ok(Err(error)) = tokio::time::timeout(Duration::from_secs(3), clear).await {
-            log::info!("could not end the presence session: {error}");
-        }
-    }
-
-    fn edit(&mut self, conversation: ConversationId, message: String, html: String) {
-        let Some(account) = &self.account else { return };
-        let graph = Arc::clone(&account.graph);
-        let out = self.out.clone();
-        let internal = self.internal.clone();
-        tokio::spawn(async move {
-            match graph.edit_message(&conversation, &message, &html).await {
-                Ok(()) => {
-                    let _ = internal.send(Internal::Refetch(conversation));
-                }
-                Err(error) => out.error("Editing the message", &error),
-            }
-        });
-    }
-
-    fn delete(&mut self, conversation: ConversationId, message: String) {
-        let Some(account) = &self.account else { return };
-        let graph = Arc::clone(&account.graph);
-        let store = Arc::clone(&account.store);
-        let out = self.out.clone();
-        let me = account.record.user_id().to_owned();
-        tokio::spawn(async move {
-            match graph.delete_message(&me, &conversation, &message).await {
-                Ok(()) => {
-                    {
-                        let store = store.lock().unwrap_or_else(|p| p.into_inner());
-                        let _ = store.delete_message(&conversation, &message);
-                    }
-                    out.send(Event::Deleted {
-                        conversation,
-                        message,
-                    });
-                }
-                Err(error) => out.error("Deleting the message", &error),
-            }
-        });
-    }
-
-    fn react(&mut self, conversation: ConversationId, message: String, emoji: String, on: bool) {
-        let Some(account) = &self.account else { return };
-        let graph = Arc::clone(&account.graph);
-        let out = self.out.clone();
-        let internal = self.internal.clone();
-        tokio::spawn(async move {
-            match graph.react(&conversation, &message, &emoji, on).await {
-                Ok(()) => {
-                    let _ = internal.send(Internal::Refetch(conversation));
-                }
-                Err(error) => out.error("Reacting", &error),
-            }
-        });
-    }
-
-    fn mark_read(&mut self, chat: String) {
-        let Some(account) = &self.account else { return };
-        let graph = Arc::clone(&account.graph);
-        let me = account.record.user_id().to_owned();
-        let tenant = account.record.tenant_id.clone();
-        tokio::spawn(async move {
-            if let Err(error) = graph.mark_chat_read(&chat, &me, &tenant).await {
-                log::info!("could not mark a chat read: {error}");
-            }
-        });
-    }
-
-    fn hide_chat(&mut self, chat: String, hide: bool) {
-        let Some(account) = &self.account else { return };
-        let graph = Arc::clone(&account.graph);
-        let store = Arc::clone(&account.store);
-        let out = self.out.clone();
-        let me = account.record.user_id().to_owned();
-        let tenant = account.record.tenant_id.clone();
-        tokio::spawn(async move {
-            match graph.hide_chat(&chat, &me, &tenant, hide).await {
-                Ok(()) => {
-                    {
-                        let store = store.lock().unwrap_or_else(|p| p.into_inner());
-                        if let Some(mut cached) = store
-                            .chats()
-                            .ok()
-                            .and_then(|chats| chats.into_iter().find(|c| c.id == chat))
-                        {
-                            cached.hidden = hide;
-                            let _ = store.upsert_chat(&cached);
-                        }
-                    }
-                    out.send(Event::ChatHidden {
-                        chat,
-                        hidden: hide,
-                        ok: true,
-                    });
-                }
-                Err(error) => {
-                    log::info!("hiding a chat failed: {error}");
-                    out.send(Event::ChatHidden {
-                        chat,
-                        hidden: hide,
-                        ok: false,
-                    });
-                }
-            }
-        });
-    }
-
-    fn mark_chat_unread(&mut self, chat: String) {
-        let Some(account) = &self.account else { return };
-        let graph = Arc::clone(&account.graph);
-        let out = self.out.clone();
-        let me = account.record.user_id().to_owned();
-        let tenant = account.record.tenant_id.clone();
-        tokio::spawn(async move {
-            if let Err(error) = graph.mark_chat_unread(&chat, &me, &tenant).await {
-                log::info!("could not mark a chat unread: {error}");
-                out.send(Event::MarkUnreadFailed(chat));
-            }
-        });
-    }
-
-    fn pin_message(&mut self, chat: String, message: String) {
-        let Some(account) = &self.account else { return };
-        let graph = Arc::clone(&account.graph);
-        let out = self.out.clone();
-        let internal = self.internal.clone();
-        tokio::spawn(async move {
-            if let Err(error) = graph.pin_message(&chat, &message).await {
-                out.error("Pinning", &error);
-            }
-            // Success or not, read the pins back so the banner is true.
-            let _ = internal.send(Internal::Confirm(Resource::Pins(chat)));
-        });
-    }
-
-    fn unpin_message(&mut self, chat: String, pin: String) {
-        let Some(account) = &self.account else { return };
-        let graph = Arc::clone(&account.graph);
-        let out = self.out.clone();
-        let internal = self.internal.clone();
-        tokio::spawn(async move {
-            if let Err(error) = graph.unpin_message(&chat, &pin).await {
-                out.error("Unpinning", &error);
-            }
-            let _ = internal.send(Internal::Confirm(Resource::Pins(chat)));
-        });
-    }
-
-    fn find_meeting_by_id(&mut self, id: String) {
-        let Some(account) = &self.account else { return };
-        let graph = Arc::clone(&account.graph);
-        let out = self.out.clone();
-        tokio::spawn(async move {
-            let join_url = match graph.meeting_join_url_by_id(&id).await {
-                Ok(url) => url,
-                Err(error) => {
-                    log::info!("meeting ID lookup failed: {error}");
-                    None
-                }
-            };
-            out.send(Event::MeetingById { id, join_url });
-        });
-    }
-
     // -- People and media ---------------------------------------------------
-
-    fn presence(&mut self, users: Vec<String>) {
-        let Some(account) = &self.account else { return };
-        if !account.graph.session().has_scope("Presence.Read.All") {
-            return;
-        }
-        let now = Instant::now();
-        let due: Vec<String> = users
-            .into_iter()
-            .filter(|user| {
-                self.presence_seen
-                    .get(user)
-                    .is_none_or(|at| now.duration_since(*at) >= PRESENCE_REUSE)
-            })
-            .collect();
-        if due.is_empty() {
-            return;
-        }
-        for user in &due {
-            self.presence_seen.insert(user.clone(), now);
-        }
-        let graph = Arc::clone(&account.graph);
-        let out = self.out.clone();
-        tokio::spawn(async move {
-            match graph.presences(&due).await {
-                Ok(presence) => out.send(Event::Presence(presence)),
-                Err(error) => log::info!("presence unavailable: {error}"),
-            }
-        });
-    }
-
-    /// Fetches people whose presence Graph said changed. Unlike a look, a
-    /// change notice is always worth one fetch.
-    fn presence_changed(&mut self, users: Vec<String>) {
-        let Some(account) = &self.account else { return };
-        if users.is_empty() || !account.graph.session().has_scope("Presence.Read.All") {
-            return;
-        }
-        let now = Instant::now();
-        for user in &users {
-            self.presence_seen.insert(user.clone(), now);
-        }
-        log::debug!(
-            "push[{}]: fetching presence for {} people",
-            account_tag(&account.record.id),
-            users.len()
-        );
-        let graph = Arc::clone(&account.graph);
-        let out = self.out.clone();
-        tokio::spawn(async move {
-            match graph.presences(&users).await {
-                Ok(presence) => out.send(Event::Presence(presence)),
-                Err(error) => log::info!("presence unavailable: {error}"),
-            }
-        });
-    }
 
     /// The signed-in person's user id.
     fn me_id(&self) -> Option<String> {
@@ -2092,131 +890,12 @@ impl Worker {
             .map(|account| account.record.user_id().to_owned())
     }
 
-    /// Looks up a name once per person every ten minutes, like photos.
-    fn user_name(&mut self, user: String) {
-        let Some(account) = &self.account else { return };
-        let now = Instant::now();
-        if self
-            .names_asked
-            .get(&user)
-            .is_some_and(|at| now.duration_since(*at) < Duration::from_secs(600))
-        {
-            return;
-        }
-        self.names_asked.insert(user.clone(), now);
-        let graph = Arc::clone(&account.graph);
-        let out = self.out.clone();
-        tokio::spawn(async move {
-            match graph.user_name(&user).await {
-                Ok(name) => out.send(Event::UserName { user, name }),
-                Err(error) => log::debug!("name unavailable: {error}"),
-            }
-        });
-    }
-
-    fn photo(&mut self, user: String) {
-        let Some(account) = &self.account else { return };
-        let now = Instant::now();
-        if self
-            .photos_asked
-            .get(&user)
-            .is_some_and(|at| now.duration_since(*at) < Duration::from_secs(600))
-        {
-            return;
-        }
-        self.photos_asked.insert(user.clone(), now);
-        let graph = Arc::clone(&account.graph);
-        let store = Arc::clone(&account.store);
-        let out = self.out.clone();
-        let downloads = Arc::clone(&self.downloads);
-        tokio::spawn(async move {
-            let cached = {
-                let store = store.lock().unwrap_or_else(|p| p.into_inner());
-                store.photo(&user, PHOTO_MAX_AGE)
-            };
-            if let Some(bytes) = cached {
-                out.send(Event::Photo { user, bytes });
-                return;
-            }
-            let Ok(_permit) = downloads.acquire().await else {
-                return;
-            };
-            match graph.photo(&user).await {
-                Ok(bytes) => {
-                    {
-                        let store = store.lock().unwrap_or_else(|p| p.into_inner());
-                        let _ = store.save_photo(&user, bytes.as_deref());
-                    }
-                    out.send(Event::Photo { user, bytes });
-                }
-                Err(error) => log::debug!("photo unavailable: {error}"),
-            }
-        });
-    }
-
-    fn cached_messages(&self, conversation: ConversationId) {
-        let Some(account) = &self.account else { return };
-        let store = Arc::clone(&account.store);
-        let out = self.out.clone();
-        tokio::spawn(async move {
-            let key = conversation.clone();
-            let messages = tokio::task::spawn_blocking(move || {
-                store
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .messages(&key, CACHED_MESSAGES)
-                    .unwrap_or_default()
-            })
-            .await
-            .unwrap_or_default();
-            if !messages.is_empty() {
-                out.send(Event::Messages {
-                    conversation,
-                    messages,
-                    merge: Merge::Latest,
-                    more: Some(true),
-                    cached: true,
-                });
-            }
-        });
-    }
-
-    /// Answers an agent from the cache. Never fetches.
-    fn agent_read(
-        &self,
-        plugin: String,
-        request: u64,
-        query: crate::plugin::agent::AgentQuery,
-        access: crate::agents::access::AgentAccess,
-    ) {
-        let out = self.out.clone();
-        let Some(account) = &self.account else {
-            out.send(Event::AgentAnswer {
-                plugin,
-                request,
-                data: Err("not_found"),
-            });
-            return;
-        };
-        let store = Arc::clone(&account.store);
-        let me = account.record.user_id();
-        let me = me.to_owned();
-        tokio::spawn(async move {
-            let data = super::agents::answer(store, me, query, access).await;
-            out.send(Event::AgentAnswer {
-                plugin,
-                request,
-                data,
-            });
-        });
-    }
-
     fn media(&mut self, url: String) {
         let Some(account) = &self.account else { return };
         if !account.graph.is_graph_url(&url) {
             // Images hosted elsewhere are not fetched with credentials, and
             // not fetched at all: they could track who read the message.
-            self.out.send(Event::Media { url, bytes: None });
+            self.out.send(AccountEvent::Media { url, bytes: None });
             return;
         }
         let graph = Arc::clone(&account.graph);
@@ -2238,7 +917,7 @@ impl Worker {
             .ok()
             .flatten();
             if let Some(bytes) = cached {
-                out.send(Event::Media {
+                out.send(AccountEvent::Media {
                     url,
                     bytes: Some(bytes),
                 });
@@ -2263,77 +942,7 @@ impl Worker {
                 })
                 .await;
             }
-            out.send(Event::Media { url, bytes });
-        });
-    }
-
-    fn search_in(&mut self, conversation: ConversationId, query: String, remote: bool) {
-        let Some(account) = &self.account else { return };
-        let store = Arc::clone(&account.store);
-        let graph = Arc::clone(&account.graph);
-        let out = self.out.clone();
-        tokio::spawn(async move {
-            let local = {
-                let store = Arc::clone(&store);
-                let conversation = conversation.clone();
-                let query = query.clone();
-                tokio::task::spawn_blocking(move || {
-                    let store = store.lock().unwrap_or_else(|p| p.into_inner());
-                    store
-                        .search_in(&conversation, &query, 200)
-                        .unwrap_or_default()
-                })
-                .await
-                .unwrap_or_default()
-            };
-            if !remote {
-                out.send(Event::ConversationHits {
-                    conversation,
-                    query,
-                    hits: local,
-                });
-                return;
-            }
-            if query.trim().chars().count() < 3 {
-                return;
-            }
-            match graph.search_messages(&query).await {
-                Ok(remote) => out.send(Event::ConversationHits {
-                    hits: conversation_hits(&conversation, &local, remote),
-                    conversation,
-                    query,
-                }),
-                Err(error) => log::info!("Microsoft Search unavailable: {error}"),
-            }
-        });
-    }
-
-    fn search(&mut self, query: String) {
-        let Some(account) = &self.account else { return };
-        let store = Arc::clone(&account.store);
-        let graph = Arc::clone(&account.graph);
-        let out = self.out.clone();
-        tokio::spawn(async move {
-            let local = {
-                let store = store.lock().unwrap_or_else(|p| p.into_inner());
-                store.search(&query, 50).unwrap_or_default()
-            };
-            out.send(Event::SearchResults {
-                query: query.clone(),
-                hits: local,
-                remote: false,
-            });
-            if query.trim().chars().count() < 3 {
-                return;
-            }
-            match graph.search_messages(&query).await {
-                Ok(hits) => out.send(Event::SearchResults {
-                    query,
-                    hits,
-                    remote: true,
-                }),
-                Err(error) => log::info!("Microsoft Search unavailable: {error}"),
-            }
+            out.send(AccountEvent::Media { url, bytes });
         });
     }
 }
@@ -2467,19 +1076,19 @@ async fn emit_cache(store: &Arc<Mutex<Store>>, out: &Outbox) {
     let Ok((chats, teams, channels, meetings)) = cached else {
         return;
     };
-    out.send(Event::Chats {
+    out.send(AccountEvent::Chats {
         chats,
         cached: true,
     });
-    out.send(Event::Teams {
+    out.send(AccountEvent::Teams {
         teams,
         cached: true,
     });
-    out.send(Event::Channels {
+    out.send(AccountEvent::Channels {
         team: None,
         channels,
     });
-    out.send(Event::Meetings {
+    out.send(AccountEvent::Meetings {
         meetings,
         cached: true,
     });
@@ -2508,7 +1117,7 @@ async fn emit_restored(store: &Arc<Mutex<Store>>, out: &Outbox) {
     })
     .await;
     if let Ok((drafts, outbox)) = saved {
-        out.send(Event::Restored { drafts, outbox });
+        out.send(AccountEvent::Restored { drafts, outbox });
     }
 }
 
@@ -2533,7 +1142,7 @@ fn download_update(
     updater: &fastframe_update::Updater,
     release: &fastframe_update::Release,
 ) -> anyhow::Result<()> {
-    out.send(Event::Update(crate::updates::Event::Status(
+    out.send(ServiceEvent::Update(crate::updates::Event::Status(
         crate::updates::Status::Downloading {
             received: 0,
             total: 0,
@@ -2544,12 +1153,12 @@ fn download_update(
         let percent = received.saturating_mul(100).checked_div(total).unwrap_or(0);
         if percent > last_percent || received == total {
             last_percent = percent;
-            out.send(Event::Update(crate::updates::Event::Status(
+            out.send(ServiceEvent::Update(crate::updates::Event::Status(
                 crate::updates::Status::Downloading { received, total },
             )));
         }
     })?;
-    out.send(Event::Update(crate::updates::Event::Status(
+    out.send(ServiceEvent::Update(crate::updates::Event::Status(
         crate::updates::Status::Ready(Box::new(prepared)),
     )));
     Ok(())
@@ -2582,7 +1191,7 @@ async fn fetch_resource(
     match resource {
         Resource::Profile => {
             let profile = graph.me(Some(record.tenant_id.clone())).await?;
-            out.send(Event::Profile(Box::new(profile)));
+            out.send(AccountEvent::Profile(Box::new(profile)));
         }
         Resource::Chats => {
             let mut chats = graph.chats(2).await?;
@@ -2605,7 +1214,7 @@ async fn fetch_resource(
                     log::warn!("could not cache chats: {error}");
                 }
             }
-            out.send(Event::Chats {
+            out.send(AccountEvent::Chats {
                 chats,
                 cached: false,
             });
@@ -2624,7 +1233,7 @@ async fn fetch_resource(
             let had_cache = !cached.is_empty();
             if had_cache {
                 remember_link(links, conversation, None);
-                out.send(Event::Messages {
+                out.send(AccountEvent::Messages {
                     conversation: conversation.clone(),
                     messages: cached,
                     merge: Merge::Latest,
@@ -2642,7 +1251,7 @@ async fn fetch_resource(
                         let changes = graph.chat_changes(chat, since - 1_000).await?;
                         if changes.len() < crate::graph::api::PAGE * 4 {
                             save(store, conversation, &changes).await;
-                            out.send(Event::Messages {
+                            out.send(AccountEvent::Messages {
                                 conversation: conversation.clone(),
                                 messages: changes,
                                 merge: Merge::Changes,
@@ -2657,7 +1266,7 @@ async fn fetch_resource(
                     let more =
                         page.older.is_some() || page.messages.len() >= crate::graph::api::PAGE;
                     save(store, conversation, &page.messages).await;
-                    out.send(Event::Messages {
+                    out.send(AccountEvent::Messages {
                         conversation: conversation.clone(),
                         messages: page.messages,
                         merge: Merge::Latest,
@@ -2667,10 +1276,10 @@ async fn fetch_resource(
                 }
                 ConversationId::Channel { team, channel } => {
                     let page = graph.channel_messages(team, channel, None).await?;
-                    out.send(Event::ChannelAccess(Access::Granted));
+                    out.send(AccountEvent::ChannelAccess(Access::Granted));
                     remember_link(links, conversation, page.older.clone());
                     save(store, conversation, &page.messages).await;
-                    out.send(Event::Messages {
+                    out.send(AccountEvent::Messages {
                         conversation: conversation.clone(),
                         messages: page.messages,
                         merge: Merge::Latest,
@@ -2686,7 +1295,7 @@ async fn fetch_resource(
                 let mut store = store.lock().unwrap_or_else(|p| p.into_inner());
                 let _ = store.save_teams(&teams);
             }
-            out.send(Event::Teams {
+            out.send(AccountEvent::Teams {
                 teams: teams.clone(),
                 cached: false,
             });
@@ -2708,7 +1317,7 @@ async fn fetch_resource(
                                 let mut store = store.lock().unwrap_or_else(|p| p.into_inner());
                                 let _ = store.save_channels(&team.id, &channels);
                             }
-                            out.send(Event::Channels {
+                            out.send(AccountEvent::Channels {
                                 team: Some(team.id),
                                 channels,
                             });
@@ -2727,7 +1336,7 @@ async fn fetch_resource(
                 let mut store = store.lock().unwrap_or_else(|p| p.into_inner());
                 let _ = store.save_channels(team, &channels);
             }
-            out.send(Event::Channels {
+            out.send(AccountEvent::Channels {
                 team: Some(team.clone()),
                 channels,
             });
@@ -2740,19 +1349,19 @@ async fn fetch_resource(
                 let mut store = store.lock().unwrap_or_else(|p| p.into_inner());
                 let _ = store.save_meetings(&meetings);
             }
-            out.send(Event::Meetings {
+            out.send(AccountEvent::Meetings {
                 meetings,
                 cached: false,
             });
         }
         Resource::MyPresence => {
             let presence = graph.my_presence().await?;
-            out.send(Event::MyPresence(presence));
+            out.send(AccountEvent::MyPresence(presence));
         }
         Resource::Pins(chat) => {
             let me = record.user_id();
             let pins = graph.pinned_messages(chat, me).await?;
-            out.send(Event::Pins {
+            out.send(AccountEvent::Pins {
                 chat: chat.clone(),
                 pins,
             });
@@ -2776,15 +1385,15 @@ async fn fetch_resource(
                     let _ = store.upsert_chat(&cached);
                 }
             }
-            out.send(Event::Members {
+            out.send(AccountEvent::Members {
                 chat: chat.clone(),
                 members,
             });
         }
         Resource::OutOfOffice => match graph.out_of_office().await {
-            Ok(value) => out.send(Event::OutOfOffice(value)),
+            Ok(value) => out.send(AccountEvent::OutOfOffice(value)),
             Err(error) if crate::graph::mailbox::no_mailbox(&error) => {
-                out.send(Event::OutOfOfficeUnavailable);
+                out.send(AccountEvent::OutOfOfficeUnavailable);
             }
             Err(error) => return Err(error),
         },
@@ -2809,7 +1418,7 @@ async fn share_file(
     };
     if let Err(error) = shared {
         log::warn!("sharing an upload failed: {error}");
-        out.send(Event::Error(format!(
+        out.send(AccountEvent::Error(format!(
             "{} was uploaded, but sharing it failed; some people may not be able to open it ({error})",
             item.name
         )));
@@ -3229,7 +1838,7 @@ async fn push_loop(
     };
     let mut pause = Duration::from_secs(5);
     while !*stop.borrow() {
-        out.send(Event::Push(PushStatus::Connecting));
+        out.send(AccountEvent::Push(PushStatus::Connecting));
         let channel = fixed_channel
             .clone()
             .unwrap_or_else(|| auth::random_token(32));
@@ -3298,7 +1907,7 @@ async fn push_loop(
             let mut subscriptions = held(&subscription.id, presence.as_ref());
             record_subscriptions(&leftovers, &subscriptions).await;
             let mut contacts_open = true;
-            out.send(Event::Push(PushStatus::Live));
+            out.send(AccountEvent::Push(PushStatus::Live));
             live_at = Some(Instant::now());
             let mut reauthorized: HashMap<String, Instant> = HashMap::new();
             // A change may have happened while connecting.
@@ -3456,7 +2065,7 @@ async fn push_loop(
             pause = Duration::from_secs(5);
         }
         push_log!(info, "{failure}; retrying in {pause:?}");
-        out.send(Event::Push(PushStatus::Failed(failure)));
+        out.send(AccountEvent::Push(PushStatus::Failed(failure)));
         tokio::select! {
             _ = tokio::time::sleep(pause) => {}
             _ = stop.changed() => {}
@@ -3485,7 +2094,7 @@ async fn browser_sign_in(
 ) -> Result<token::TokenResponse, String> {
     let loopback = Loopback::bind().await.map_err(|e| e.to_string())?;
     let flow = auth::begin_browser(config, loopback.port(), ask.extra, ask.hint, ask.consent);
-    out.send(Event::Auth(AuthStatus::WaitingForBrowser {
+    out.send(AccountEvent::Auth(AuthStatus::WaitingForBrowser {
         url: flow.url.clone(),
     }));
     if let Some(browser) = open_browser {
@@ -3505,7 +2114,7 @@ async fn browser_sign_in(
         .wait_for_code(&flow.state, cancelled)
         .await
         .map_err(|e| e.to_string())?;
-    out.send(Event::Auth(AuthStatus::Finishing));
+    out.send(AccountEvent::Auth(AuthStatus::Finishing));
     token::exchange_code(
         http,
         config,
@@ -3529,14 +2138,14 @@ async fn device_code_sign_in(
     let code = token::start_device_code(http, config, &scopes)
         .await
         .map_err(|e| e.to_string())?;
-    out.send(Event::Auth(AuthStatus::DeviceCode {
+    out.send(AccountEvent::Auth(AuthStatus::DeviceCode {
         code: code.user_code.clone(),
         url: code.verification_uri.clone(),
     }));
     let response = token::poll_device_code(http, config, &code, cancelled)
         .await
         .map_err(|e| e.to_string())?;
-    out.send(Event::Auth(AuthStatus::Finishing));
+    out.send(AccountEvent::Auth(AuthStatus::Finishing));
     Ok(response)
 }
 

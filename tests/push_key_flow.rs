@@ -6,7 +6,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chaat::auth::session::AccountRecord;
-use chaat::backend::{AuthStatus, Backend, BackendOptions, Command, Event, Waker};
+use chaat::backend::{
+    AccountCommand, AccountEvent, AuthStatus, Backend, BackendOptions, ServiceCommand,
+    ServiceEvent, ServiceRole, Waker,
+};
 use chaat::paths::AppDirs;
 use chaat::realtime::{PushStatus, RelayKey};
 use chaat::secrets::{MemoryStore, SecretStore};
@@ -21,11 +24,33 @@ const CLIENT: &str = "6731de76-14a6-49ae-97bc-6eba6914391e";
 const ACCOUNT: &str = "u-me.t-1";
 const KEY: &str = "office-relay-key-0123456789";
 
-fn push_result(event: Event) -> Option<Result<(), String>> {
+fn push_result(event: AccountEvent) -> Option<Result<(), String>> {
     match event {
-        Event::Push(PushStatus::Live) => Some(Ok(())),
-        Event::Push(PushStatus::Failed(reason)) => Some(Err(reason)),
+        AccountEvent::Push(PushStatus::Live) => Some(Ok(())),
+        AccountEvent::Push(PushStatus::Failed(reason)) => Some(Err(reason)),
         _ => None,
+    }
+}
+
+/// Waits for the first service event `pick` accepts.
+fn wait_service<T>(
+    service: &Backend<ServiceRole>,
+    seconds: u64,
+    mut pick: impl FnMut(ServiceEvent) -> Option<T>,
+) -> T {
+    let deadline = Duration::from_secs(seconds);
+    let start = std::time::Instant::now();
+    loop {
+        for event in service.poll() {
+            if let Some(found) = pick(event) {
+                return found;
+            }
+        }
+        assert!(
+            start.elapsed() < deadline,
+            "timed out waiting for a service event"
+        );
+        std::thread::sleep(Duration::from_millis(10));
     }
 }
 
@@ -84,57 +109,56 @@ async fn a_keyed_relay_needs_the_stored_key() {
     .save(&dirs.account(ACCOUNT).join("account.json"))
     .unwrap();
 
-    let backend = Backend::spawn_with(
-        dirs,
-        Waker::default(),
-        BackendOptions {
-            authority: server.uri(),
-            graph_base: format!("{}/v1.0", server.uri()),
-            secrets,
-            open_browser: false,
-            push_renew_every: chaat::realtime::RENEW_EVERY,
-            relay_connect_timeout: std::time::Duration::from_secs(20),
-        },
-    );
-    backend.send(Command::Start {
+    let options = BackendOptions {
+        authority: server.uri(),
+        graph_base: format!("{}/v1.0", server.uri()),
+        secrets,
+        open_browser: false,
+        push_renew_every: chaat::realtime::RENEW_EVERY,
+        relay_connect_timeout: std::time::Duration::from_secs(20),
+    };
+    let backend: Backend = Backend::spawn_with(dirs.clone(), Waker::default(), options.clone());
+    // The relay key belongs to the service backend, as in the app.
+    let service: Backend<ServiceRole> = Backend::spawn_with(dirs, Waker::default(), options);
+    backend.send(AccountCommand::Start {
         client_id: CLIENT.into(),
         tenant: "organizations".into(),
         account: Some(ACCOUNT.into()),
     });
     wait_for(&backend, 5, |e| {
-        matches!(e, Event::Auth(AuthStatus::SignedIn { .. })).then_some(())
+        matches!(e, AccountEvent::Auth(AuthStatus::SignedIn { .. })).then_some(())
     });
 
     // No key stored: the relay refuses, and the person is told why.
-    backend.send(Command::Relay(Some(relay_url.clone())));
+    backend.send(AccountCommand::Relay(Some(relay_url.clone())));
     assert_eq!(
         wait_for(&backend, 10, push_result),
         Err("the relay needs an access key".to_owned())
     );
 
     // A wrong key is refused too.
-    backend.send(Command::SaveRelayKey(Some(RelayKey(
+    service.send(ServiceCommand::SaveRelayKey(Some(RelayKey(
         "not-the-office-key-000".into(),
     ))));
     assert_eq!(
-        wait_for(&backend, 5, |e| match e {
-            Event::RelayKeySaved { set, ok } => Some((set, ok)),
+        wait_service(&service, 5, |e| match e {
+            ServiceEvent::RelayKeySaved { set, ok } => Some((set, ok)),
             _ => None,
         }),
         (true, true)
     );
-    backend.send(Command::Relay(Some(relay_url.clone())));
+    backend.send(AccountCommand::Relay(Some(relay_url.clone())));
     assert_eq!(
         wait_for(&backend, 10, push_result),
         Err("the relay did not accept the access key".to_owned())
     );
 
     // The right key goes to the credential store and opens the relay.
-    backend.send(Command::SaveRelayKey(Some(RelayKey(KEY.into()))));
-    wait_for(&backend, 5, |e| {
+    service.send(ServiceCommand::SaveRelayKey(Some(RelayKey(KEY.into()))));
+    wait_service(&service, 5, |e| {
         matches!(
             e,
-            Event::RelayKeySaved {
+            ServiceEvent::RelayKeySaved {
                 set: true,
                 ok: true
             }
@@ -145,7 +169,7 @@ async fn a_keyed_relay_needs_the_stored_key() {
         store.read(chaat::secrets::RELAY_KEY).unwrap().as_deref(),
         Some(KEY)
     );
-    backend.send(Command::Relay(Some(relay_url.clone())));
+    backend.send(AccountCommand::Relay(Some(relay_url.clone())));
     assert_eq!(wait_for(&backend, 10, push_result), Ok(()));
 
     // The key never reaches Graph: it is not part of any URL Chaat registers.
@@ -155,11 +179,11 @@ async fn a_keyed_relay_needs_the_stored_key() {
     }
 
     // Removing the key deletes it from the store.
-    backend.send(Command::SaveRelayKey(None));
-    wait_for(&backend, 5, |e| {
+    service.send(ServiceCommand::SaveRelayKey(None));
+    wait_service(&service, 5, |e| {
         matches!(
             e,
-            Event::RelayKeySaved {
+            ServiceEvent::RelayKeySaved {
                 set: false,
                 ok: true
             }

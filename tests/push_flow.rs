@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chaat::auth::session::AccountRecord;
-use chaat::backend::{AuthStatus, Backend, BackendOptions, Command, Event, Waker};
+use chaat::backend::{AccountCommand, AccountEvent, AuthStatus, Backend, BackendOptions, Waker};
 use chaat::model::ConversationId;
 use chaat::paths::AppDirs;
 use chaat::realtime::PushStatus;
@@ -111,7 +111,7 @@ async fn a_change_notification_fetches_the_chat() {
     let leftovers = dirs.account(ACCOUNT).join(chaat::realtime::LEFTOVERS_FILE);
     chaat::realtime::write_leftovers(&leftovers, &["sub-old".into()]).unwrap();
 
-    let backend = Backend::spawn_with(
+    let backend: Backend = Backend::spawn_with(
         dirs,
         Waker::default(),
         BackendOptions {
@@ -123,18 +123,18 @@ async fn a_change_notification_fetches_the_chat() {
             relay_connect_timeout: std::time::Duration::from_secs(20),
         },
     );
-    backend.send(Command::Start {
+    backend.send(AccountCommand::Start {
         client_id: CLIENT.into(),
         tenant: "organizations".into(),
         account: Some(ACCOUNT.into()),
     });
     wait_for(&backend, 5, |e| {
-        matches!(e, Event::Auth(AuthStatus::SignedIn { .. })).then_some(())
+        matches!(e, AccountEvent::Auth(AuthStatus::SignedIn { .. })).then_some(())
     });
-    backend.send(Command::Relay(Some(relay_url.clone())));
+    backend.send(AccountCommand::Relay(Some(relay_url.clone())));
     wait_for(&backend, 10, |e| match e {
-        Event::Push(PushStatus::Live) => Some(()),
-        Event::Push(PushStatus::Failed(reason)) => panic!("push failed: {reason}"),
+        AccountEvent::Push(PushStatus::Live) => Some(()),
+        AccountEvent::Push(PushStatus::Failed(reason)) => panic!("push failed: {reason}"),
         _ => None,
     });
 
@@ -204,7 +204,7 @@ async fn a_change_notification_fetches_the_chat() {
     assert_eq!(status, 202);
 
     let messages = wait_for(&backend, 10, |e| match e {
-        Event::Messages {
+        AccountEvent::Messages {
             conversation,
             messages,
             cached: false,
@@ -238,7 +238,7 @@ async fn a_change_notification_fetches_the_chat() {
         .status();
     assert_eq!(status, 202);
     let presence = wait_for(&backend, 10, |e| match e {
-        Event::MyPresence(presence) => Some(presence),
+        AccountEvent::MyPresence(presence) => Some(presence),
         _ => None,
     });
     assert_eq!(presence.activity.as_deref(), Some("InACall"));
@@ -249,9 +249,9 @@ async fn a_change_notification_fetches_the_chat() {
 
     // Turning push off deletes the subscriptions before it reports Off,
     // even when Graph takes its time.
-    backend.send(Command::Relay(None));
+    backend.send(AccountCommand::Relay(None));
     wait_for(&backend, 5, |e| {
-        matches!(e, Event::Push(PushStatus::Off)).then_some(())
+        matches!(e, AccountEvent::Push(PushStatus::Off)).then_some(())
     });
     let deletes = server
         .received_requests()
