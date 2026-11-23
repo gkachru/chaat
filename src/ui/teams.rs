@@ -71,14 +71,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
 
 fn team_row(ui: &mut egui::Ui, app: &App, name: &str, expanded: bool) -> egui::Response {
     let palette = &app.palette;
-    let width = ui.available_width();
-    let (rect, response) = ui.allocate_exact_size(vec2(width, 40.0), Sense::click());
-    if ui.is_rect_visible(rect) {
-        let inner = rect.shrink2(vec2(8.0, 2.0));
-        if response.hovered() {
-            ui.painter()
-                .rect_filled(inner, CornerRadius::same(8), palette.surface_hover);
-        }
+    let (response, inner) = widgets::list_row(ui, palette, 40.0, false, Sense::click());
+    if ui.is_rect_visible(response.rect) {
         let chevron = if expanded {
             Icon::ChevronDown
         } else {
@@ -107,7 +101,7 @@ fn team_row(ui: &mut egui::Ui, app: &App, name: &str, expanded: bool) -> egui::R
             theme::bold(11.0),
             egui::Color32::WHITE,
         );
-        let galley = super::chat_list::elided(
+        let galley = super::widgets::elided(
             ui,
             name,
             theme::semibold(14.0),
@@ -169,7 +163,7 @@ fn channel_row(
                 egui::Vec2::splat(14.0),
             ),
         );
-        let galley = super::chat_list::elided(
+        let galley = super::widgets::elided(
             ui,
             name,
             if selected {

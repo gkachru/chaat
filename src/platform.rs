@@ -85,7 +85,7 @@ pub fn single_instance(
     use fastframe_instance::{Claim, Slot};
     let (sender, receiver) = mpsc::channel();
     let waker = waker.clone();
-    let slot = Slot::new("app.chaat.Chaat");
+    let slot = Slot::new(crate::APP_ID);
     match slot.claim("show", move |request| {
         let _ = sender.send(request.to_owned());
         waker.wake();

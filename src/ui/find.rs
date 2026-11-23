@@ -45,11 +45,6 @@ pub fn active_query(ctx: &egui::Context) -> Option<String> {
     ctx.data(|d| d.get_temp::<String>(query_key()))
 }
 
-/// The background for marked occurrences of the query.
-pub fn highlight_color(palette: &Palette) -> egui::Color32 {
-    palette.accent.gamma_multiply(0.4)
-}
-
 /// Byte ranges of the case-insensitive occurrences of `query` in `text`.
 /// Ranges sit on char boundaries and do not overlap. An empty query has none.
 pub fn matches(text: &str, query: &str) -> Vec<std::ops::Range<usize>> {

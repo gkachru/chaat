@@ -82,8 +82,8 @@ pub fn lifecycle_url(relay: &str, channel: &str) -> String {
     format!("{relay}/lifecycle/{channel}")
 }
 
-/// The header a keyed relay expects the access key in (relay/src/lib.rs).
-pub const KEY_HEADER: &str = "x-chaat-relay-key";
+pub use crate::relay_protocol::KEY_HEADER;
+use crate::relay_protocol::MIN_KEY_LEN;
 
 /// The file, in each account's folder, that lists the subscriptions this
 /// installation created and has not deleted yet.
@@ -188,7 +188,7 @@ impl std::fmt::Debug for RelayKey {
 /// Whether `key` can be a relay access key: what the relay accepts (16 or
 /// more visible ASCII characters), and short enough for a header.
 pub fn valid_relay_key(key: &str) -> bool {
-    (16..=256).contains(&key.len()) && key.bytes().all(|b| b.is_ascii_graphic())
+    (MIN_KEY_LEN..=256).contains(&key.len()) && key.bytes().all(|b| b.is_ascii_graphic())
 }
 
 /// The WebSocket request for `channel`, carrying the access key if there is

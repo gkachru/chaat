@@ -4,7 +4,7 @@ use fastframe_update::{MacConfig, MacTarget, ReqwestTransport, UpdateConfig, Upd
 
 pub const CONFIG: UpdateConfig = UpdateConfig {
     macos: MacConfig {
-        bundle_ids: &["app.chaat.Chaat"],
+        bundle_ids: &[crate::APP_ID],
         executable_names: &[],
         legacy_bundle_names: &[],
     },

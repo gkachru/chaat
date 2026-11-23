@@ -3,8 +3,8 @@
 //! summary, a tunnel host Chaat already checked). No plugin status message
 //! is shown.
 
-use super::super::settings::{group, note};
 use super::super::widgets::{self, PointerControls as _};
+use super::super::widgets::{group, note};
 use super::page::{forget_confirm, request_enabled, turn_off_ask};
 use crate::app::{App, PluginSummary, SummaryLevel};
 use crate::model::Action;

@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-const SERVICE: &str = "app.chaat.Chaat";
+const SERVICE: &str = crate::APP_ID;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum SecretError {

@@ -158,7 +158,7 @@ fn content(app: &mut App, ui: &mut egui::Ui, docked: bool) {
     let title = |ui: &mut egui::Ui, width: f32| {
         let (rect, _) = ui.allocate_exact_size(vec2(10.0, 10.0), egui::Sense::hover());
         ui.painter().circle_filled(rect.center(), 4.5, dot);
-        ui.add(egui::Label::new(super::chat_list::elided(
+        ui.add(egui::Label::new(super::widgets::elided(
             ui,
             &call.title(),
             theme::semibold(13.0),

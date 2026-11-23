@@ -42,10 +42,9 @@ const BODY_LIMIT: usize = 512 * 1024;
 const QUEUE: usize = 256;
 /// Clients only send pings, so their messages are tiny.
 const CLIENT_MESSAGE_LIMIT: usize = 4 * 1024;
-/// The header Chaat sends the access key in.
-pub const KEY_HEADER: &str = "x-chaat-relay-key";
-/// Shorter keys are too easy to guess.
-pub const MIN_KEY_LEN: usize = 16;
+#[path = "../../src/relay_protocol.rs"]
+mod relay_protocol;
+pub use relay_protocol::{KEY_HEADER, MIN_KEY_LEN};
 
 /// How many clients a relay serves at once, and how long a silent one keeps
 /// its channel.

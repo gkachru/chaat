@@ -74,21 +74,8 @@ fn row(
     now: i64,
 ) -> egui::Response {
     let palette = &app.palette;
-    let width = ui.available_width();
-    let (rect, response) = ui.allocate_exact_size(vec2(width, 54.0), Sense::click());
-    if ui.is_rect_visible(rect) {
-        let inner = rect.shrink2(vec2(8.0, 2.0));
-        if selected || response.hovered() {
-            ui.painter().rect_filled(
-                inner,
-                CornerRadius::same(8),
-                if selected {
-                    palette.surface_active
-                } else {
-                    palette.surface_hover
-                },
-            );
-        }
+    let (response, inner) = widgets::list_row(ui, palette, 54.0, selected, Sense::click());
+    if ui.is_rect_visible(response.rect) {
         let live = meeting.start <= now && meeting.end > now;
         let bar = egui::Rect::from_min_size(inner.left_top() + vec2(8.0, 9.0), vec2(3.0, 34.0));
         ui.painter().rect_filled(
@@ -103,7 +90,7 @@ fn row(
             },
         );
         let left = bar.right() + 10.0;
-        let title = super::chat_list::elided(
+        let title = super::widgets::elided(
             ui,
             &meeting.subject,
             theme::semibold(13.0),
@@ -124,7 +111,7 @@ fn row(
         if let Some(location) = &meeting.location {
             detail.push_str(&format!(" · {location}"));
         }
-        let detail = super::chat_list::elided(
+        let detail = super::widgets::elided(
             ui,
             &detail,
             theme::regular(12.0),

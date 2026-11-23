@@ -15,22 +15,13 @@ use chaat::sync::{Resource, Trigger};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+mod common;
+
+use common::wait_for;
+
 const CLIENT: &str = "6731de76-14a6-49ae-97bc-6eba6914391e";
 const ACCOUNT: &str = "u-me.t-1";
 const SCOPES: &str = "User.Read Chat.ReadWrite ChatMessage.Send Presence.Read.All";
-
-fn wait_for<T>(backend: &Backend, seconds: u64, mut pick: impl FnMut(Event) -> Option<T>) -> T {
-    let deadline = Instant::now() + Duration::from_secs(seconds);
-    loop {
-        for event in backend.poll() {
-            if let Some(found) = pick(event) {
-                return found;
-            }
-        }
-        assert!(Instant::now() < deadline, "timed out waiting for an event");
-        std::thread::sleep(Duration::from_millis(10));
-    }
-}
 
 /// The ids each `getPresencesByUserId` request asked for, in order.
 async fn presence_requests(server: &MockServer) -> Vec<Vec<String>> {

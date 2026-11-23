@@ -425,30 +425,6 @@ pub fn block(
     copy_button(ui, palette, code, language, actions);
 }
 
-/// Makes the scroll bars of this `ui` (and what it holds) thin, rounded and
-/// in palette colours: a solid bar about 6 points wide with its margin, a
-/// quiet track, and a handle that strengthens on hover and drag. Only the
-/// scope it is called in changes.
-pub fn thin_scrollbars(ui: &mut Ui, palette: &Palette) {
-    let scroll = &mut ui.spacing_mut().scroll;
-    scroll.floating = false;
-    scroll.bar_width = 4.0;
-    scroll.bar_inner_margin = 1.0;
-    scroll.bar_outer_margin = 1.0;
-    scroll.handle_min_length = 24.0;
-    scroll.foreground_color = true;
-    let visuals = ui.visuals_mut();
-    visuals.extreme_bg_color = palette.outline.gamma_multiply(0.5);
-    for (widget, color) in [
-        (&mut visuals.widgets.inactive, palette.dim),
-        (&mut visuals.widgets.hovered, palette.secondary),
-        (&mut visuals.widgets.active, palette.text),
-    ] {
-        widget.fg_stroke.color = color;
-        widget.corner_radius = CornerRadius::same(3);
-    }
-}
-
 const FRAME_PAD: f32 = 10.0;
 /// Narrowest a block gets: its label and Copy button fit.
 const HEADER_MIN: f32 = 96.0;
@@ -498,7 +474,7 @@ fn copy_button(
             ui.add_space(2.0);
             // A solid scroll bar, there only when a line is cut off.
             ui.scope(|ui| {
-                thin_scrollbars(ui, palette);
+                widgets::thin_scrollbars(ui, palette);
                 egui::ScrollArea::horizontal()
                     .id_salt("code-scroll")
                     .max_width(inner)

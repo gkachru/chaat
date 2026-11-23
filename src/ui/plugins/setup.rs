@@ -1,8 +1,8 @@
 //! The add flow of a new plugin: Starting, Setup, Failed. Chaat's words
 //! frame the page; the plugin's own name and description show apart.
 
-use super::super::settings::{group, note};
 use super::super::widgets::{self, PointerControls as _};
+use super::super::widgets::{group, note};
 use super::options::{OptionsCx, option_row, options_block};
 use super::{heading, need_words};
 use crate::app::{App, SummaryLevel};

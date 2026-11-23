@@ -103,14 +103,6 @@ pub(super) fn buffer_id(plugin: &str, option: &str, what: &str) -> egui::Id {
     egui::Id::new(("plugin-option", what, plugin, option))
 }
 
-pub(super) fn labelled(ui: &mut egui::Ui, palette: &theme::Palette, label: &str) {
-    ui.label(
-        egui::RichText::new(label)
-            .font(theme::regular(13.0))
-            .color(palette.secondary),
-    );
-}
-
 /// Chaat's own small marker next to the label of a required option.
 pub(super) fn required_marker(ui: &mut egui::Ui, palette: &theme::Palette, option: &OptionSpec) {
     if option.required {
@@ -124,7 +116,7 @@ pub(super) fn required_marker(ui: &mut egui::Ui, palette: &theme::Palette, optio
 
 pub(super) fn label_line(ui: &mut egui::Ui, palette: &theme::Palette, option: &OptionSpec) {
     ui.horizontal(|ui| {
-        labelled(ui, palette, &option.label);
+        widgets::field_label(ui, palette, &option.label);
         required_marker(ui, palette, option);
     });
 }
@@ -529,7 +521,7 @@ pub(super) fn option_row(
                 (None, None) => "Not set",
             };
             ui.horizontal(|ui| {
-                labelled(ui, &palette, &option.label);
+                widgets::field_label(ui, &palette, &option.label);
                 required_marker(ui, &palette, option);
                 egui::ComboBox::from_id_salt(buffer_id(&entry.id, &option.id, "choice"))
                     .selected_text(shown)
@@ -687,7 +679,7 @@ pub(super) fn option_row(
             set_secret_buffer(ui, &entry.id, &option.id, buffer);
         }
         OptionKind::Unsupported { .. } => {
-            labelled(ui, &palette, &option.label);
+            widgets::field_label(ui, &palette, &option.label);
             ui.label(
                 egui::RichText::new("This setting needs a newer Chaat.")
                     .font(theme::regular(13.0))

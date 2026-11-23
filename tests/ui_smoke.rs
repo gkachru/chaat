@@ -135,10 +135,7 @@ impl Harness {
 fn header_drag_and_double_click_work_with_native_decorations() {
     for width in [720.0, 1280.0] {
         for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
-            let mut h = Harness::new();
-            h.size.x = width;
-            h.app.settings.theme = theme;
-            h.frames(3);
+            let mut h = themed(&theme, width);
             let header = egui::pos2(220.0, 24.0);
             let press = egui::Event::PointerButton {
                 pos: header,
@@ -197,14 +194,9 @@ fn painted_shapes(h: &Harness) -> Vec<&egui::epaint::Shape> {
 #[test]
 fn search_fields_keep_their_layout_when_typing_and_clearing() {
     fn text_layout(h: &Harness, value: &str) -> (egui::Pos2, f32) {
-        painted_shapes(h)
-            .iter()
-            .find_map(|shape| match shape {
-                egui::epaint::Shape::Text(text) if text.galley.job.text == value => {
-                    Some((text.pos, text.galley.size().y))
-                }
-                _ => None,
-            })
+        find_text(h, value)
+            .first()
+            .map(|text| (text.pos, text.galley.size().y))
             .unwrap_or_else(|| panic!("{value:?} is painted"))
     }
 
@@ -407,6 +399,17 @@ fn painted_texts(h: &Harness) -> Vec<String> {
         .into_iter()
         .filter_map(|shape| match shape {
             egui::epaint::Shape::Text(text) => Some(text.galley.job.text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The painted text shapes whose whole text equals `wanted`, in paint order.
+fn find_text<'a>(h: &'a Harness, wanted: &str) -> Vec<&'a egui::epaint::TextShape> {
+    painted_shapes(h)
+        .into_iter()
+        .filter_map(|shape| match shape {
+            egui::epaint::Shape::Text(text) if text.galley.job.text == wanted => Some(text),
             _ => None,
         })
         .collect()
@@ -748,10 +751,7 @@ fn clicking_received_images_opens_the_shared_viewer_at_their_original_size() {
     for width in [720.0, 1280.0] {
         for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
             for format in [image::ImageFormat::Png, image::ImageFormat::Jpeg] {
-                let mut h = Harness::new();
-                h.size.x = width;
-                h.app.settings.theme = theme.clone();
-                h.frames(3);
+                let mut h = themed(&theme, width);
                 let chat = h.app.open.clone().unwrap();
                 let url = "https://graph.microsoft.com/v1.0/chats/fixture/messages/1/hostedContents/1/$value";
                 let mut bytes = std::io::Cursor::new(Vec::new());
@@ -928,10 +928,7 @@ fn composer_images_have_usable_thumbnails_and_open_full_previews() {
     for width in [720.0, 1280.0] {
         for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
             for (w, height) in [(2000, 20), (20, 2000), (320, 240)] {
-                let mut h = Harness::new();
-                h.size.x = width;
-                h.app.settings.theme = theme.clone();
-                h.frames(3);
+                let mut h = themed(&theme, width);
                 let chat = h.app.open.clone().unwrap();
                 let image = chaat::clipboard::encode_rgba(
                     w,
@@ -1041,10 +1038,7 @@ fn composer_images_have_usable_thumbnails_and_open_full_previews() {
 fn multiple_pasted_images_wrap_without_clipping() {
     for width in [720.0, 1280.0] {
         for theme in [ThemeChoice::Light, ThemeChoice::Dark] {
-            let mut h = Harness::new();
-            h.size.x = width;
-            h.app.settings.theme = theme;
-            h.frames(3);
+            let mut h = themed(&theme, width);
             let chat = h.app.open.clone().unwrap();
             for (w, height) in [(1200, 24), (24, 1200), (256, 256)] {
                 let image = chaat::clipboard::encode_rgba(
@@ -1367,33 +1361,16 @@ fn prepending_history_preserves_the_visible_row() {
 fn kind_chips_filter_the_chat_list_and_stack_with_unread() {
     use chaat::model::ChatKind;
 
-    fn painted_texts(h: &Harness) -> Vec<String> {
-        painted_shapes(h)
-            .iter()
-            .filter_map(|shape| match shape {
-                egui::epaint::Shape::Text(text) => Some(text.galley.job.text.clone()),
-                _ => None,
-            })
-            .collect()
-    }
     fn chip(h: &Harness, label: &str) -> egui::Pos2 {
-        painted_shapes(h)
-            .iter()
-            .find_map(|shape| match shape {
-                egui::epaint::Shape::Text(text) if text.galley.job.text == label => {
-                    Some(text.pos + text.galley.size() / 2.0)
-                }
-                _ => None,
-            })
+        find_text(h, label)
+            .first()
+            .map(|text| text.pos + text.galley.size() / 2.0)
             .unwrap_or_else(|| panic!("the {label} chip is painted"))
     }
 
     for width in [720.0, 1280.0] {
         for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
-            let mut h = Harness::new();
-            h.size.x = width;
-            h.app.settings.theme = theme.clone();
-            h.frames(3);
+            let mut h = themed(&theme, width);
             let me = h.app.me().to_owned();
             let titles = |kind: ChatKind| -> Vec<String> {
                 h.app
@@ -1417,7 +1394,7 @@ fn kind_chips_filter_the_chat_list_and_stack_with_unread() {
                     .app
                     .chats
                     .iter()
-                    .filter(|c| chaat::ui::chat_list::listed(&h.app, c, &me))
+                    .filter(|c| chaat::app::chat_filter::listed(&h.app, c, &me))
                     .map(|c| c.kind)
                     .collect();
                 kinds.sort_by_key(|k| *k as u8);
@@ -1445,7 +1422,7 @@ fn kind_chips_filter_the_chat_list_and_stack_with_unread() {
             let at = chip(&h, "Unread");
             h.click(at);
             for chat in &h.app.chats {
-                if chaat::ui::chat_list::listed(&h.app, chat, &me) {
+                if chaat::app::chat_filter::listed(&h.app, chat, &me) {
                     assert!(chat.kind != ChatKind::OneOnOne && chat.is_unread(&me));
                 }
             }
@@ -1466,10 +1443,7 @@ fn kind_chips_filter_the_chat_list_and_stack_with_unread() {
 fn the_rail_shows_icons_without_labels() {
     for width in [720.0, 1280.0] {
         for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
-            let mut h = Harness::new();
-            h.size.x = width;
-            h.app.settings.theme = theme;
-            h.frames(3);
+            let h = themed(&theme, width);
             let rail_texts: Vec<String> = painted_shapes(&h)
                 .iter()
                 .filter_map(|shape| match shape {
@@ -3134,14 +3108,9 @@ fn people_panel_rows_light_up_on_hover() {
         h.app.settings.theme = theme.clone();
         open_people_panel(&mut h);
         for label in ["Add people", "Leave"] {
-            let row = painted_shapes(&h)
-                .into_iter()
-                .find_map(|shape| match shape {
-                    egui::epaint::Shape::Text(t) if t.galley.job.text == label => {
-                        Some(shape.visual_bounding_rect())
-                    }
-                    _ => None,
-                })
+            let row = find_text(&h, label)
+                .first()
+                .map(|t| t.visual_bounding_rect())
                 .unwrap_or_else(|| panic!("{label} is in the panel"));
             let fill = h.app.palette.surface_hover;
             // Resting: no highlight, the default arrow.
@@ -3205,14 +3174,9 @@ fn dialog_buttons_change_fill_and_cursor_on_hover() {
             ("  Leave  ", palette.accent, palette.accent_hover),
             ("Cancel", palette.surface, palette.surface_hover),
         ] {
-            let text = painted_shapes(&h)
-                .into_iter()
-                .find_map(|shape| match shape {
-                    egui::epaint::Shape::Text(t) if t.galley.job.text == label => {
-                        Some(shape.visual_bounding_rect())
-                    }
-                    _ => None,
-                })
+            let text = find_text(&h, label)
+                .first()
+                .map(|t| t.visual_bounding_rect())
                 .unwrap_or_else(|| panic!("{label} is in the dialog"));
             h.frame_with(vec![egui::Event::PointerMoved(egui::pos2(2.0, 2.0))]);
             h.frames(2);
@@ -3237,12 +3201,9 @@ fn dialog_buttons_change_fill_and_cursor_on_hover() {
 
 /// Where a painted text is, to click it.
 fn ring_text_pos(h: &Harness, wanted: &str) -> Option<egui::Pos2> {
-    painted_shapes(h).into_iter().find_map(|shape| match shape {
-        egui::epaint::Shape::Text(text) if text.galley.job.text == wanted => {
-            Some(text.pos + text.galley.rect.center().to_vec2())
-        }
-        _ => None,
-    })
+    find_text(h, wanted)
+        .first()
+        .map(|text| text.pos + text.galley.rect.center().to_vec2())
 }
 
 #[test]
@@ -4195,28 +4156,17 @@ fn demo_light(h: &mut Harness) -> &mut chaat::settings::PluginEntry {
 
 /// Where the n-th painted text equal to `wanted` is (top to bottom as drawn).
 fn text_pos_nth(h: &Harness, wanted: &str, n: usize) -> Option<egui::Pos2> {
-    painted_shapes(h)
-        .into_iter()
-        .filter_map(|shape| match shape {
-            egui::epaint::Shape::Text(text) if text.galley.job.text == wanted => {
-                Some(text.pos + text.galley.rect.center().to_vec2())
-            }
-            _ => None,
-        })
-        .nth(n)
+    find_text(h, wanted)
+        .get(n)
+        .map(|text| text.pos + text.galley.rect.center().to_vec2())
 }
 
 /// The color a painted text was drawn in.
 fn text_color(h: &Harness, wanted: &str) -> Option<egui::Color32> {
-    painted_shapes(h).into_iter().find_map(|shape| match shape {
-        egui::epaint::Shape::Text(text) if text.galley.job.text == wanted => text
-            .galley
-            .job
-            .sections
-            .first()
-            .map(|section| section.format.color),
-        _ => None,
-    })
+    find_text(h, wanted)
+        .first()
+        .and_then(|text| text.galley.job.sections.first())
+        .map(|section| section.format.color)
 }
 
 fn plugins_page_press(h: &mut Harness, pos: egui::Pos2) -> Vec<Action> {
@@ -5924,10 +5874,7 @@ fn new_plugin_files_keep_to_the_type_scale_and_never_repaint_at_once() {
 fn each_view(mut check: impl FnMut(&mut Harness)) {
     for width in [760.0, 1400.0] {
         for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
-            let mut h = Harness::new();
-            h.size.x = width;
-            h.app.settings.theme = theme;
-            h.frames(3);
+            let mut h = themed(&theme, width);
             check(&mut h);
         }
     }
@@ -5999,20 +5946,15 @@ fn composer_button(boxed: egui::Rect, from_right: usize) -> egui::Pos2 {
 }
 
 fn text_center(h: &Harness, wanted: &str) -> Option<egui::Pos2> {
-    painted_shapes(h)
+    find_text(h, wanted)
         .into_iter()
-        .filter_map(|shape| match shape {
-            egui::epaint::Shape::Text(text) if text.galley.job.text == wanted => {
-                Some(text.pos + text.galley.size() / 2.0)
-            }
-            _ => None,
-        })
+        .map(|text| text.pos + text.galley.size() / 2.0)
         // The lowest one: a picker's grid sits below its tabs.
         .max_by(|a, b| a.y.total_cmp(&b.y))
 }
 
 fn has_text(h: &Harness, wanted: &str) -> bool {
-    painted_texts(h).iter().any(|t| t == wanted)
+    !find_text(h, wanted).is_empty()
 }
 
 #[test]
@@ -6547,14 +6489,9 @@ fn themed(theme: &ThemeChoice, width: f32) -> Harness {
 /// The center of the leftmost painted text equal to `wanted` (the sidebar
 /// paints before anything beside it).
 fn leftmost_text(h: &Harness, wanted: &str) -> Option<egui::Pos2> {
-    painted_shapes(h)
+    find_text(h, wanted)
         .into_iter()
-        .filter_map(|shape| match shape {
-            egui::epaint::Shape::Text(text) if text.galley.job.text == wanted => {
-                Some(text.pos + text.galley.rect.center().to_vec2())
-            }
-            _ => None,
-        })
+        .map(|text| text.pos + text.galley.rect.center().to_vec2())
         .min_by(|a, b| a.x.total_cmp(&b.x))
 }
 
@@ -6907,12 +6844,9 @@ fn dismiss_sign_in_card(h: &mut Harness) {
 
 /// The bounds of the leftmost painted text equal to `wanted`.
 fn text_rect(h: &Harness, wanted: &str) -> Option<egui::Rect> {
-    painted_shapes(h)
+    find_text(h, wanted)
         .into_iter()
-        .filter(
-            |shape| matches!(shape, egui::epaint::Shape::Text(t) if t.galley.job.text == wanted),
-        )
-        .map(|shape| shape.visual_bounding_rect())
+        .map(|text| text.visual_bounding_rect())
         .min_by(|a, b| a.left().total_cmp(&b.left()))
 }
 

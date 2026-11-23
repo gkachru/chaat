@@ -12,9 +12,7 @@ impl App {
         entry.hidden = true;
         self.pending_hide.insert(chat.clone(), true);
         self.undo_toast(chat.clone());
-        if !self.demo {
-            self.backend.send(Command::HideChat { chat, hide: true });
-        }
+        self.send_account(Command::HideChat { chat, hide: true });
     }
 
     /// One toast per hidden chat, never merged with an earlier one, so each
@@ -41,9 +39,7 @@ impl App {
             entry.hidden = false;
         }
         self.pending_hide.insert(chat.clone(), false);
-        if !self.demo {
-            self.backend.send(Command::HideChat { chat, hide: false });
-        }
+        self.send_account(Command::HideChat { chat, hide: false });
     }
 
     pub(super) fn mark_chat_unread(&mut self, chat: String) {
@@ -51,9 +47,7 @@ impl App {
             return;
         };
         entry.marked_unread = true;
-        if !self.demo {
-            self.backend.send(Command::MarkChatUnread(chat));
-        }
+        self.send_account(Command::MarkChatUnread(chat));
     }
 
     pub(super) fn mark_chat_read(&mut self, chat: String) {
@@ -68,9 +62,7 @@ impl App {
             if let Some(entry) = self.chats.iter_mut().find(|c| c.id == chat) {
                 entry.last_read = Some(crate::time::now());
             }
-            if !self.demo {
-                self.backend.send(Command::MarkRead(chat));
-            }
+            self.send_account(Command::MarkRead(chat));
             return;
         }
         self.mark_read(&chat);
@@ -87,16 +79,8 @@ impl App {
             Some(ToastAction::UndoHide(chat)) => {
                 // The person may have switched accounts since the hide.
                 let target = account.and_then(|id| self.accounts.iter().position(|a| a.id == id));
-                match target {
-                    Some(index) if index != self.active => {
-                        let shown = std::mem::replace(&mut self.active, index);
-                        let was_hidden = std::mem::replace(&mut self.hidden, true);
-                        self.unhide_chat(chat);
-                        self.active = shown;
-                        self.hidden = was_hidden;
-                    }
-                    Some(_) => self.unhide_chat(chat),
-                    None => {}
+                if let Some(index) = target {
+                    self.in_account(index, |app| app.unhide_chat(chat));
                 }
             }
             None => {}

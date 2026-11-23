@@ -28,8 +28,6 @@ pub enum Resource {
     Teams,
     Channels(String),
     Calendar,
-    /// Presence of the people in view.
-    Presence,
     /// The signed-in person's own presence.
     MyPresence,
     /// The signed-in person's automatic replies (Out of Office).
@@ -119,7 +117,7 @@ impl Resource {
             Self::Teams => Duration::from_secs(30 * 60),
             Self::Channels(_) => Duration::from_secs(30 * 60),
             Self::Calendar => Duration::from_secs(5 * 60),
-            Self::Presence | Self::MyPresence => Duration::from_secs(60),
+            Self::MyPresence => Duration::from_secs(60),
             Self::OutOfOffice => Duration::from_secs(30),
             Self::Members(_) => Duration::from_secs(30),
         }

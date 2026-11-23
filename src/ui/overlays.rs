@@ -133,30 +133,12 @@ fn modal(
     top: f32,
     content: impl FnOnce(&mut egui::Ui),
 ) -> bool {
-    let response = egui::Modal::new(egui::Id::new(id))
-        .backdrop_color(palette.overlay)
-        .frame(
-            Frame::new()
-                .fill(palette.surface)
-                .stroke(Stroke::new(1.0, palette.outline))
-                .corner_radius(CornerRadius::same(14))
-                .inner_margin(Margin::same(0))
-                .shadow(egui::Shadow {
-                    offset: [0, 12],
-                    blur: 40,
-                    spread: 0,
-                    color: palette.shadow,
-                }),
-        )
-        .area(
-            egui::Modal::default_area(egui::Id::new(id).with("area"))
-                .anchor(egui::Align2::CENTER_TOP, vec2(0.0, top)),
-        )
-        .show(ctx, |ui| {
-            ui.set_width(width);
-            content(ui);
-        });
-    response.should_close()
+    let look = widgets::ModalLook {
+        margin: 0,
+        shadow: true,
+        top: Some(top),
+    };
+    widgets::modal(palette, ctx, id, width, look, content).should_close()
 }
 
 /// A person, chat or channel the switcher can jump to.
@@ -445,7 +427,7 @@ fn result_row(
         ),
     );
     let left = rect.left() + 40.0;
-    let title = super::chat_list::elided(
+    let title = super::widgets::elided(
         ui,
         label,
         theme::medium(14.0),
@@ -454,7 +436,7 @@ fn result_row(
     );
     ui.painter()
         .galley(egui::pos2(left, rect.top() + 5.0), title, palette.text);
-    let detail = super::chat_list::elided(
+    let detail = super::widgets::elided(
         ui,
         detail,
         theme::regular(12.0),

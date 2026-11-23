@@ -3,7 +3,7 @@
 
 use egui::{CornerRadius, Frame, Margin, Sense, Stroke, vec2};
 
-use super::widgets::{self, PointerControls as _};
+use super::widgets::{self, PointerControls as _, group, note};
 use crate::app::App;
 use crate::backend::AuthStatus;
 use crate::calling::CallsOpenIn;
@@ -277,30 +277,6 @@ fn open_plugins_for_setup(app: &mut App, ctx: &egui::Context) {
         app.settings_page = Some(SettingsPage::Plugins);
     }
     ctx.data_mut(|d| d.insert_temp(key, (frame, adding)));
-}
-
-/// A group's heading inside a page: like [`widgets::section_label`], one
-/// size up to match the page's text.
-pub(super) fn group(ui: &mut egui::Ui, palette: &Palette, label: &str) {
-    ui.add_space(14.0);
-    ui.label(
-        egui::RichText::new(label.to_uppercase())
-            .font(theme::semibold(12.0))
-            .color(palette.dim)
-            .extra_letter_spacing(0.6),
-    );
-}
-
-/// A quiet explanation under a setting.
-pub(super) fn note(ui: &mut egui::Ui, palette: &Palette, text: impl Into<String>) {
-    ui.add(
-        egui::Label::new(
-            egui::RichText::new(text.into())
-                .font(theme::regular(13.0))
-                .color(palette.dim),
-        )
-        .wrap(),
-    );
 }
 
 fn account(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {

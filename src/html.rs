@@ -36,8 +36,6 @@ pub enum Script {
     Sub,
 }
 
-/// The type scale of `AGENTS.md`; message sizes snap to it.
-const TYPE_SCALE: [u8; 9] = [11, 12, 13, 14, 15, 18, 20, 24, 30];
 /// Deeper lists draw at this depth, so hostile nesting cannot push text out
 /// of the bubble.
 const MAX_LIST_DEPTH: usize = 6;
@@ -47,12 +45,13 @@ fn snap_size(size: f32) -> Option<u8> {
     if !size.is_finite() || size <= 0.0 {
         return None;
     }
-    let mut best = TYPE_SCALE[0];
+    // The type scale of `AGENTS.md`; message sizes snap to it.
+    let mut best = crate::theme::TYPE_SCALE[0] as u8;
     let mut best_gap = f32::MAX;
-    for step in TYPE_SCALE {
-        let gap = (f32::from(step) - size).abs();
+    for step in crate::theme::TYPE_SCALE {
+        let gap = (step - size).abs();
         if gap < best_gap {
-            best = step;
+            best = step as u8;
             best_gap = gap;
         }
     }

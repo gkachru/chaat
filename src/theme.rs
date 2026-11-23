@@ -280,6 +280,8 @@ pub fn resolve(choice: &ThemeChoice, system_dark: bool) -> Palette {
     }
 }
 
+/// The sizes the interface uses (see AGENTS.md).
+pub const TYPE_SCALE: [f32; 9] = [11.0, 12.0, 13.0, 14.0, 15.0, 18.0, 20.0, 24.0, 30.0];
 pub const RAIL_WIDTH: f32 = 64.0;
 pub const HEADER_HEIGHT: f32 = 52.0;
 pub const ROW_HEIGHT: f32 = 60.0;

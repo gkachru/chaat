@@ -1360,10 +1360,7 @@ impl Worker {
                     ) => {
                         out.send(Event::ChannelAccess(Access::Forbidden));
                     }
-                    (
-                        Resource::Presence | Resource::MyPresence | Resource::Calendar,
-                        GraphError::Forbidden { .. },
-                    ) => {
+                    (Resource::MyPresence | Resource::Calendar, GraphError::Forbidden { .. }) => {
                         log::info!("{resource:?} is not permitted for this account");
                     }
                     _ => out.error(describe(&resource), &error),
@@ -2456,7 +2453,6 @@ fn describe(resource: &Resource) -> &'static str {
         Resource::Teams => "Loading teams",
         Resource::Channels(_) => "Loading channels",
         Resource::Calendar => "Loading the calendar",
-        Resource::Presence => "Loading presence",
         Resource::MyPresence => "Loading your status",
         Resource::OutOfOffice => "Loading your automatic replies",
         Resource::Members(_) => "Loading the people in this chat",
@@ -2821,7 +2817,6 @@ async fn fetch_resource(
                 cached: false,
             });
         }
-        Resource::Presence => {}
         Resource::MyPresence => {
             let presence = graph.my_presence().await?;
             out.send(Event::MyPresence(presence));

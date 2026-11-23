@@ -21,9 +21,8 @@ use crate::model::ConversationId;
 /// without click handling.
 const WAIT_CAP: usize = 16;
 
-/// The Windows toast app id, registered by [`register_identity`].
-#[cfg(windows)]
-const APP_ID: &str = "app.chaat.Chaat";
+#[cfg(any(windows, target_os = "macos"))]
+use crate::APP_ID;
 
 /// Set once the Windows app id key is in place.
 #[cfg(windows)]
@@ -186,24 +185,6 @@ impl Drop for WaitGuard<'_> {
 
 static WAITERS: LazyLock<Waiters> = LazyLock::new(|| Waiters::new(WAIT_CAP));
 
-pub fn show(title: &str, body: &str) {
-    #[cfg(target_os = "macos")]
-    claim_identity();
-    let title = title.to_owned();
-    let body = crate::html::truncate(body, 240);
-    let _ = std::thread::Builder::new()
-        .name("chaat-notify".into())
-        .spawn(move || {
-            let mut notification = notify_rust::Notification::new();
-            notification.summary(&title).body(&body).appname("Chaat");
-            #[cfg(target_os = "linux")]
-            notification.icon("chaat");
-            if let Err(error) = notification.show() {
-                log::info!("could not show a notification: {error}");
-            }
-        });
-}
-
 /// macOS attributes a notification to an app by bundle identifier. Inside
 /// Chaat.app, post as Chaat; a bare binary (development) keeps the library's
 /// default, since an identifier without a bundle shows nothing.
@@ -214,7 +195,7 @@ fn claim_identity() {
         let bundled = std::env::current_exe()
             .map(|path| path.to_string_lossy().contains(".app/Contents/MacOS/"))
             .unwrap_or(false);
-        if bundled && let Err(error) = notify_rust::set_application("app.chaat.Chaat") {
+        if bundled && let Err(error) = notify_rust::set_application(APP_ID) {
             log::info!("notifications keep the default sender: {error}");
         }
     });

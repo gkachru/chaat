@@ -367,7 +367,7 @@ fn header(app: &mut App, ui: &mut egui::Ui, conversation: &ConversationId) {
                     let width =
                         (ui.available_width() - buttons - super::header_right_inset(ui.ctx()))
                             .max(48.0);
-                    ui.add(egui::Label::new(super::chat_list::elided(
+                    ui.add(egui::Label::new(super::widgets::elided(
                         ui,
                         &title,
                         theme::semibold(15.0),
@@ -375,7 +375,7 @@ fn header(app: &mut App, ui: &mut egui::Ui, conversation: &ConversationId) {
                         width,
                     )));
                     if !subtitle.is_empty() {
-                        ui.add(egui::Label::new(super::chat_list::elided(
+                        ui.add(egui::Label::new(super::widgets::elided(
                             ui,
                             &subtitle,
                             theme::regular(12.0),
@@ -462,7 +462,7 @@ fn agents_menu(
                 Some(label) => {
                     let on = menu == super::agents::ReadMenu::Let;
                     let icon = if on { Icon::Plus } else { Icon::Close };
-                    if menu_item(ui, palette, icon, label) {
+                    if widgets::menu_item(ui, palette, icon, label) {
                         actions.push(Action::LetAgentsRead {
                             conversation: conversation.clone(),
                             on,
@@ -575,10 +575,10 @@ fn people_button(ui: &mut egui::Ui, app: &mut App, chat: &str, count: usize, com
                 }
             });
         ui.separator();
-        if menu_item(ui, &palette, Icon::UserPlus, "Add people") {
+        if widgets::menu_item(ui, &palette, Icon::UserPlus, "Add people") {
             actions.push(Action::OpenAddPeople(chat.to_owned()));
         }
-        if menu_item(ui, &palette, Icon::LogOut, "Leave") {
+        if widgets::menu_item(ui, &palette, Icon::LogOut, "Leave") {
             actions.push(Action::OpenLeaveChat(chat.to_owned()));
         }
     });
@@ -1912,17 +1912,17 @@ fn hover_toolbar(
                     egui::Popup::menu(&more).id(menu_id).show(|ui| {
                         ui.set_min_width(160.0);
                         if can_edit {
-                            if menu_item(ui, palette, Icon::Pencil, "Edit") {
+                            if widgets::menu_item(ui, palette, Icon::Pencil, "Edit") {
                                 actions.push(Action::StartEdit(id.to_owned()));
                             }
-                            if menu_item(ui, palette, Icon::Trash, "Delete") {
+                            if widgets::menu_item(ui, palette, Icon::Trash, "Delete") {
                                 actions.push(Action::Delete {
                                     conversation: conversation.clone(),
                                     message: id.to_owned(),
                                 });
                             }
                         }
-                        if menu_item(ui, palette, Icon::Copy, "Copy text")
+                        if widgets::menu_item(ui, palette, Icon::Copy, "Copy text")
                             && let Some(message) = message
                         {
                             actions.push(Action::CopyText(message.body.to_plain()));
@@ -1936,7 +1936,7 @@ fn hover_toolbar(
                                 .and_then(|pins| pins.iter().find(|p| p.message_id == id));
                             match pin {
                                 Some(pin) => {
-                                    if menu_item(ui, palette, PIN_ICON, "Unpin") {
+                                    if widgets::menu_item(ui, palette, PIN_ICON, "Unpin") {
                                         actions.push(Action::UnpinMessage {
                                             chat: chat.clone(),
                                             pin: pin.id.clone(),
@@ -1944,7 +1944,7 @@ fn hover_toolbar(
                                     }
                                 }
                                 None => {
-                                    if menu_item(ui, palette, PIN_ICON, "Pin") {
+                                    if widgets::menu_item(ui, palette, PIN_ICON, "Pin") {
                                         actions.push(Action::PinMessage {
                                             chat: chat.clone(),
                                             message: id.to_owned(),
@@ -1961,7 +1961,7 @@ fn hover_toolbar(
                                 message.web_url.as_deref(),
                             )
                             .is_some()
-                            && menu_item(ui, palette, Icon::Link, "Copy link")
+                            && widgets::menu_item(ui, palette, Icon::Link, "Copy link")
                         {
                             actions.push(Action::CopyMessageLink {
                                 conversation: conversation.clone(),
@@ -1973,53 +1973,6 @@ fn hover_toolbar(
             });
     });
     rect
-}
-
-/// One entry in a menu (a message's More menu, the people panel): a full
-/// width row that lights up under the pointer. Returns whether it was clicked.
-fn menu_item(ui: &mut egui::Ui, palette: &theme::Palette, icon: Icon, text: &str) -> bool {
-    let text_width = ui
-        .painter()
-        .layout_no_wrap(text.to_owned(), theme::regular(13.0), palette.text)
-        .size()
-        .x;
-    // A popup's first, hidden sizing pass offers egui's default area width
-    // (600). Filling it there would make the menu that wide for good.
-    let width = if ui.is_sizing_pass() {
-        text_width + 44.0
-    } else {
-        ui.available_width().max(text_width + 44.0)
-    };
-    let (rect, response) = ui.allocate_exact_size(vec2(width, 28.0), Sense::click());
-    if ui.is_rect_visible(rect) {
-        let hovered = response.hovered() || response.has_focus();
-        if hovered {
-            ui.painter()
-                .rect_filled(rect, CornerRadius::same(6), palette.surface_hover);
-        }
-        let tint = if hovered {
-            palette.text
-        } else {
-            palette.secondary
-        };
-        icon.image(tint, 16.0).paint_at(
-            ui,
-            egui::Rect::from_center_size(
-                egui::pos2(rect.left() + 16.0, rect.center().y),
-                egui::Vec2::splat(16.0),
-            ),
-        );
-        ui.painter().text(
-            egui::pos2(rect.left() + 32.0, rect.center().y),
-            egui::Align2::LEFT_CENTER,
-            text,
-            theme::regular(13.0),
-            palette.text,
-        );
-    }
-    response
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .clicked()
 }
 
 /// A quick-reaction emoji: highlighted when the person has reacted with it,
@@ -2428,7 +2381,7 @@ fn composer(app: &mut App, ui: &mut egui::Ui, conversation: &ConversationId) {
                         ui.horizontal(|ui| {
                             theme::icon(ui, *icon, 14.0, palette.accent);
                             let width = ui.available_width() - 40.0;
-                            ui.add(egui::Label::new(super::chat_list::elided(
+                            ui.add(egui::Label::new(super::widgets::elided(
                                 ui,
                                 text,
                                 theme::regular(12.0),

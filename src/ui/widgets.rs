@@ -528,3 +528,196 @@ pub fn on_click(response: &Response, actions: &mut Vec<Action>, action: Action) 
         actions.push(action);
     }
 }
+
+/// A single line cut to `width` with an ellipsis.
+pub fn elided(
+    ui: &egui::Ui,
+    text: &str,
+    font: egui::FontId,
+    color: egui::Color32,
+    width: f32,
+) -> std::sync::Arc<egui::Galley> {
+    super::chat_list::elided_styled(ui, text, font, color, width, false)
+}
+
+/// A group's heading inside a page: like [`section_label`], one
+/// size up to match the page's text.
+pub fn group(ui: &mut egui::Ui, palette: &Palette, label: &str) {
+    ui.add_space(14.0);
+    ui.label(
+        egui::RichText::new(label.to_uppercase())
+            .font(theme::semibold(12.0))
+            .color(palette.dim)
+            .extra_letter_spacing(0.6),
+    );
+}
+
+/// A quiet explanation under a setting.
+pub fn note(ui: &mut egui::Ui, palette: &Palette, text: impl Into<String>) {
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new(text.into())
+                .font(theme::regular(13.0))
+                .color(palette.dim),
+        )
+        .wrap(),
+    );
+}
+
+/// Makes the scroll bars of this `ui` (and what it holds) thin, rounded and
+/// in palette colours: a solid bar about 6 points wide with its margin, a
+/// quiet track, and a handle that strengthens on hover and drag. Only the
+/// scope it is called in changes.
+pub fn thin_scrollbars(ui: &mut Ui, palette: &Palette) {
+    let scroll = &mut ui.spacing_mut().scroll;
+    scroll.floating = false;
+    scroll.bar_width = 4.0;
+    scroll.bar_inner_margin = 1.0;
+    scroll.bar_outer_margin = 1.0;
+    scroll.handle_min_length = 24.0;
+    scroll.foreground_color = true;
+    let visuals = ui.visuals_mut();
+    visuals.extreme_bg_color = palette.outline.gamma_multiply(0.5);
+    for (widget, color) in [
+        (&mut visuals.widgets.inactive, palette.dim),
+        (&mut visuals.widgets.hovered, palette.secondary),
+        (&mut visuals.widgets.active, palette.text),
+    ] {
+        widget.fg_stroke.color = color;
+        widget.corner_radius = CornerRadius::same(3);
+    }
+}
+
+/// The background for marked occurrences of the query.
+pub fn highlight_color(palette: &Palette) -> egui::Color32 {
+    palette.accent.gamma_multiply(0.4)
+}
+
+/// One entry in a menu (a message's More menu, a chat's menu, the people
+/// panel): a full width row that lights up under the pointer. Returns whether
+/// it was clicked.
+pub fn menu_item(ui: &mut Ui, palette: &Palette, icon: Icon, text: &str) -> bool {
+    let text_width = ui
+        .painter()
+        .layout_no_wrap(text.to_owned(), theme::regular(13.0), palette.text)
+        .size()
+        .x;
+    // A popup's first, hidden sizing pass offers egui's default area width
+    // (600). Filling it there would make the menu that wide for good.
+    let width = if ui.is_sizing_pass() {
+        text_width + 44.0
+    } else {
+        ui.available_width().max(text_width + 44.0)
+    };
+    let (rect, response) = ui.allocate_exact_size(vec2(width, 28.0), Sense::click());
+    if ui.is_rect_visible(rect) {
+        let hovered = response.hovered() || response.has_focus();
+        if hovered {
+            ui.painter()
+                .rect_filled(rect, CornerRadius::same(6), palette.surface_hover);
+        }
+        let tint = if hovered {
+            palette.text
+        } else {
+            palette.secondary
+        };
+        icon.image(tint, 16.0).paint_at(
+            ui,
+            egui::Rect::from_center_size(
+                egui::pos2(rect.left() + 16.0, rect.center().y),
+                Vec2::splat(16.0),
+            ),
+        );
+        ui.painter().text(
+            egui::pos2(rect.left() + 32.0, rect.center().y),
+            Align2::LEFT_CENTER,
+            text,
+            theme::regular(13.0),
+            palette.text,
+        );
+    }
+    response
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .clicked()
+}
+
+/// A full-width list row of `height` with the radius-8 wash behind it:
+/// `surface_active` when `selected`, `surface_hover` under the pointer. The
+/// rect returned is the washed one (the row inset by 8 and 2 points).
+pub fn list_row(
+    ui: &mut Ui,
+    palette: &Palette,
+    height: f32,
+    selected: bool,
+    sense: Sense,
+) -> (Response, egui::Rect) {
+    let width = ui.available_width();
+    let (rect, response) = ui.allocate_exact_size(vec2(width, height), sense);
+    let inner = rect.shrink2(vec2(8.0, 2.0));
+    if ui.is_rect_visible(rect) && (selected || response.hovered()) {
+        ui.painter().rect_filled(
+            inner,
+            CornerRadius::same(8),
+            if selected {
+                palette.surface_active
+            } else {
+                palette.surface_hover
+            },
+        );
+    }
+    (response, inner)
+}
+
+/// How a [`modal`] looks and where it sits.
+pub struct ModalLook {
+    pub margin: i8,
+    pub shadow: bool,
+    /// Distance from the top of the window; `None` centres the dialog.
+    pub top: Option<f32>,
+}
+
+/// A dialog over a dimmed backdrop, `width` wide.
+pub fn modal(
+    palette: Palette,
+    ctx: &egui::Context,
+    id: &str,
+    width: f32,
+    look: ModalLook,
+    content: impl FnOnce(&mut Ui),
+) -> egui::ModalResponse<()> {
+    let mut frame = egui::Frame::new()
+        .fill(palette.surface)
+        .stroke(Stroke::new(1.0, palette.outline))
+        .corner_radius(CornerRadius::same(14))
+        .inner_margin(egui::Margin::same(look.margin));
+    if look.shadow {
+        frame = frame.shadow(egui::Shadow {
+            offset: [0, 12],
+            blur: 40,
+            spread: 0,
+            color: palette.shadow,
+        });
+    }
+    let mut modal = egui::Modal::new(egui::Id::new(id))
+        .backdrop_color(palette.overlay)
+        .frame(frame);
+    if let Some(top) = look.top {
+        modal = modal.area(
+            egui::Modal::default_area(egui::Id::new(id).with("area"))
+                .anchor(Align2::CENTER_TOP, vec2(0.0, top)),
+        );
+    }
+    modal.show(ctx, |ui| {
+        ui.set_width(width);
+        content(ui);
+    })
+}
+
+/// The label above a form field.
+pub fn field_label(ui: &mut Ui, palette: &Palette, text: &str) {
+    ui.label(
+        egui::RichText::new(text)
+            .font(theme::regular(13.0))
+            .color(palette.secondary),
+    );
+}

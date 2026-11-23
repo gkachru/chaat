@@ -31,6 +31,7 @@ use crate::theme::Palette;
 mod agents;
 mod calls;
 mod chat_actions;
+pub mod chat_filter;
 mod history;
 mod notify;
 use notify::NoticeItem;
@@ -1071,10 +1072,34 @@ impl App {
         }
     }
 
-    fn fetch(&self, resource: Resource, trigger: Trigger) {
+    /// The index of an account by its id.
+    pub(crate) fn account_index(&self, id: &str) -> Option<usize> {
+        self.accounts
+            .iter()
+            .position(|a| a.id.as_deref() == Some(id))
+    }
+
+    /// Makes the account the active one while `f` runs, the way events of a
+    /// background account are applied.
+    pub(crate) fn in_account<R>(&mut self, index: usize, f: impl FnOnce(&mut Self) -> R) -> R {
+        let (active, hidden) = (self.active, self.hidden);
+        self.active = index;
+        self.hidden = index != active || hidden;
+        let result = f(self);
+        self.active = active;
+        self.hidden = hidden;
+        result
+    }
+
+    /// Sends a command to the active account's backend; the demo has none.
+    pub(crate) fn send_account(&self, command: Command) {
         if !self.demo {
-            self.backend.send(Command::Fetch { resource, trigger });
+            self.backend.send(command);
         }
+    }
+
+    fn fetch(&self, resource: Resource, trigger: Trigger) {
+        self.send_account(Command::Fetch { resource, trigger });
     }
 
     /// Asks for whatever the current view shows.
@@ -1149,14 +1174,13 @@ impl App {
                 events.len(),
                 ctx.input(|i| i.focused)
             );
-            self.active = index;
-            self.hidden = index != shown;
-            for event in events {
-                self.handle(event, ctx);
-            }
+            self.in_account(index, |app| {
+                for event in events {
+                    app.handle(event, ctx);
+                }
+            });
         }
         self.active = shown.min(self.accounts.len().saturating_sub(1));
-        self.hidden = false;
         self.retire_duplicates();
         self.handle_tray();
         self.handle_requests();
@@ -2326,13 +2350,11 @@ impl App {
                     found.body = html::parse(&html);
                     found.edited = true;
                 }
-                if !self.demo {
-                    self.backend.send(Command::Edit {
-                        conversation: conversation.clone(),
-                        message,
-                        html,
-                    });
-                }
+                self.send_account(Command::Edit {
+                    conversation: conversation.clone(),
+                    message,
+                    html,
+                });
                 self.drafts.remove(&conversation);
             }
             Action::Delete {
@@ -2345,12 +2367,10 @@ impl App {
                     found.deleted = true;
                     found.body = html::RichText::default();
                 }
-                if !self.demo {
-                    self.backend.send(Command::Delete {
-                        conversation,
-                        message,
-                    });
-                }
+                self.send_account(Command::Delete {
+                    conversation,
+                    message,
+                });
             }
             Action::React {
                 conversation,
@@ -2364,14 +2384,12 @@ impl App {
                 {
                     toggle_reaction(&mut found.reactions, &emoji, &me, on);
                 }
-                if !self.demo {
-                    self.backend.send(Command::React {
-                        conversation,
-                        message,
-                        emoji,
-                        on,
-                    });
-                }
+                self.send_account(Command::React {
+                    conversation,
+                    message,
+                    emoji,
+                    on,
+                });
             }
             Action::StartReply(message) => {
                 if let Some(open) = self.open.clone() {
@@ -2436,12 +2454,10 @@ impl App {
                 conversation,
                 message,
             } => {
-                if !self.demo {
-                    self.backend.send(Command::LoadReplies {
-                        conversation,
-                        root: message,
-                    });
-                }
+                self.send_account(Command::LoadReplies {
+                    conversation,
+                    root: message,
+                });
             }
             Action::ToggleThread(root) => {
                 if let Some(open) = self.open.clone() {
@@ -2505,9 +2521,7 @@ impl App {
                     }
                 }
                 self.pending_sends.remove(&local_id);
-                if !self.demo {
-                    self.backend.send(Command::DropOutbox(local_id));
-                }
+                self.send_account(Command::DropOutbox(local_id));
             }
             Action::AttachFiles => {
                 if self.open.is_none() || !self.ensure_scope(crate::auth::FILES_SCOPE) {
@@ -2632,9 +2646,7 @@ impl App {
                 self.presence.insert(me, shown.clone());
                 self.my_presence = Some(shown);
                 self.sync_plugin_presence();
-                if !self.demo {
-                    self.backend.send(Command::SetAvailability(availability));
-                }
+                self.send_account(Command::SetAvailability(availability));
             }
             Action::OpenStatusMessage => {
                 if !self.ensure_scope(crate::auth::PRESENCE_WRITE_SCOPE) {
@@ -3186,7 +3198,7 @@ impl App {
             Section::Chats => self
                 .chats
                 .iter()
-                .filter(|c| crate::ui::chat_list::listed(self, c, &me))
+                .filter(|c| chat_filter::listed(self, c, &me))
                 .map(|c| ConversationId::Chat(c.id.clone()))
                 .collect(),
             Section::Teams => self
@@ -3626,7 +3638,6 @@ fn fnv(text: &str) -> u64 {
 mod tests {
     use super::*;
     use crate::html::RichText;
-
     #[test]
     fn inactive_conversations_are_bounded_but_unsent_messages_and_drafts_survive() {
         let (mut app, mut commands) = app();
@@ -3823,7 +3834,7 @@ mod tests {
         );
     }
 
-    fn app() -> (App, tokio::sync::mpsc::UnboundedReceiver<Command>) {
+    pub(crate) fn app() -> (App, tokio::sync::mpsc::UnboundedReceiver<Command>) {
         let (backend, commands) = Backend::recording();
         let dir = std::env::temp_dir().join("chaat-test-unused");
         let mut app = App::with_backend(
@@ -3851,7 +3862,7 @@ mod tests {
         }
     }
 
-    fn ring(id: &str, caller: &str) -> crate::calling::RingAlert {
+    pub(crate) fn ring(id: &str, caller: &str) -> crate::calling::RingAlert {
         crate::calling::RingAlert {
             id: id.into(),
             caller: "Caller".into(),
@@ -3865,59 +3876,11 @@ mod tests {
         }
     }
 
-    fn ada_chat(app: &App) -> ConversationId {
-        let me = app.me().to_owned();
-        let chat = app
-            .chats
-            .iter()
-            .find(|c| {
-                c.kind == ChatKind::OneOnOne && c.peer(&me).is_some_and(|p| p.user_id == "u-ada")
-            })
-            .expect("the demo has a chat with Ada");
-        ConversationId::Chat(chat.id.clone())
-    }
-
-    #[test]
-    fn a_ring_resolves_the_caller_from_their_object_id_and_raises_the_window() {
-        let (mut app, _dir) = demo_app();
-        app.wants_show = false;
-        app.on_incoming_call(ring("call-1", "u-ada"));
-        let shown = &app.rings[0];
-        assert_eq!(shown.chat, Some(ada_chat(&app)));
-        assert!(shown.email().is_some_and(|e| e.contains('@')));
-        assert!(app.wants_show);
-        // The same call again replaces the toast rather than stacking it.
-        app.on_incoming_call(ring("call-1", "u-ada"));
-        assert_eq!(app.rings.len(), 1);
-    }
-
-    #[test]
-    fn open_chat_from_a_ring_opens_the_callers_chat_and_closes_the_toast() {
-        let (mut app, _dir) = demo_app();
-        let ctx = egui::Context::default();
-        app.section = Section::Calls;
-        app.on_incoming_call(ring("call-1", "u-ada"));
-        app.apply(Action::RingOpenChat("call-1".into()), &ctx);
-        assert_eq!(app.open, Some(ada_chat(&app)));
-        assert_eq!(app.section, Section::Chats);
-        assert!(app.rings.is_empty());
-    }
-
-    #[test]
-    fn an_unknown_caller_cannot_open_a_chat_and_a_call_back_falls_back_to_teams() {
-        let (mut app, _dir) = demo_app();
-        let ctx = egui::Context::default();
-        app.on_incoming_call(ring("call-2", "someone-new"));
-        let shown = &app.rings[0];
-        assert!(shown.member.is_none() && shown.chat.is_none());
-        assert!(!shown.can_open_chat());
-        app.apply(Action::RingPlaceCall("call-2".into()), &ctx);
-        assert!(app.rings.is_empty());
-        assert!(app.call.is_none());
-        assert!(app.toasts.iter().any(|t| t.text.contains("opened Teams")));
-    }
-
-    fn plugin_event(app: &App, id: &str, event: crate::plugin::event::PluginEvent) -> Event {
+    pub(crate) fn plugin_event(
+        app: &App,
+        id: &str,
+        event: crate::plugin::event::PluginEvent,
+    ) -> Event {
         Event::Plugin {
             id: id.into(),
             generation: app.plugin_generations.get(id).copied().unwrap_or(0),
@@ -3925,7 +3888,10 @@ mod tests {
         }
     }
 
-    fn sign_in_event(account: Option<&str>, code: &str) -> crate::plugin::event::PluginEvent {
+    pub(crate) fn sign_in_event(
+        account: Option<&str>,
+        code: &str,
+    ) -> crate::plugin::event::PluginEvent {
         crate::plugin::event::PluginEvent::SignIn {
             account: account.map(str::to_owned),
             verification_uri: "https://microsoft.com/devicelogin".into(),
@@ -3933,13 +3899,13 @@ mod tests {
         }
     }
 
-    fn signed_in_event(account: Option<&str>) -> crate::plugin::event::PluginEvent {
+    pub(crate) fn signed_in_event(account: Option<&str>) -> crate::plugin::event::PluginEvent {
         crate::plugin::event::PluginEvent::SignedIn {
             account: account.map(str::to_owned),
         }
     }
 
-    fn ready_event(
+    pub(crate) fn ready_event(
         needs: &[&'static str],
         offers: &[&'static str],
         options: Vec<crate::plugin::protocol::OptionSpec>,
@@ -3956,7 +3922,7 @@ mod tests {
 
     /// An enabled entry in the plugin list, not started, that the person
     /// already allowed everything to.
-    fn plugin_entry(app: &mut App, id: &str, needs: &[&str]) {
+    pub(crate) fn plugin_entry(app: &mut App, id: &str, needs: &[&str]) {
         app.settings.plugins.push(crate::settings::PluginEntry {
             id: id.into(),
             path: PathBuf::from(format!("{id}.exe")),
@@ -3969,7 +3935,7 @@ mod tests {
     }
 
     /// A running call-alerts plugin, as after its `ready`.
-    fn call_alerts_plugin(app: &mut App, id: &str) {
+    pub(crate) fn call_alerts_plugin(app: &mut App, id: &str) {
         plugin_entry(app, id, &["accounts"]);
         app.plugins.insert(
             id.into(),
@@ -3982,905 +3948,17 @@ mod tests {
         );
     }
 
-    fn sent(commands: &mut tokio::sync::mpsc::UnboundedReceiver<Command>) -> Vec<Command> {
+    pub(crate) fn sent(
+        commands: &mut tokio::sync::mpsc::UnboundedReceiver<Command>,
+    ) -> Vec<Command> {
         std::iter::from_fn(|| commands.try_recv().ok()).collect()
     }
 
-    fn busy() -> Presence {
-        Presence {
-            availability: crate::model::Availability::Busy,
-            ..Default::default()
-        }
-    }
+    pub(crate) const FABRIKAM: &str = "u-alex2.fabrikam";
 
-    fn app_with_service() -> (App, tokio::sync::mpsc::UnboundedReceiver<Command>) {
-        let (mut app, _) = app();
-        let (service, commands) = Backend::recording();
-        app.service = service;
-        app.id = Some("u-me.t1".into());
-        (app, commands)
-    }
+    pub(crate) const LAUNCH: &str = "19:demo-launch@thread.v2";
 
-    #[test]
-    fn the_plugin_sign_in_panel_shows_until_signed_in_or_stopped() {
-        let (mut app, _dir) = demo_app();
-        let ctx = egui::Context::default();
-        call_alerts_plugin(&mut app, "ca");
-        app.handle(plugin_event(&app, "ca", sign_in_event(None, "AB12")), &ctx);
-        assert_eq!(app.plugins["ca"].sign_in[0].user_code, "AB12");
-        app.handle(plugin_event(&app, "ca", signed_in_event(None)), &ctx);
-        assert!(app.plugins["ca"].sign_in.is_empty());
-        app.handle(plugin_event(&app, "ca", sign_in_event(None, "AB12")), &ctx);
-        app.handle(
-            plugin_event(
-                &app,
-                "ca",
-                crate::plugin::event::PluginEvent::Status {
-                    running: false,
-                    message: None,
-                },
-            ),
-            &ctx,
-        );
-        assert!(app.plugins["ca"].sign_in.is_empty());
-        app.handle(plugin_event(&app, "ca", sign_in_event(None, "AB12")), &ctx);
-        app.apply(
-            Action::HidePluginSignIn {
-                plugin: "ca".into(),
-                account: None,
-            },
-            &ctx,
-        );
-        assert!(app.plugins["ca"].sign_in.is_empty());
-    }
-
-    #[test]
-    fn plugins_turned_on_start_once_the_service_is_attached() {
-        // At launch App::new syncs before main attaches the service backend.
-        let (mut app, _) = app();
-        assert!(app.service.is_detached());
-        app.settings.plugins.push(crate::settings::PluginEntry {
-            id: "pr".into(),
-            path: PathBuf::from("plugin.exe"),
-            enabled: true,
-            ..Default::default()
-        });
-        app.sync_plugins();
-        let (service, mut commands) = Backend::recording();
-        app.attach_service(service);
-        assert!(matches!(
-            commands.try_recv(),
-            Ok(Command::StartPlugin { id, .. }) if id == "pr"
-        ));
-    }
-
-    #[test]
-    fn enabling_and_disabling_a_plugin_starts_and_stops_it() {
-        let (mut app, mut commands) = app_with_service();
-        let ctx = egui::Context::default();
-        app.settings.plugins.push(crate::settings::PluginEntry {
-            id: "ca".into(),
-            path: PathBuf::from("plugin.exe"),
-            enabled: false,
-            needs: vec!["accounts".into()],
-            approved_needs: vec!["accounts".into()],
-            ..Default::default()
-        });
-        app.sync_plugins();
-        assert!(commands.try_recv().is_err(), "off: nothing starts");
-        app.apply(Action::SetPluginEnabled("ca".into(), true), &ctx);
-        let me = crate::calling::PluginAccount {
-            id: "u-me.t1".into(),
-            username: "me@contoso.com".into(),
-        };
-        assert!(matches!(
-            commands.try_recv(),
-            Ok(Command::StartPlugin { id, path, hello: crate::plugin::protocol::HostMessage::Hello { accounts, .. }, .. })
-                if id == "ca" && path == std::path::Path::new("plugin.exe") && accounts == vec![me.clone()]
-        ));
-        // Syncing again with nothing changed starts nothing.
-        app.sync_plugins();
-        assert!(commands.try_recv().is_err());
-        // A new path restarts that plugin only.
-        app.settings.plugins[0].path = PathBuf::from("other.exe");
-        app.sync_plugins();
-        assert!(matches!(
-            commands.try_recv(),
-            Ok(Command::StartPlugin { path, .. }) if path == std::path::Path::new("other.exe")
-        ));
-        app.apply(Action::SetPluginEnabled("ca".into(), false), &ctx);
-        assert!(matches!(
-            commands.try_recv(),
-            Ok(Command::StopPlugin { id }) if id == "ca"
-        ));
-    }
-
-    #[test]
-    fn only_the_first_sign_in_code_raises_the_window() {
-        let (mut app, _dir) = demo_app();
-        let ctx = egui::Context::default();
-        call_alerts_plugin(&mut app, "ca");
-        app.wants_show = false;
-        app.handle(plugin_event(&app, "ca", sign_in_event(None, "FIRST")), &ctx);
-        assert!(app.wants_show);
-        app.wants_show = false;
-        app.apply(
-            Action::HidePluginSignIn {
-                plugin: "ca".into(),
-                account: None,
-            },
-            &ctx,
-        );
-        app.handle(
-            plugin_event(&app, "ca", sign_in_event(None, "SECOND")),
-            &ctx,
-        );
-        assert!(!app.wants_show, "a later code doesn't pull Chaat forward");
-        assert_eq!(app.plugins["ca"].sign_in[0].user_code, "SECOND");
-        // After signing in, a future expiry may raise it again.
-        app.handle(plugin_event(&app, "ca", signed_in_event(None)), &ctx);
-        app.handle(plugin_event(&app, "ca", sign_in_event(None, "THIRD")), &ctx);
-        assert!(app.wants_show);
-    }
-
-    #[test]
-    fn accounts_go_only_to_plugins_that_need_them() {
-        let (mut app, mut commands) = app_with_service();
-        plugin_entry(&mut app, "ca", &["accounts"]);
-        plugin_entry(&mut app, "light", &[]);
-        app.sync_plugins();
-        let started = sent(&mut commands);
-        let accounts_in = |id: &str| {
-            started.iter().find_map(|c| match c {
-                Command::StartPlugin {
-                    id: started,
-                    hello: crate::plugin::protocol::HostMessage::Hello { accounts, .. },
-                    ..
-                } if started == id => Some(accounts.len()),
-                _ => None,
-            })
-        };
-        assert_eq!(accounts_in("ca"), Some(1));
-        assert_eq!(accounts_in("light"), Some(0));
-        // Nothing changed: nothing to tell.
-        app.remember_accounts();
-        assert!(commands.try_recv().is_err());
-        app.auth = AuthStatus::SignedIn {
-            account: "u-me.t1".into(),
-            name: "Me".into(),
-            username: "me@fabrikam.com".into(),
-        };
-        app.remember_accounts();
-        let changed = sent(&mut commands);
-        assert!(changed.iter().any(|c| matches!(
-            c,
-            Command::PluginSend { id, message: crate::plugin::protocol::HostMessage::Accounts { accounts } }
-                if id == "ca" && accounts[0].username == "me@fabrikam.com"
-        )));
-        assert!(changed.iter().any(|c| matches!(
-            c,
-            Command::PluginHello { id, accounts: Some(_), .. } if id == "ca"
-        )));
-        assert!(
-            !changed.iter().any(|c| matches!(
-                c,
-                Command::PluginSend { id, .. } | Command::PluginHello { id, .. } if id == "light"
-            )),
-            "a plugin that needs no accounts hears nothing about them"
-        );
-    }
-
-    #[test]
-    fn a_ready_that_asks_for_accounts_gets_them_once() {
-        let (mut app, mut commands) = app_with_service();
-        let ctx = egui::Context::default();
-        plugin_entry(&mut app, "new", &[]);
-        app.sync_plugins();
-        sent(&mut commands);
-        app.handle(
-            plugin_event(
-                &app,
-                "new",
-                ready_event(&["accounts"], &[], Vec::new(), &[]),
-            ),
-            &ctx,
-        );
-        let after = sent(&mut commands);
-        assert!(after.iter().any(|c| matches!(
-            c,
-            Command::PluginSend {
-                message: crate::plugin::protocol::HostMessage::Accounts { .. },
-                ..
-            }
-        )));
-        assert_eq!(app.settings.plugins[0].needs, vec!["accounts".to_owned()]);
-        app.handle(
-            plugin_event(
-                &app,
-                "new",
-                ready_event(&["accounts"], &[], Vec::new(), &[]),
-            ),
-            &ctx,
-        );
-        assert!(!sent(&mut commands).iter().any(|c| matches!(
-            c,
-            Command::PluginSend {
-                message: crate::plugin::protocol::HostMessage::Accounts { .. },
-                ..
-            }
-        )));
-    }
-
-    #[test]
-    fn presence_goes_only_to_plugins_that_need_it() {
-        let (mut app, mut commands) = app_with_service();
-        let ctx = egui::Context::default();
-        app.my_presence = Some(busy());
-        plugin_entry(&mut app, "light", &[]);
-        plugin_entry(&mut app, "other", &[]);
-        app.sync_plugins();
-        sent(&mut commands);
-        app.handle(
-            plugin_event(
-                &app,
-                "light",
-                ready_event(&["presence"], &["presence_display"], Vec::new(), &[]),
-            ),
-            &ctx,
-        );
-        app.handle(
-            plugin_event(
-                &app,
-                "other",
-                ready_event(&[], &["presence_display"], Vec::new(), &[]),
-            ),
-            &ctx,
-        );
-        let presences: Vec<Command> = sent(&mut commands)
-            .into_iter()
-            .filter(|c| {
-                matches!(
-                    c,
-                    Command::PluginSend {
-                        message: crate::plugin::protocol::HostMessage::Presence { .. },
-                        ..
-                    }
-                )
-            })
-            .collect();
-        assert_eq!(presences.len(), 1);
-        assert!(matches!(
-            &presences[0],
-            Command::PluginSend { id, message: crate::plugin::protocol::HostMessage::Presence { availability, activity } }
-                if id == "light" && availability == "Busy" && activity.is_none()
-        ));
-    }
-
-    #[test]
-    fn presence_is_resent_only_when_it_changes() {
-        let (mut app, mut commands) = app_with_service();
-        let ctx = egui::Context::default();
-        app.my_presence = Some(busy());
-        plugin_entry(&mut app, "light", &[]);
-        app.sync_plugins();
-        app.handle(
-            plugin_event(
-                &app,
-                "light",
-                ready_event(&["presence"], &[], Vec::new(), &[]),
-            ),
-            &ctx,
-        );
-        let count = |commands: &mut tokio::sync::mpsc::UnboundedReceiver<Command>| {
-            sent(commands)
-                .iter()
-                .filter(|c| {
-                    matches!(
-                        c,
-                        Command::PluginSend {
-                            message: crate::plugin::protocol::HostMessage::Presence { .. },
-                            ..
-                        }
-                    )
-                })
-                .count()
-        };
-        assert_eq!(count(&mut commands), 1);
-        app.sync_plugin_presence();
-        app.handle(Event::MyPresence(busy()), &ctx);
-        assert_eq!(count(&mut commands), 0, "the same presence is not resent");
-        app.handle(
-            Event::MyPresence(Presence {
-                availability: crate::model::Availability::Available,
-                ..Default::default()
-            }),
-            &ctx,
-        );
-        assert_eq!(count(&mut commands), 1);
-    }
-
-    #[test]
-    fn presence_is_resent_when_the_account_signs_out() {
-        let (mut app, mut commands) = app_with_service();
-        let ctx = egui::Context::default();
-        app.my_presence = Some(busy());
-        plugin_entry(&mut app, "light", &[]);
-        app.sync_plugins();
-        app.handle(
-            plugin_event(
-                &app,
-                "light",
-                ready_event(&["presence"], &[], Vec::new(), &[]),
-            ),
-            &ctx,
-        );
-        sent(&mut commands);
-        app.handle(Event::Auth(AuthStatus::SignedOut), &ctx);
-        assert!(sent(&mut commands).iter().any(|c| matches!(
-            c,
-            Command::PluginSend {
-                message: crate::plugin::protocol::HostMessage::Presence { availability, .. },
-                ..
-            } if availability == "Unknown"
-        )));
-    }
-
-    #[test]
-    fn a_plugin_that_drops_and_regains_the_accounts_need_is_sent_them_again() {
-        let (mut app, mut commands) = app_with_service();
-        let ctx = egui::Context::default();
-        plugin_entry(&mut app, "p", &["accounts"]);
-        app.sync_plugins();
-        app.handle(
-            plugin_event(&app, "p", ready_event(&[], &[], Vec::new(), &[])),
-            &ctx,
-        );
-        assert!(app.plugins["p"].sent_accounts.is_none());
-        sent(&mut commands);
-        app.handle(
-            plugin_event(&app, "p", ready_event(&["accounts"], &[], Vec::new(), &[])),
-            &ctx,
-        );
-        assert!(sent(&mut commands).iter().any(|c| matches!(
-            c,
-            Command::PluginSend {
-                message: crate::plugin::protocol::HostMessage::Accounts { .. },
-                ..
-            }
-        )));
-    }
-
-    #[test]
-    fn a_second_call_alerts_plugin_is_ignored() {
-        let (mut app, _dir) = demo_app();
-        let ctx = egui::Context::default();
-        call_alerts_plugin(&mut app, "first");
-        call_alerts_plugin(&mut app, "second");
-        assert_eq!(app.call_alerts_owner().as_deref(), Some("first"));
-        app.handle(
-            plugin_event(
-                &app,
-                "second",
-                crate::plugin::event::PluginEvent::IncomingCall(ring("c1", "u-ada")),
-            ),
-            &ctx,
-        );
-        app.handle(
-            plugin_event(&app, "second", sign_in_event(None, "NO")),
-            &ctx,
-        );
-        assert!(app.rings.is_empty());
-        assert!(app.plugins["second"].sign_in.is_empty());
-        app.handle(
-            plugin_event(
-                &app,
-                "first",
-                crate::plugin::event::PluginEvent::IncomingCall(ring("c1", "u-ada")),
-            ),
-            &ctx,
-        );
-        assert_eq!(app.rings.len(), 1);
-        // With the first one off, the second takes over.
-        app.settings.plugins[0].enabled = false;
-        assert_eq!(app.call_alerts_owner().as_deref(), Some("second"));
-    }
-
-    #[test]
-    fn a_non_owner_call_alerts_plugin_shows_no_sign_in_notices() {
-        use crate::plugin::event::PluginEvent;
-        let (mut app, _dir) = demo_app();
-        let ctx = egui::Context::default();
-        call_alerts_plugin(&mut app, "first");
-        call_alerts_plugin(&mut app, "second");
-        let toasts = app.toasts.len();
-        let account = || Some("u-me.demo".to_owned());
-        app.handle(
-            plugin_event(&app, "second", PluginEvent::SignedIn { account: account() }),
-            &ctx,
-        );
-        app.handle(
-            plugin_event(
-                &app,
-                "second",
-                PluginEvent::Listening {
-                    account: "u-me.demo".into(),
-                },
-            ),
-            &ctx,
-        );
-        app.handle(
-            plugin_event(
-                &app,
-                "second",
-                PluginEvent::Error {
-                    account: account(),
-                    message: "nope".into(),
-                },
-            ),
-            &ctx,
-        );
-        assert_eq!(app.toasts.len(), toasts);
-        assert!(app.plugins["second"].listening.is_empty());
-        // The owner still gets its notices.
-        app.handle(
-            plugin_event(&app, "first", PluginEvent::SignedIn { account: account() }),
-            &ctx,
-        );
-        assert_eq!(app.toasts.len(), toasts + 1);
-    }
-
-    #[test]
-    fn sign_in_cards_key_on_plugin_and_account() {
-        let (mut app, _dir) = demo_app();
-        let ctx = egui::Context::default();
-        for id in ["a", "b"] {
-            plugin_entry(&mut app, id, &[]);
-            app.plugins.insert(id.into(), PluginState::default());
-        }
-        app.handle(
-            plugin_event(&app, "a", sign_in_event(Some("u-me.demo"), "A1")),
-            &ctx,
-        );
-        app.handle(
-            plugin_event(&app, "b", sign_in_event(Some("u-me.demo"), "B1")),
-            &ctx,
-        );
-        app.handle(
-            plugin_event(&app, "b", sign_in_event(Some("u-me.demo"), "B2")),
-            &ctx,
-        );
-        assert_eq!(app.plugins["a"].sign_in.len(), 1);
-        assert_eq!(app.plugins["b"].sign_in.len(), 1);
-        assert_eq!(app.plugins["a"].sign_in[0].user_code, "A1");
-        assert_eq!(app.plugins["b"].sign_in[0].user_code, "B2");
-        assert_eq!(app.plugins["b"].sign_in[0].plugin, "b");
-        app.apply(
-            Action::HidePluginSignIn {
-                plugin: "a".into(),
-                account: Some("u-me.demo".into()),
-            },
-            &ctx,
-        );
-        assert!(app.plugins["a"].sign_in.is_empty());
-        assert_eq!(app.plugins["b"].sign_in.len(), 1);
-    }
-
-    #[test]
-    fn removing_a_plugin_deletes_its_secrets_and_stops_it() {
-        let (mut app, mut commands) = app_with_service();
-        let ctx = egui::Context::default();
-        plugin_entry(&mut app, "light", &["accounts"]);
-        app.settings.plugins[0].secrets = vec!["token".into(), "key".into()];
-        app.sync_plugins();
-        sent(&mut commands);
-        app.apply(Action::RemovePlugin("light".into()), &ctx);
-        let after = sent(&mut commands);
-        assert!(after.iter().any(|c| matches!(
-            c,
-            Command::PluginSend { id, message: crate::plugin::protocol::HostMessage::Forget { account } }
-                if id == "light" && account == "u-me.t1"
-        )));
-        for option in ["token", "key"] {
-            assert!(after.iter().any(|c| matches!(
-                c,
-                Command::SavePluginSecret { plugin, option: o, value: None, .. }
-                    if plugin == "light" && o == option
-            )));
-        }
-        assert!(
-            after
-                .iter()
-                .any(|c| matches!(c, Command::StopPlugin { id } if id == "light"))
-        );
-        assert!(app.settings.plugins.is_empty());
-        assert!(!app.plugins.contains_key("light"));
-    }
-
-    #[test]
-    fn adding_a_plugin_names_it_from_its_file_and_starts_it() {
-        let (mut app, mut commands) = app_with_service();
-        app.add_plugin(PathBuf::from("C:/x/Chaat Status-Light.exe"));
-        app.add_plugin(PathBuf::from("D:/y/chaat status-light.exe"));
-        let ids: Vec<&str> = app.settings.plugins.iter().map(|e| e.id.as_str()).collect();
-        assert_eq!(ids, ["chaat-status-light", "chaat-status-light-2"]);
-        assert!(app.settings.plugins.iter().all(|e| e.enabled));
-        let started = sent(&mut commands);
-        assert_eq!(
-            started
-                .iter()
-                .filter(|c| matches!(c, Command::StartPlugin { .. }))
-                .count(),
-            2
-        );
-    }
-
-    #[test]
-    fn options_are_sent_after_ready_and_on_change() {
-        use crate::plugin::protocol::{OptionKind, OptionSpec};
-        let (mut app, mut commands) = app_with_service();
-        let ctx = egui::Context::default();
-        plugin_entry(&mut app, "light", &[]);
-        app.settings.plugins[0]
-            .options
-            .insert("ip".into(), serde_json::json!("10.0.0.5"));
-        app.settings.plugins[0].secrets = vec!["key".into()];
-        app.sync_plugins();
-        sent(&mut commands);
-        let spec = |id: &str, kind, default| OptionSpec {
-            id: id.into(),
-            kind,
-            label: id.into(),
-            default,
-            choices: Vec::new(),
-            ..Default::default()
-        };
-        let options = vec![
-            spec("ip", OptionKind::Text, Some(serde_json::json!(""))),
-            spec("flash", OptionKind::Toggle, Some(serde_json::json!(true))),
-            spec("key", OptionKind::Secret, None),
-        ];
-        app.handle(
-            plugin_event(&app, "light", ready_event(&[], &[], options, &[])),
-            &ctx,
-        );
-        let values = |commands: &mut tokio::sync::mpsc::UnboundedReceiver<Command>| {
-            sent(commands).into_iter().find_map(|c| match c {
-                Command::PluginOptions {
-                    id,
-                    values,
-                    secrets,
-                } if id == "light" => Some((values, secrets)),
-                _ => None,
-            })
-        };
-        let (first, secrets) = values(&mut commands).expect("options after ready");
-        assert_eq!(first["ip"], serde_json::json!("10.0.0.5"));
-        assert_eq!(first["flash"], serde_json::json!(true));
-        assert_eq!(secrets, vec!["key".to_owned()]);
-        app.apply(
-            Action::SetPluginOption {
-                plugin: "light".into(),
-                option: "flash".into(),
-                value: serde_json::json!(false),
-            },
-            &ctx,
-        );
-        let (changed, _) = values(&mut commands).expect("options after a change");
-        assert_eq!(changed["flash"], serde_json::json!(false));
-        assert_eq!(
-            app.settings.plugins[0].options["flash"],
-            serde_json::json!(false)
-        );
-        // A cleared secret leaves the list, a stored one joins it, and the
-        // plugin hears each time.
-        let saved = |set: bool| Event::PluginSecretSaved {
-            plugin: "light".into(),
-            instance: "inst-light".into(),
-            option: "key".into(),
-            set,
-            ok: true,
-        };
-        app.handle(saved(false), &ctx);
-        let (_, secrets) = values(&mut commands).expect("options after a clear");
-        assert!(secrets.is_empty());
-        app.handle(saved(true), &ctx);
-        let (_, secrets) = values(&mut commands).expect("options after a secret");
-        assert_eq!(secrets, vec!["key".to_owned()]);
-    }
-
-    #[test]
-    fn calling_back_a_group_ring_follows_the_callers_own_chat() {
-        let (mut app, _dir) = demo_app();
-        let ctx = egui::Context::default();
-        let mut alert = ring("group-1", "u-ada");
-        alert.group = true;
-        alert.thread_id = Some(LAUNCH.into());
-        app.on_incoming_call(alert);
-        assert_eq!(app.rings[0].chat, Some(ConversationId::Chat(LAUNCH.into())));
-        app.apply(Action::RingPlaceCall("group-1".into()), &ctx);
-        let call = app.call.as_ref().expect("the call back starts");
-        assert_eq!(call.chat, Some(ada_chat(&app)));
-    }
-
-    const FABRIKAM: &str = "u-alex2.fabrikam";
-    const FABRIKAM_MAE: &str = "19:fabrikam-mae@unq.gbl.spaces";
-
-    fn fabrikam_index(app: &App) -> usize {
-        app.accounts
-            .iter()
-            .position(|a| a.id.as_deref() == Some(FABRIKAM))
-            .expect("the demo has a Fabrikam account")
-    }
-
-    #[test]
-    fn a_ring_on_another_account_resolves_there_and_switches_to_it() {
-        let (mut app, _dir) = demo_app();
-        let ctx = egui::Context::default();
-        let fabrikam = fabrikam_index(&app);
-        assert_ne!(app.active, fabrikam);
-        let mut alert = ring("f-call", "u-mae");
-        alert.account = Some(FABRIKAM.into());
-        app.on_incoming_call(alert);
-        let shown = &app.rings[0];
-        assert_eq!(shown.account.as_deref(), Some(FABRIKAM));
-        assert_eq!(shown.account_name.as_deref(), Some("alex@fabrikam.com"));
-        assert_eq!(shown.chat, Some(ConversationId::Chat(FABRIKAM_MAE.into())));
-        assert_eq!(shown.email(), Some("mae@fabrikam.com"));
-        let key = app.rings[0].id.clone();
-        app.apply(Action::RingOpenChat(key), &ctx);
-        assert_eq!(app.active, fabrikam);
-        assert_eq!(app.open, Some(ConversationId::Chat(FABRIKAM_MAE.into())));
-    }
-
-    #[test]
-    fn a_ring_on_an_account_chaat_lacks_shows_unresolved() {
-        let (mut app, _dir) = demo_app();
-        let active = app.active;
-        let mut alert = ring("x-call", "u-ada");
-        alert.account = Some("other.tenant".into());
-        alert.username = Some("someone@elsewhere.com".into());
-        app.on_incoming_call(alert);
-        let shown = &app.rings[0];
-        assert_eq!(shown.account, None);
-        assert_eq!(shown.account_name.as_deref(), Some("someone@elsewhere.com"));
-        assert!(shown.member.is_none() && !shown.can_open_chat());
-        let ctx = egui::Context::default();
-        let key = app.rings[0].id.clone();
-        app.apply(Action::RingPlaceCall(key), &ctx);
-        assert_eq!(app.active, active, "no account to switch to");
-    }
-
-    #[test]
-    fn each_account_gets_its_own_sign_in_card() {
-        let (mut app, _dir) = demo_app();
-        let ctx = egui::Context::default();
-        call_alerts_plugin(&mut app, "ca");
-        let ask = |app: &App, account: &str, code: &str| {
-            plugin_event(app, "ca", sign_in_event(Some(account), code))
-        };
-        app.handle(ask(&app, "u-me.demo", "ONE"), &ctx);
-        app.handle(ask(&app, FABRIKAM, "TWO"), &ctx);
-        app.handle(ask(&app, FABRIKAM, "THREE"), &ctx);
-        assert_eq!(app.plugins["ca"].sign_in.len(), 2);
-        let fabrikam = app.plugins["ca"]
-            .sign_in
-            .iter()
-            .find(|s| s.account.as_deref() == Some(FABRIKAM))
-            .unwrap();
-        assert_eq!(fabrikam.user_code, "THREE");
-        assert_eq!(fabrikam.username.as_deref(), Some("alex@fabrikam.com"));
-        app.handle(
-            plugin_event(&app, "ca", signed_in_event(Some(FABRIKAM))),
-            &ctx,
-        );
-        assert_eq!(app.plugins["ca"].sign_in.len(), 1);
-        app.handle(
-            plugin_event(
-                &app,
-                "ca",
-                crate::plugin::event::PluginEvent::Listening {
-                    account: FABRIKAM.into(),
-                },
-            ),
-            &ctx,
-        );
-        assert_eq!(app.plugins["ca"].listening, vec![FABRIKAM.to_owned()]);
-    }
-
-    #[test]
-    fn one_call_ringing_two_accounts_shows_a_card_for_each() {
-        let (mut app, _dir) = demo_app();
-        for account in ["u-me.demo", FABRIKAM] {
-            let mut alert = ring("same-call", "u-ada");
-            alert.account = Some(account.into());
-            app.on_incoming_call(alert);
-        }
-        assert_eq!(app.rings.len(), 2);
-    }
-
-    #[test]
-    fn an_account_error_names_the_account_and_stops_listening() {
-        let (mut app, _dir) = demo_app();
-        let ctx = egui::Context::default();
-        call_alerts_plugin(&mut app, "ca");
-        app.plugins.get_mut("ca").unwrap().info.name = Some("Call alerts".into());
-        app.handle(
-            plugin_event(
-                &app,
-                "ca",
-                crate::plugin::event::PluginEvent::Listening {
-                    account: FABRIKAM.into(),
-                },
-            ),
-            &ctx,
-        );
-        app.handle(
-            plugin_event(
-                &app,
-                "ca",
-                crate::plugin::event::PluginEvent::Error {
-                    account: Some(FABRIKAM.into()),
-                    message: "could not find the push service host".into(),
-                },
-            ),
-            &ctx,
-        );
-        assert!(app.plugins["ca"].listening.is_empty());
-        assert!(app.toasts.iter().any(|t| {
-            t.text
-                .starts_with("Plugin \u{201c}Call alerts\u{201d} for alex@fabrikam.com:")
-        }));
-    }
-
-    #[test]
-    fn signing_out_with_a_plugin_off_still_clears_its_sign_in() {
-        let (mut app, mut commands) = app_with_service();
-        let ctx = egui::Context::default();
-        plugin_entry(&mut app, "ca", &["accounts"]);
-        app.settings.plugins[0].enabled = false;
-        app.apply(Action::SignOut, &ctx);
-        // Not running: queued for the next start, which tells the plugin.
-        assert_eq!(app.settings.plugins[0].forget, vec!["u-me.t1".to_owned()]);
-        assert!(commands.try_recv().is_err());
-        app.settings.plugins[0].enabled = true;
-        app.sync_plugins();
-        assert!(matches!(
-            commands.try_recv(),
-            Ok(Command::StartPlugin { hello: crate::plugin::protocol::HostMessage::Hello { forget, .. }, .. })
-                if forget == vec!["u-me.t1".to_owned()]
-        ));
-        // Once the plugin is ready, the queue is done.
-        app.handle(
-            plugin_event(
-                &app,
-                "ca",
-                ready_event(&["accounts"], &[], Vec::new(), &["u-me.t1"]),
-            ),
-            &ctx,
-        );
-        assert!(app.settings.plugins[0].forget.is_empty());
-        assert!(app.plugins["ca"].running);
-    }
-
-    #[test]
-    fn a_sign_out_queues_forget_per_plugin() {
-        let (mut app, mut commands) = app_with_service();
-        let ctx = egui::Context::default();
-        plugin_entry(&mut app, "a", &["accounts"]);
-        plugin_entry(&mut app, "b", &["accounts"]);
-        plugin_entry(&mut app, "c", &[]);
-        app.sync_plugins();
-        sent(&mut commands);
-        app.apply(Action::SignOut, &ctx);
-        let queue = |id: &str| {
-            app.settings
-                .plugins
-                .iter()
-                .find(|e| e.id == id)
-                .unwrap()
-                .forget
-                .clone()
-        };
-        assert_eq!(queue("a"), vec!["u-me.t1".to_owned()]);
-        assert_eq!(queue("b"), vec!["u-me.t1".to_owned()]);
-        assert!(queue("c").is_empty());
-        let after = sent(&mut commands);
-        for id in ["a", "b"] {
-            assert!(after.iter().any(|c| matches!(
-                c,
-                Command::PluginSend { id: to, message: crate::plugin::protocol::HostMessage::Forget { account } }
-                    if to == id && account == "u-me.t1"
-            )));
-        }
-        assert!(
-            !after.iter().any(|c| matches!(
-                c,
-                Command::PluginSend { id, message: crate::plugin::protocol::HostMessage::Forget { .. } } if id == "c"
-            )),
-            "a plugin that needs no accounts is not told to forget one"
-        );
-    }
-
-    #[test]
-    fn removing_an_account_drops_its_plugin_state() {
-        let (mut app, _commands) = app_with_service();
-        plugin_entry(&mut app, "ca", &["accounts"]);
-        app.plugins.insert(
-            "ca".into(),
-            PluginState {
-                running: true,
-                listening: vec!["u-me.t1".into(), "gone.t9".into()],
-                sign_in: vec![crate::model::PluginSignIn {
-                    plugin: "ca".into(),
-                    account: Some("gone.t9".into()),
-                    username: None,
-                    verification_uri: "https://microsoft.com/devicelogin".into(),
-                    user_code: "OLD".into(),
-                }],
-                ..Default::default()
-            },
-        );
-        app.remember_accounts();
-        assert_eq!(app.plugins["ca"].listening, vec!["u-me.t1".to_owned()]);
-        assert!(app.plugins["ca"].sign_in.is_empty());
-    }
-
-    #[test]
-    fn a_ring_card_stays_as_long_as_the_plugin_says_the_call_rings() {
-        let (mut app, _dir) = demo_app();
-        let mut alert = ring("short", "u-ada");
-        alert.ring_timeout = Some(std::time::Duration::from_secs(15));
-        app.on_incoming_call(alert);
-        app.on_incoming_call(ring("default", "u-ada"));
-        assert_eq!(app.rings[0].shown_for, std::time::Duration::from_secs(15));
-        assert_eq!(app.rings[1].shown_for, crate::calling::alerts::DEFAULT_RING);
-    }
-
-    #[test]
-    fn a_sign_out_stays_queued_until_the_plugin_confirms_or_the_account_returns() {
-        let (mut app, mut commands) = app_with_service();
-        let ctx = egui::Context::default();
-        plugin_entry(&mut app, "ca", &["accounts"]);
-        app.sync_plugins();
-        sent(&mut commands);
-        app.apply(Action::SignOut, &ctx);
-        let after = sent(&mut commands);
-        // Told at once, and still queued in case it never arrives.
-        assert!(after.iter().any(|c| matches!(
-            c,
-            Command::PluginSend { id, message: crate::plugin::protocol::HostMessage::Forget { account } }
-                if id == "ca" && account == "u-me.t1"
-        )));
-        assert_eq!(app.settings.plugins[0].forget, vec!["u-me.t1".to_owned()]);
-        // A ready that didn't clear it keeps it queued.
-        app.handle(
-            plugin_event(&app, "ca", ready_event(&["accounts"], &[], Vec::new(), &[])),
-            &ctx,
-        );
-        assert_eq!(app.settings.plugins[0].forget, vec!["u-me.t1".to_owned()]);
-        sent(&mut commands);
-        // Signing that account in again takes it off the queue.
-        app.id = Some("u-me.t1".into());
-        app.remember_accounts();
-        assert!(app.settings.plugins[0].forget.is_empty());
-        assert!(sent(&mut commands).iter().any(|c| matches!(
-            c,
-            Command::PluginHello { id, forget: Some(forget), .. } if id == "ca" && forget.is_empty()
-        )));
-    }
-    #[test]
-    fn dismissing_a_ring_removes_only_that_one() {
-        let (mut app, _dir) = demo_app();
-        let ctx = egui::Context::default();
-        app.on_incoming_call(ring("a", "u-ada"));
-        app.on_incoming_call(ring("b", "u-grace"));
-        app.apply(Action::DismissRing("a".into()), &ctx);
-        assert_eq!(app.rings.len(), 1);
-        assert_eq!(app.rings[0].id, "b");
-    }
-    const LAUNCH: &str = "19:demo-launch@thread.v2";
-
-    fn demo_app() -> (App, tempfile::TempDir) {
+    pub(crate) fn demo_app() -> (App, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let mut app = App::new(
             AppDirs::under(dir.path()),
@@ -4892,6 +3970,28 @@ mod tests {
         app.settings.plugins.clear();
         app.plugins.clear();
         (app, dir)
+    }
+
+    #[test]
+    fn in_account_restores_active_and_hidden() {
+        let (mut app, _dir) = demo_app();
+        assert!(app.accounts.len() >= 2);
+        app.active = 0;
+        app.hidden = false;
+        app.in_account(1, |app| {
+            assert_eq!(app.active, 1);
+            assert!(app.hidden);
+            // Nested inside a hidden account, hidden stays true.
+            app.in_account(0, |app| {
+                assert_eq!(app.active, 0);
+                assert!(app.hidden);
+            });
+            assert_eq!(app.active, 1);
+            assert!(app.hidden);
+        });
+        assert_eq!(app.active, 0);
+        assert!(!app.hidden);
+        app.in_account(0, |app| assert!(!app.hidden));
     }
 
     fn launch_members(app: &App) -> Vec<String> {
@@ -5904,7 +5004,7 @@ mod tests {
         let shown = |app: &App| -> Vec<String> {
             app.chats
                 .iter()
-                .filter(|c| crate::ui::chat_list::listed(app, c, &me))
+                .filter(|c| chat_filter::listed(app, c, &me))
                 .map(|c| c.id.clone())
                 .collect()
         };
@@ -5975,561 +5075,6 @@ mod tests {
         });
         assert!(app.reauth.is_none());
         assert!(app.is_signed_in());
-    }
-
-    fn option_spec(
-        id: &str,
-        kind: crate::plugin::protocol::OptionKind,
-        default: Option<serde_json::Value>,
-    ) -> crate::plugin::protocol::OptionSpec {
-        crate::plugin::protocol::OptionSpec {
-            id: id.into(),
-            kind,
-            label: id.into(),
-            default,
-            choices: Vec::new(),
-            ..Default::default()
-        }
-    }
-
-    /// An enabled entry the person has not decided anything about.
-    fn undecided_entry(app: &mut App, id: &str) {
-        plugin_entry(app, id, &[]);
-        let entry = app.settings.plugins.last_mut().unwrap();
-        entry.approved_needs.clear();
-    }
-
-    fn accounts_sent_to(commands: &[Command], id: &str) -> bool {
-        commands.iter().any(|c| {
-            matches!(
-                c,
-                Command::PluginSend { id: to, message: crate::plugin::protocol::HostMessage::Accounts { .. } }
-                    if to == id
-            )
-        })
-    }
-
-    fn presence_sent_to(commands: &[Command], id: &str) -> bool {
-        commands.iter().any(|c| {
-            matches!(
-                c,
-                Command::PluginSend { id: to, message: crate::plugin::protocol::HostMessage::Presence { .. } }
-                    if to == id
-            )
-        })
-    }
-
-    #[test]
-    fn events_for_unknown_accounts_are_dropped() {
-        let (mut app, mut commands) = app_with_service();
-        let ctx = egui::Context::default();
-        call_alerts_plugin(&mut app, "ca");
-        sent(&mut commands);
-        let stranger = Some("u-stranger.t9");
-        app.handle(
-            plugin_event(&app, "ca", sign_in_event(stranger, "AB12")),
-            &ctx,
-        );
-        app.handle(plugin_event(&app, "ca", signed_in_event(stranger)), &ctx);
-        app.handle(
-            plugin_event(
-                &app,
-                "ca",
-                crate::plugin::event::PluginEvent::Listening {
-                    account: "u-stranger.t9".into(),
-                },
-            ),
-            &ctx,
-        );
-        app.handle(
-            plugin_event(
-                &app,
-                "ca",
-                crate::plugin::event::PluginEvent::Error {
-                    account: stranger.map(str::to_owned),
-                    message: "nope".into(),
-                },
-            ),
-            &ctx,
-        );
-        let mut alert = ring("stranger-call", "u-ada");
-        alert.account = stranger.map(str::to_owned);
-        app.handle(
-            plugin_event(
-                &app,
-                "ca",
-                crate::plugin::event::PluginEvent::IncomingCall(alert),
-            ),
-            &ctx,
-        );
-        assert!(app.plugins["ca"].sign_in.is_empty());
-        assert!(app.plugins["ca"].listening.is_empty());
-        assert!(app.toasts.is_empty());
-        assert!(app.rings.is_empty());
-        // The same events for one of Chaat's accounts count.
-        app.handle(
-            plugin_event(&app, "ca", sign_in_event(Some("u-me.t1"), "AB12")),
-            &ctx,
-        );
-        app.handle(
-            plugin_event(
-                &app,
-                "ca",
-                crate::plugin::event::PluginEvent::Listening {
-                    account: "u-me.t1".into(),
-                },
-            ),
-            &ctx,
-        );
-        assert_eq!(app.plugins["ca"].sign_in.len(), 1);
-        assert_eq!(app.plugins["ca"].listening, ["u-me.t1"]);
-    }
-
-    #[test]
-    fn a_new_need_waits_for_approval() {
-        let (mut app, mut commands) = app_with_service();
-        let ctx = egui::Context::default();
-        app.my_presence = Some(busy());
-        undecided_entry(&mut app, "light");
-        app.sync_plugins();
-        sent(&mut commands);
-        let ready = |app: &mut App| {
-            app.handle(
-                plugin_event(
-                    app,
-                    "light",
-                    ready_event(&["accounts", "presence"], &[], Vec::new(), &[]),
-                ),
-                &ctx,
-            );
-        };
-        ready(&mut app);
-        let after = sent(&mut commands);
-        assert!(!accounts_sent_to(&after, "light"));
-        assert!(!presence_sent_to(&after, "light"));
-        assert_eq!(app.plugins["light"].pending_needs, ["accounts", "presence"]);
-        assert!(app.plugin_receives("light").is_empty());
-        assert_eq!(app.toasts.len(), 1);
-        assert_eq!(
-            app.toasts[0].text,
-            "Plugin \u{201c}light\u{201d} asks for access. Open Settings \u{203a} Plugins to allow it."
-        );
-        assert!(
-            !app.wants_show,
-            "asking for access does not raise the window"
-        );
-        // The same pending set does not announce itself again.
-        app.toasts.clear();
-        ready(&mut app);
-        assert!(app.toasts.is_empty());
-        assert!(!accounts_sent_to(&sent(&mut commands), "light"));
-    }
-
-    #[test]
-    fn approved_needs_flow_and_denied_ones_dont() {
-        let ctx = egui::Context::default();
-        let ready = |app: &mut App| {
-            app.handle(
-                plugin_event(
-                    app,
-                    "light",
-                    ready_event(&["accounts", "presence"], &[], Vec::new(), &[]),
-                ),
-                &ctx,
-            );
-        };
-        let (mut app, mut commands) = app_with_service();
-        app.my_presence = Some(busy());
-        undecided_entry(&mut app, "light");
-        app.sync_plugins();
-        ready(&mut app);
-        sent(&mut commands);
-        app.apply(Action::ApprovePluginNeeds("light".into()), &ctx);
-        let after = sent(&mut commands);
-        assert!(accounts_sent_to(&after, "light"));
-        assert!(presence_sent_to(&after, "light"));
-        let entry = &app.settings.plugins[0];
-        assert_eq!(entry.approved_needs, ["accounts", "presence"]);
-        assert!(entry.denied_needs.is_empty());
-        assert!(app.plugins["light"].pending_needs.is_empty());
-        assert_eq!(app.plugin_receives("light"), ["accounts", "presence"]);
-        // A restart hello carries the accounts of an approved plugin.
-        app.settings.plugins[0].path = PathBuf::from("other.exe");
-        app.sync_plugins();
-        assert!(sent(&mut commands).iter().any(|c| matches!(
-            c,
-            Command::StartPlugin { hello: crate::plugin::protocol::HostMessage::Hello { accounts, .. }, .. }
-                if accounts.len() == 1
-        )));
-
-        // A refusal sends nothing, and the same `ready` does not ask again.
-        let (mut app, mut commands) = app_with_service();
-        app.my_presence = Some(busy());
-        undecided_entry(&mut app, "light");
-        app.sync_plugins();
-        ready(&mut app);
-        sent(&mut commands);
-        app.apply(Action::DenyPluginNeeds("light".into()), &ctx);
-        assert_eq!(
-            app.settings.plugins[0].denied_needs,
-            ["accounts", "presence"]
-        );
-        assert!(app.settings.plugins[0].approved_needs.is_empty());
-        app.toasts.clear();
-        ready(&mut app);
-        let after = sent(&mut commands);
-        assert!(!accounts_sent_to(&after, "light"));
-        assert!(!presence_sent_to(&after, "light"));
-        assert!(app.plugins["light"].pending_needs.is_empty());
-        assert!(app.toasts.is_empty());
-        assert!(app.plugin_receives("light").is_empty());
-    }
-
-    #[test]
-    fn a_changed_file_waits_and_trust_resets_needs() {
-        use crate::plugin::event::PluginEvent;
-        let (mut app, mut commands) = app_with_service();
-        let ctx = egui::Context::default();
-        plugin_entry(&mut app, "light", &["accounts"]);
-        {
-            let entry = &mut app.settings.plugins[0];
-            entry.sha256 = Some("old".into());
-            entry.denied_needs = vec!["presence".into()];
-        }
-        app.sync_plugins();
-        assert!(matches!(
-            sent(&mut commands).first(),
-            Some(Command::StartPlugin { expected_sha256: Some(pin), .. }) if pin == "old"
-        ));
-        app.handle(
-            plugin_event(
-                &app,
-                "light",
-                PluginEvent::FileChanged {
-                    sha256: "new".into(),
-                },
-            ),
-            &ctx,
-        );
-        assert_eq!(app.plugins["light"].file_changed.as_deref(), Some("new"));
-        assert!(!app.plugins["light"].running);
-        assert!(
-            sent(&mut commands).is_empty(),
-            "the changed file is not run"
-        );
-        app.sync_plugins();
-        assert!(sent(&mut commands).is_empty(), "nor restarted by a sync");
-
-        app.apply(Action::TrustPluginFile("light".into()), &ctx);
-        let entry = &app.settings.plugins[0];
-        assert_eq!(entry.sha256.as_deref(), Some("new"));
-        assert!(entry.approved_needs.is_empty() && entry.denied_needs.is_empty());
-        assert!(app.plugins["light"].file_changed.is_none());
-        assert!(matches!(
-            sent(&mut commands).first(),
-            Some(Command::StartPlugin { expected_sha256: Some(pin), hello: crate::plugin::protocol::HostMessage::Hello { accounts, .. }, .. })
-                if pin == "new" && accounts.is_empty()
-        ));
-
-        // Keeping it off turns the plugin off and drops the question.
-        app.handle(
-            plugin_event(
-                &app,
-                "light",
-                PluginEvent::FileChanged {
-                    sha256: "newer".into(),
-                },
-            ),
-            &ctx,
-        );
-        app.apply(Action::KeepPluginOff("light".into()), &ctx);
-        assert!(!app.settings.plugins[0].enabled);
-        assert!(app.plugins["light"].file_changed.is_none());
-        assert_eq!(app.settings.plugins[0].sha256.as_deref(), Some("new"));
-        assert!(sent(&mut commands).iter().any(|c| matches!(
-            c,
-            Command::StopPlugin { id } if id == "light"
-        )));
-    }
-
-    #[test]
-    fn the_first_fingerprint_is_stored_and_never_replaced() {
-        use crate::plugin::event::PluginEvent;
-        let (mut app, _commands) = app_with_service();
-        let ctx = egui::Context::default();
-        plugin_entry(&mut app, "light", &[]);
-        let fingerprint = |app: &mut App, sha: &str| {
-            app.handle(
-                plugin_event(
-                    app,
-                    "light",
-                    PluginEvent::Fingerprint { sha256: sha.into() },
-                ),
-                &ctx,
-            );
-        };
-        fingerprint(&mut app, "first");
-        assert_eq!(app.settings.plugins[0].sha256.as_deref(), Some("first"));
-        fingerprint(&mut app, "second");
-        assert_eq!(app.settings.plugins[0].sha256.as_deref(), Some("first"));
-    }
-
-    #[test]
-    fn a_late_secret_answer_for_an_old_instance_is_ignored() {
-        let (mut app, mut commands) = app_with_service();
-        let ctx = egui::Context::default();
-        plugin_entry(&mut app, "light", &[]);
-        app.settings.plugins[0].instance = "new".into();
-        app.plugins.entry("light".into()).or_default().options.push(
-            crate::plugin::protocol::OptionSpec {
-                id: "key".into(),
-                kind: crate::plugin::protocol::OptionKind::Secret,
-                label: "Key".into(),
-                ..Default::default()
-            },
-        );
-        let answer = |instance: &str| Event::PluginSecretSaved {
-            plugin: "light".into(),
-            instance: instance.into(),
-            option: "key".into(),
-            set: true,
-            ok: true,
-        };
-        app.handle(answer("old"), &ctx);
-        assert!(app.settings.plugins[0].secrets.is_empty());
-        assert!(sent(&mut commands).is_empty());
-        app.handle(answer("new"), &ctx);
-        assert_eq!(app.settings.plugins[0].secrets, ["key"]);
-        // Saves carry the entry's instance.
-        app.apply(
-            Action::SetPluginSecret {
-                plugin: "light".into(),
-                option: "key".into(),
-                value: Some("v".into()),
-            },
-            &ctx,
-        );
-        assert!(sent(&mut commands).iter().any(|c| matches!(
-            c,
-            Command::SavePluginSecret { instance, .. } if instance == "new"
-        )));
-        // Each new entry gets its own instance.
-        app.add_plugin(PathBuf::from("C:/x/other.exe"));
-        app.add_plugin(PathBuf::from("D:/y/other.exe"));
-        let instances: Vec<&str> = app
-            .settings
-            .plugins
-            .iter()
-            .skip(1)
-            .map(|e| e.instance.as_str())
-            .collect();
-        assert!(instances.iter().all(|i| i.len() == 32));
-        assert_ne!(instances[0], instances[1]);
-    }
-
-    #[test]
-    fn removing_deletes_every_described_secret() {
-        use crate::plugin::protocol::OptionKind;
-        let (mut app, mut commands) = app_with_service();
-        let ctx = egui::Context::default();
-        plugin_entry(&mut app, "light", &[]);
-        app.settings.plugins[0].secrets = vec!["recorded".into()];
-        app.sync_plugins();
-        sent(&mut commands);
-        app.handle(
-            plugin_event(
-                &app,
-                "light",
-                ready_event(
-                    &[],
-                    &[],
-                    vec![
-                        option_spec("recorded", OptionKind::Secret, None),
-                        option_spec("described", OptionKind::Secret, None),
-                        option_spec("plain", OptionKind::Text, None),
-                    ],
-                    &[],
-                ),
-            ),
-            &ctx,
-        );
-        sent(&mut commands);
-        app.apply(Action::RemovePlugin("light".into()), &ctx);
-        let deleted: Vec<String> = sent(&mut commands)
-            .into_iter()
-            .filter_map(|c| match c {
-                Command::SavePluginSecret {
-                    plugin,
-                    instance,
-                    option,
-                    value: None,
-                } if plugin == "light" && instance == "inst-light" => Some(option),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(deleted.len(), 2);
-        assert!(deleted.contains(&"recorded".to_owned()));
-        assert!(deleted.contains(&"described".to_owned()));
-    }
-
-    #[test]
-    fn forget_needs_the_accounts_need() {
-        let (mut app, mut commands) = app_with_service();
-        let ctx = egui::Context::default();
-        plugin_entry(&mut app, "allowed", &["accounts"]);
-        plugin_entry(&mut app, "unallowed", &["accounts"]);
-        app.settings.plugins[1].approved_needs.clear();
-        for entry in &mut app.settings.plugins {
-            entry.forget = vec!["u-queued.t2".into()];
-        }
-        app.sync_plugins();
-        let started = sent(&mut commands);
-        let hello_forget = |id: &str| {
-            started.iter().find_map(|c| match c {
-                Command::StartPlugin {
-                    id: started,
-                    hello: crate::plugin::protocol::HostMessage::Hello { forget, .. },
-                    ..
-                } if started == id => Some(forget.clone()),
-                _ => None,
-            })
-        };
-        assert_eq!(
-            hello_forget("allowed"),
-            Some(vec!["u-queued.t2".to_owned()])
-        );
-        assert_eq!(hello_forget("unallowed"), Some(Vec::new()));
-        app.apply(Action::SignOut, &ctx);
-        let after = sent(&mut commands);
-        let forgets = |id: &str| {
-            after
-                .iter()
-                .filter(|c| {
-                    matches!(
-                        c,
-                        Command::PluginSend { id: to, message: crate::plugin::protocol::HostMessage::Forget { .. } }
-                            if to == id
-                    )
-                })
-                .count()
-        };
-        assert_eq!(forgets("allowed"), 1);
-        assert_eq!(forgets("unallowed"), 0, "an unallowed plugin is not told");
-        assert!(
-            !app.settings.plugins[1]
-                .forget
-                .contains(&"u-me.t1".to_owned()),
-            "nor is the account queued for it"
-        );
-        assert!(
-            app.settings.plugins[0]
-                .forget
-                .contains(&"u-me.t1".to_owned())
-        );
-    }
-
-    #[test]
-    fn options_follow_the_current_schema() {
-        use crate::plugin::protocol::OptionKind;
-        let (mut app, mut commands) = app_with_service();
-        let ctx = egui::Context::default();
-        plugin_entry(&mut app, "light", &[]);
-        {
-            let entry = &mut app.settings.plugins[0];
-            entry
-                .options
-                .insert("ip".into(), serde_json::json!("10.0.0.5"));
-            entry.options.insert("old".into(), serde_json::json!(1));
-            entry
-                .options
-                .insert("was_plain".into(), serde_json::json!("leaked"));
-            entry.secrets = vec!["key".into(), "gone".into(), "ip".into()];
-        }
-        app.sync_plugins();
-        sent(&mut commands);
-        app.handle(
-            plugin_event(
-                &app,
-                "light",
-                ready_event(
-                    &[],
-                    &[],
-                    vec![
-                        option_spec("ip", OptionKind::Text, None),
-                        option_spec("was_plain", OptionKind::Secret, None),
-                        option_spec("key", OptionKind::Secret, None),
-                    ],
-                    &[],
-                ),
-            ),
-            &ctx,
-        );
-        let (values, secrets) = sent(&mut commands)
-            .into_iter()
-            .find_map(|c| match c {
-                Command::PluginOptions {
-                    id,
-                    values,
-                    secrets,
-                } if id == "light" => Some((values, secrets)),
-                _ => None,
-            })
-            .expect("options after ready");
-        assert_eq!(
-            values.keys().collect::<Vec<_>>(),
-            ["ip"],
-            "only described plain options"
-        );
-        assert_eq!(secrets, ["key"], "only secret options with a stored value");
-        let stored = &app.settings.plugins[0].options;
-        assert!(
-            !stored.contains_key("was_plain"),
-            "a plain value for an option that is now secret is deleted"
-        );
-        assert!(stored.contains_key("old"), "unknown options are withheld");
-        assert!(stored.contains_key("ip"));
-    }
-
-    #[test]
-    fn plugin_toasts_are_quoted_and_limited() {
-        let (mut app, _commands) = app_with_service();
-        let ctx = egui::Context::default();
-        plugin_entry(&mut app, "light", &[]);
-        app.plugins.entry("light".into()).or_default().info.name =
-            Some("Busy \u{201d}light".into());
-        let stopped = |app: &mut App, id: &str, message: &str| {
-            app.handle(
-                plugin_event(
-                    app,
-                    id,
-                    crate::plugin::event::PluginEvent::Status {
-                        running: false,
-                        message: Some(message.into()),
-                    },
-                ),
-                &ctx,
-            );
-        };
-        stopped(&mut app, "light", "first");
-        assert_eq!(app.toasts.len(), 1);
-        assert_eq!(
-            app.toasts[0].text,
-            "Plugin \u{201c}Busy 'light\u{201d}: first"
-        );
-        stopped(&mut app, "light", "second");
-        assert_eq!(app.toasts.len(), 1, "a second toast within 10 s is dropped");
-        // Another plugin is not held back by this one.
-        plugin_entry(&mut app, "other", &[]);
-        stopped(&mut app, "other", "hi");
-        assert_eq!(app.toasts.len(), 2);
-        // After the gap, the plugin may toast again.
-        if let Some(past) =
-            std::time::Instant::now().checked_sub(std::time::Duration::from_secs(11))
-        {
-            app.plugin_toasts.insert("light".into(), past);
-            stopped(&mut app, "light", "third");
-            assert!(app.toasts.iter().any(|t| t.text.ends_with(": third")));
-        }
     }
 
     fn drain(commands: &mut tokio::sync::mpsc::UnboundedReceiver<Command>) -> Vec<Command> {

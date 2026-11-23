@@ -2,9 +2,8 @@
 //! a request to Graph.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use base64::Engine;
 use chaat::agents::access::{Access, AgentAccess};
 use chaat::backend::{AuthStatus, Backend, BackendOptions, Command, Event, Waker};
 use chaat::model::ConversationId;
@@ -16,37 +15,12 @@ use serde_json::{Value, json};
 use wiremock::matchers::{body_string_contains, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+mod common;
+
+use common::{id_token, query_value, wait_for};
+
 const CLIENT: &str = "6731de76-14a6-49ae-97bc-6eba6914391e";
 const CHAT: &str = "19:ada-me@unq.gbl.spaces";
-
-fn id_token() -> String {
-    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
-        br#"{"oid":"u-me","tid":"t-1","name":"Alex Rivera","preferred_username":"alex@contoso.com"}"#,
-    );
-    format!("eyJhbGciOiJub25lIn0.{payload}.")
-}
-
-fn wait_for<T>(backend: &Backend, seconds: u64, mut pick: impl FnMut(Event) -> Option<T>) -> T {
-    let deadline = Instant::now() + Duration::from_secs(seconds);
-    loop {
-        for event in backend.poll() {
-            if let Some(found) = pick(event) {
-                return found;
-            }
-        }
-        assert!(Instant::now() < deadline, "timed out waiting for an event");
-        std::thread::sleep(Duration::from_millis(10));
-    }
-}
-
-fn query_value(url: &str, key: &str) -> String {
-    let query = url.split_once('?').map(|(_, q)| q).unwrap_or_default();
-    query
-        .split('&')
-        .find_map(|pair| pair.strip_prefix(&format!("{key}=")))
-        .map(|value| urlencoding::decode(value).unwrap().into_owned())
-        .unwrap_or_default()
-}
 
 async fn mock_graph() -> MockServer {
     let server = MockServer::start().await;

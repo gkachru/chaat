@@ -8,8 +8,8 @@
 
 use egui::{Align, CornerRadius, Frame, Margin, Stroke, vec2};
 
-use super::settings::{group, note};
 use super::widgets::{self, PointerControls as _};
+use super::widgets::{group, note};
 use crate::agents::access::Access;
 use crate::agents::proposals::{Proposal, ProposalKind};
 use crate::app::App;
@@ -157,7 +157,7 @@ pub fn pending_reactions<'a>(
     }
 }
 
-/// One small pill per proposed reaction: "<Agent> <emoji>  Accept · Discard".
+/// One small pill per proposed reaction: `<Agent> <emoji>  Accept · Discard`.
 pub fn reaction_pills(
     ui: &mut egui::Ui,
     app: &App,

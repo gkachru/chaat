@@ -75,12 +75,6 @@ impl App {
         );
     }
 
-    fn account_index(&self, account: &str) -> Option<usize> {
-        self.accounts
-            .iter()
-            .position(|a| a.id.as_deref() == Some(account))
-    }
-
     /// What agents may use in an account: closed unless the person opened it.
     pub fn agent_access_of(&self, account: &str) -> AgentAccess {
         self.settings
@@ -88,18 +82,6 @@ impl App {
             .get(account)
             .cloned()
             .unwrap_or_default()
-    }
-
-    /// Makes the account the active one while `f` runs, the way events of a
-    /// background account are applied.
-    fn in_account<R>(&mut self, index: usize, f: impl FnOnce(&mut Self) -> R) -> R {
-        let (active, hidden) = (self.active, self.hidden);
-        self.active = index;
-        self.hidden = index != active || hidden;
-        let result = f(self);
-        self.active = active;
-        self.hidden = hidden;
-        result
     }
 
     pub(super) fn on_agent_query(

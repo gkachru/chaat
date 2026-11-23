@@ -38,13 +38,7 @@ pub fn list(app: &mut App, ui: &mut egui::Ui) {
         .auto_shrink([false, false])
         .show(ui, |ui| {
             for (user, name, email) in &people {
-                let width = ui.available_width();
-                let (rect, response) = ui.allocate_exact_size(vec2(width, 48.0), Sense::hover());
-                let inner = rect.shrink2(vec2(8.0, 2.0));
-                if response.hovered() {
-                    ui.painter()
-                        .rect_filled(inner, CornerRadius::same(8), palette.surface_hover);
-                }
+                let (_, inner) = widgets::list_row(ui, &palette, 48.0, false, Sense::hover());
                 let mut child = ui.new_child(
                     egui::UiBuilder::new()
                         .max_rect(inner.shrink2(vec2(8.0, 0.0)))
@@ -53,7 +47,7 @@ pub fn list(app: &mut App, ui: &mut egui::Ui) {
                 widgets::avatar(&mut child, app, Some(user), name, 32.0, true);
                 child.add_space(8.0);
                 let label_width = (child.available_width() - 72.0).max(40.0);
-                child.add(egui::Label::new(super::chat_list::elided(
+                child.add(egui::Label::new(super::widgets::elided(
                     &child,
                     name,
                     theme::medium(13.0),

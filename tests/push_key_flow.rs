@@ -3,7 +3,7 @@
 //! says plainly when the relay refuses it.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use chaat::auth::session::AccountRecord;
 use chaat::backend::{AuthStatus, Backend, BackendOptions, Command, Event, Waker};
@@ -13,22 +13,13 @@ use chaat::secrets::{MemoryStore, SecretStore};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+mod common;
+
+use common::wait_for;
+
 const CLIENT: &str = "6731de76-14a6-49ae-97bc-6eba6914391e";
 const ACCOUNT: &str = "u-me.t-1";
 const KEY: &str = "office-relay-key-0123456789";
-
-fn wait_for<T>(backend: &Backend, seconds: u64, mut pick: impl FnMut(Event) -> Option<T>) -> T {
-    let deadline = Instant::now() + Duration::from_secs(seconds);
-    loop {
-        for event in backend.poll() {
-            if let Some(found) = pick(event) {
-                return found;
-            }
-        }
-        assert!(Instant::now() < deadline, "timed out waiting for an event");
-        std::thread::sleep(Duration::from_millis(10));
-    }
-}
 
 fn push_result(event: Event) -> Option<Result<(), String>> {
     match event {

@@ -3,7 +3,7 @@
 //! URL, posting a change notification) is played by the test.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use chaat::auth::session::AccountRecord;
 use chaat::backend::{AuthStatus, Backend, BackendOptions, Command, Event, Waker};
@@ -14,27 +14,13 @@ use chaat::secrets::{MemoryStore, SecretStore};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+mod common;
+
+use common::wait_for;
+
 const CLIENT: &str = "6731de76-14a6-49ae-97bc-6eba6914391e";
 const ACCOUNT: &str = "u-me.t-1";
 const CHAT: &str = "19:ada-me@unq.gbl.spaces";
-
-static PENDING: std::sync::Mutex<Vec<Event>> = std::sync::Mutex::new(Vec::new());
-
-fn wait_for<T>(backend: &Backend, seconds: u64, mut pick: impl FnMut(Event) -> Option<T>) -> T {
-    let deadline = Instant::now() + Duration::from_secs(seconds);
-    loop {
-        let mut pending = PENDING.lock().unwrap();
-        pending.extend(backend.poll());
-        while !pending.is_empty() {
-            if let Some(found) = pick(pending.remove(0)) {
-                return found;
-            }
-        }
-        drop(pending);
-        assert!(Instant::now() < deadline, "timed out waiting for an event");
-        std::thread::sleep(Duration::from_millis(10));
-    }
-}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_change_notification_fetches_the_chat() {

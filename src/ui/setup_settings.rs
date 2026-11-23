@@ -1,9 +1,7 @@
 //! The setup file group in settings and its dialogs: import, and export
 //! (the form, then the passphrase).
 
-use egui::{CornerRadius, Frame, Margin, Stroke};
-
-use super::settings::note;
+use super::widgets::note;
 use super::{onboarding, widgets};
 use crate::app::{App, SetupStage};
 use crate::backend::AuthStatus;
@@ -17,7 +15,7 @@ pub fn group(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         return;
     }
     let palette = app.palette;
-    super::settings::group(ui, &palette, "Setup file");
+    super::widgets::group(ui, &palette, "Setup file");
     let busy = app.setup.stage != SetupStage::Idle || app.export.open;
     ui.horizontal(|ui| {
         if ui
@@ -48,23 +46,18 @@ pub fn export_overlay(app: &mut App, ctx: &egui::Context) {
     let palette = app.palette;
     let mut actions = Vec::new();
     let revealing = app.export.passphrase.is_some();
-    let response = egui::Modal::new(egui::Id::new("chaat-setup-export"))
-        .backdrop_color(palette.overlay)
-        .frame(
-            Frame::new()
-                .fill(palette.surface)
-                .stroke(Stroke::new(1.0, palette.outline))
-                .corner_radius(CornerRadius::same(14))
-                .inner_margin(Margin::same(20)),
-        )
-        .show(ctx, |ui| {
-            ui.set_width(440.0);
-            if revealing {
-                reveal(app, ui, &mut actions);
-            } else {
-                export_form(app, ui, &mut actions);
-            }
-        });
+    let look = widgets::ModalLook {
+        margin: 20,
+        shadow: false,
+        top: None,
+    };
+    let response = widgets::modal(palette, ctx, "chaat-setup-export", 440.0, look, |ui| {
+        if revealing {
+            reveal(app, ui, &mut actions);
+        } else {
+            export_form(app, ui, &mut actions);
+        }
+    });
     // Escape or a click outside cancels the form. The passphrase is shown
     // only once, so only Done closes it.
     if response.should_close() && !revealing && !app.export.busy {
@@ -89,15 +82,6 @@ fn heading(ui: &mut egui::Ui, palette: &theme::Palette, title: &str, subtitle: &
     );
 }
 
-fn field_label(ui: &mut egui::Ui, palette: &theme::Palette, text: &str) {
-    ui.add_space(4.0);
-    ui.label(
-        egui::RichText::new(text)
-            .font(theme::regular(13.0))
-            .color(palette.secondary),
-    );
-}
-
 fn export_form(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
     let palette = app.palette;
     let has_relay = app.settings.relay_url.is_some() && app.settings.relay_key_set;
@@ -109,8 +93,9 @@ fn export_form(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         "People who import it get these settings. The file is encrypted with a passphrase you send separately.",
     );
 
-    super::settings::group(ui, &palette, "Included");
-    field_label(ui, &palette, "App registration");
+    super::widgets::group(ui, &palette, "Included");
+    ui.add_space(4.0);
+    widgets::field_label(ui, &palette, "App registration");
     ui.add(
         egui::Label::new(
             egui::RichText::new(format!(
@@ -133,8 +118,9 @@ fn export_form(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         );
     }
 
-    super::settings::group(ui, &palette, "Shown to people who import it");
-    field_label(ui, &palette, "Organization name");
+    super::widgets::group(ui, &palette, "Shown to people who import it");
+    ui.add_space(4.0);
+    widgets::field_label(ui, &palette, "Organization name");
     ui.add_enabled(
         !busy,
         widgets::text_field(
@@ -155,8 +141,9 @@ fn export_form(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         },
     );
 
-    super::settings::group(ui, &palette, "Expiry");
-    field_label(ui, &palette, "Stop accepting after (optional)");
+    super::widgets::group(ui, &palette, "Expiry");
+    ui.add_space(4.0);
+    widgets::field_label(ui, &palette, "Stop accepting after (optional)");
     ui.add_enabled(
         !busy,
         widgets::text_field(
@@ -250,45 +237,45 @@ pub fn import_overlay(app: &mut App, ctx: &egui::Context) {
     }
     let palette = app.palette;
     let warn = matches!(&stage, SetupStage::Review(summary) if resigns(app, summary));
-    let response = egui::Modal::new(egui::Id::new("chaat-setup-import"))
-        .backdrop_color(palette.overlay)
-        .frame(
-            Frame::new()
-                .fill(palette.surface)
-                .stroke(Stroke::new(1.0, palette.outline))
-                .corner_radius(CornerRadius::same(14))
-                .inner_margin(Margin::same(20)),
-        )
-        .show(ctx, |ui| {
-            ui.set_width(420.0);
-            match &stage {
-                SetupStage::Idle => {}
-                SetupStage::Passphrase(_) | SetupStage::Opening(_) => {
-                    onboarding::passphrase(app, ui);
-                }
-                SetupStage::Review(_) => onboarding::review(app, ui, warn, false),
-                SetupStage::Applying => {
-                    ui.horizontal(|ui| {
-                        widgets::loading(ui, palette.secondary, 14.0);
-                        ui.label(egui::RichText::new("Applying…").color(palette.text));
-                    });
-                }
-                SetupStage::Failed(message) => {
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(message)
-                                .font(theme::regular(14.0))
-                                .color(palette.danger),
-                        )
-                        .wrap(),
-                    );
-                    ui.add_space(8.0);
-                    if ui.button("Close").clicked() {
-                        app.actions.push(Action::CancelSetup);
-                    }
+    let look = widgets::ModalLook {
+        margin: 20,
+        shadow: false,
+        top: None,
+    };
+    let response = widgets::modal(
+        palette,
+        ctx,
+        "chaat-setup-import",
+        420.0,
+        look,
+        |ui| match &stage {
+            SetupStage::Idle => {}
+            SetupStage::Passphrase(_) | SetupStage::Opening(_) => {
+                onboarding::passphrase(app, ui);
+            }
+            SetupStage::Review(_) => onboarding::review(app, ui, warn, false),
+            SetupStage::Applying => {
+                ui.horizontal(|ui| {
+                    widgets::loading(ui, palette.secondary, 14.0);
+                    ui.label(egui::RichText::new("Applying…").color(palette.text));
+                });
+            }
+            SetupStage::Failed(message) => {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(message)
+                            .font(theme::regular(14.0))
+                            .color(palette.danger),
+                    )
+                    .wrap(),
+                );
+                ui.add_space(8.0);
+                if ui.button("Close").clicked() {
+                    app.actions.push(Action::CancelSetup);
                 }
             }
-        });
+        },
+    );
     let working = matches!(stage, SetupStage::Opening(_) | SetupStage::Applying);
     if response.should_close() && !working {
         app.actions.push(Action::CancelSetup);

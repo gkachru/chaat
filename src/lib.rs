@@ -4,6 +4,10 @@
 //! pieces fit: `ui` draws state and emits `model::Action`s, `app` applies
 //! them, `backend` runs every network and disk task on its own runtime.
 
+/// The app identifier: bundle id, Windows toast app id, single-instance slot
+/// name and keyring service.
+pub const APP_ID: &str = "app.chaat.Chaat";
+
 pub mod agents;
 pub mod app;
 pub mod auth;
@@ -26,6 +30,7 @@ pub mod paths;
 pub mod platform;
 pub mod plugin;
 pub mod realtime;
+pub mod relay_protocol;
 pub mod secrets;
 pub mod settings;
 pub mod setup_file;

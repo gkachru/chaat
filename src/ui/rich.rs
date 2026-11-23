@@ -29,12 +29,9 @@ impl Look {
     }
 }
 
-/// The sizes the interface uses (see AGENTS.md).
-const TYPE_SCALE: [f32; 9] = [11.0, 12.0, 13.0, 14.0, 15.0, 18.0, 20.0, 24.0, 30.0];
-
 /// One step down the type scale, for raised and lowered text.
 fn step_down(size: f32) -> f32 {
-    TYPE_SCALE
+    theme::TYPE_SCALE
         .into_iter()
         .rev()
         .find(|s| *s < size)
@@ -44,7 +41,10 @@ fn step_down(size: f32) -> f32 {
 /// Emoji draw one step up the type scale from the text around them, as
 /// Teams does, so they read at the same weight as letters.
 fn emoji_size(size: f32) -> f32 {
-    TYPE_SCALE.into_iter().find(|s| *s > size).unwrap_or(size)
+    theme::TYPE_SCALE
+        .into_iter()
+        .find(|s| *s > size)
+        .unwrap_or(size)
 }
 
 /// Size of emoji in a message that holds nothing else.
@@ -228,7 +228,7 @@ fn append_marked(
             job.append(&text[at..range.start], 0.0, format.clone());
         }
         let marked = TextFormat {
-            background: super::find::highlight_color(palette),
+            background: super::widgets::highlight_color(palette),
             ..format.clone()
         };
         job.append(&text[range.clone()], 0.0, marked);
@@ -652,7 +652,7 @@ fn table(
 ) {
     // A solid scroll bar, there only when the table is wider than the room.
     ui.scope(|ui| {
-        super::code::thin_scrollbars(ui, palette);
+        super::widgets::thin_scrollbars(ui, palette);
         egui::ScrollArea::horizontal()
             .id_salt("scroll")
             .max_width(width)
@@ -973,7 +973,7 @@ mod tests {
         let (marked, _) = job(&spans, &look, &palette, 300.0, Some("the"));
         let (plain, _) = job(&spans, &look, &palette, 300.0, None);
         assert_eq!(marked.text, plain.text);
-        let color = crate::ui::find::highlight_color(&palette);
+        let color = crate::ui::widgets::highlight_color(&palette);
         let pieces: Vec<(&str, bool)> = marked
             .sections
             .iter()

@@ -4,8 +4,8 @@
 //! Chaat's words and the plugin's stay apart: the plugin's name and
 //! description sit at the top, its option texts under "from the plugin".
 
-use super::super::settings::{group, note};
 use super::super::widgets::{self, PointerControls as _};
+use super::super::widgets::{group, note};
 use super::options::{OptionsCx, options_block};
 use super::{file_changed_items, need_words, notice, pending_items};
 use crate::app::{App, PluginState};
