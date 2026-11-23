@@ -23,6 +23,9 @@ sends before selecting **Restart to update**. This matters because drafts
 and failed sends currently live in memory.
 
 Package-manager installations must update through their package manager.
+The `.deb` installs `/usr/bin/chaat` without the portable marker, so the
+updater detects dpkg ownership and Chaat shows "Update this installation
+through apt or your software center." when a newer release exists.
 The updater also refuses unmarked Linux/Windows binaries and macOS copies
 running from a disk image. Download and extract the official portable
 archive, or move Chaat.app into Applications. The Linux installer adds the
@@ -66,9 +69,11 @@ the matching `UPDATE_SIGNING_KEY` secret, before automatic updates can work.
    keychain after packaging. Missing credentials stop macOS release packaging;
    it never falls back to an ad-hoc signature.
 3. Push the version tag. `.github/workflows/release.yml` runs format, lint,
-   tests and the dependency/font notice check, then builds the Linux x86_64,
-   Windows x86_64, and macOS arm64
-   packages. It checks that the signing key matches the compiled public key,
+   tests and the dependency/font notice check, then builds the Linux x86_64
+   (a tarball and a `.deb` for Ubuntu 22.04+ and Debian 12+, built on
+   `ubuntu-22.04`), Windows x86_64, and macOS arm64
+   packages. The `.deb` is covered by the signed checksums but has no
+   self-update path; `packaging/linux/deb.sh` builds it locally. It checks that the signing key matches the compiled public key,
    signs `checksums.txt`, and creates a **draft** release.
 4. Inspect the packages and release notes, complete the live-account and
    OSS acceptance checks, then publish the draft. This publication is what

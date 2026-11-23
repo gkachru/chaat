@@ -108,12 +108,18 @@ APIs serve work and school accounts only.
 |---|---|
 | macOS | Set `CODESIGN_IDENTITY`, then `cargo build --release && packaging/macos/bundle.sh target/release/chaat Chaat.app 0.2.0` |
 | Linux | `cargo build --release && packaging/linux/install.sh` (installs to `~/.local`) |
+| Debian and Ubuntu (.deb) | `packaging/linux/deb.sh` builds `dist/chaat_<version>-1_amd64.deb` for Ubuntu 22.04+ and Debian 12+ (glibc 2.35). Needs `cargo-zigbuild`, `zig` and `cargo-deb`. |
 | Windows | `cargo build --release` (icon and version embedded by `build.rs`) |
 
 CI builds all three on every push to `main` and keeps them as workflow
 artifacts. Version tags create a signed draft release with packages that
 support automatic updates. Nothing is published as a release yet. See
 [app updates and release steps](docs/updates.md).
+
+On Debian and Ubuntu (amd64, Ubuntu 22.04+ or Debian 12+), install the `.deb`
+from the releases page with `sudo apt install ./chaat_<version>-1_amd64.deb`.
+Updates arrive as new `.deb` files on the releases page; the package does not
+include the portable marker, so Chaat's self-updater stays off for it.
 
 macOS bundles for signed-in use need a persistent code-signing identity so
 Keychain approval survives updates. CI artifacts use ad-hoc signing for

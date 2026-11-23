@@ -33,7 +33,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          # 22.04 keeps the binary on glibc 2.35, the baseline of the .deb.
+          - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
           - os: macos-latest
             target: aarch64-apple-darwin
@@ -49,6 +50,11 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libgl1-mesa-dev
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --locked --release --target ${{ matrix.target }} --bin chaat
+      - name: Package Debian and Ubuntu .deb
+        if: runner.os == 'Linux'
+        run: |
+          cargo install --locked cargo-deb
+          cargo deb --no-build --locked --target ${{ matrix.target }} --output dist/
       - name: Import persistent macOS signing identity
         if: runner.os == 'macOS'
         env:
@@ -89,6 +95,7 @@ jobs:
             dist/*.tar.gz
             dist/*.zip
             dist/*.dmg
+            dist/*.deb
 
   publish:
     needs: package
@@ -118,8 +125,8 @@ jobs:
           mkdir -p dist
           find packages -type f -exec cp '{}' dist/ \;
           cd dist
-          sha256sum chaat-* > checksums.txt
+          sha256sum chaat[-_]* > checksums.txt
           openssl pkeyutl -sign -rawin -inkey "$key" -in checksums.txt -out checksums.txt.sig
           flags=()
           case "$RELEASE_TAG" in *-*) flags+=(--prerelease);; esac
-          gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --draft --generate-notes "${flags[@]}" chaat-* checksums.txt checksums.txt.sig
+          gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --draft --generate-notes "${flags[@]}" chaat[-_]* checksums.txt checksums.txt.sig
