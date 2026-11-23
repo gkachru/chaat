@@ -446,7 +446,7 @@ pub fn empty_state(ui: &mut Ui, palette: &Palette, icon: Icon, title: &str, text
 pub fn section_label(ui: &mut Ui, palette: &Palette, text: &str) {
     ui.label(
         egui::RichText::new(text.to_uppercase())
-            .font(theme::semibold(11.0))
+            .font(theme::semibold(12.0))
             .color(palette.dim)
             .extra_letter_spacing(0.6),
     );
@@ -541,16 +541,10 @@ pub fn elided(
     super::chat_list::elided_styled(ui, text, font, color, width, false)
 }
 
-/// A group's heading inside a page: like [`section_label`], one
-/// size up to match the page's text.
+/// A group's heading inside a page: a [`section_label`] with space above.
 pub fn group(ui: &mut egui::Ui, palette: &Palette, label: &str) {
     ui.add_space(14.0);
-    ui.label(
-        egui::RichText::new(label.to_uppercase())
-            .font(theme::semibold(12.0))
-            .color(palette.dim)
-            .extra_letter_spacing(0.6),
-    );
+    section_label(ui, palette, label);
 }
 
 /// A quiet explanation under a setting.

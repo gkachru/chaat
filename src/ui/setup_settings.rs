@@ -48,7 +48,7 @@ pub fn export_overlay(app: &mut App, ctx: &egui::Context) {
     let revealing = app.export.passphrase.is_some();
     let look = widgets::ModalLook {
         margin: 20,
-        shadow: false,
+        shadow: true,
         top: None,
     };
     let response = widgets::modal(palette, ctx, "chaat-setup-export", 440.0, look, |ui| {
@@ -239,7 +239,7 @@ pub fn import_overlay(app: &mut App, ctx: &egui::Context) {
     let warn = matches!(&stage, SetupStage::Review(summary) if resigns(app, summary));
     let look = widgets::ModalLook {
         margin: 20,
-        shadow: false,
+        shadow: true,
         top: None,
     };
     let response = widgets::modal(
