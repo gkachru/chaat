@@ -205,6 +205,11 @@ impl Proposals {
             .iter()
             .any(|p| p.account == account && p.conversation == *conversation)
     }
+
+    /// How many proposals from `plugin` are pending, for the turn-off question.
+    pub fn count_from(&self, plugin: &str) -> usize {
+        self.items.iter().filter(|p| p.plugin == plugin).count()
+    }
 }
 
 #[cfg(test)]

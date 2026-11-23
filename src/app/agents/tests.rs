@@ -237,6 +237,48 @@ fn notice_no_raise() {
 }
 
 #[test]
+fn turning_off_the_agents_plugin_asks_first() {
+    let mut rig = rig(true);
+    rig.app.plugins.get_mut("a").unwrap().info.name = Some("Alpha".into());
+    assert_eq!(
+        rig.app.turn_off_question("a").as_deref(),
+        Some(
+            "Turn off “Alpha”? Agents stop reading your allowed chats and suggesting replies. \
+             Your allow lists are kept."
+        )
+    );
+    open_chat(&mut rig.app, true);
+    propose(&mut rig.app, 1, reply("one"));
+    assert_eq!(
+        rig.app.turn_off_consequences("a").as_deref(),
+        Some(
+            "Agents stop reading your allowed chats and suggesting replies. \
+             Your allow lists are kept. 1 pending suggestion is discarded."
+        )
+    );
+    // A second agents plugin that may read messages takes over.
+    plugin(&mut rig.app, "b", true);
+    rig.app.plugins.get_mut("b").unwrap().info.name = Some("Beta".into());
+    assert_eq!(
+        rig.app.turn_off_consequences("a").as_deref(),
+        Some(
+            "“Beta” reads your allowed chats and suggests replies instead. \
+             1 pending suggestion is discarded."
+        )
+    );
+    // Without the messages need it would not, so nothing takes over.
+    rig.app.settings.plugins[1].approved_needs.clear();
+    assert!(
+        rig.app
+            .turn_off_consequences("a")
+            .unwrap()
+            .starts_with("Agents stop reading")
+    );
+    // Not the active agents plugin: nothing to ask.
+    assert_eq!(rig.app.turn_off_question("b"), None);
+}
+
+#[test]
 fn superseded_answered() {
     let mut rig = rig(true);
     open_chat(&mut rig.app, true);

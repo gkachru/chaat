@@ -1540,6 +1540,30 @@ impl App {
                 (_, None) => "Chaat stops showing incoming calls from this plugin.".to_owned(),
             });
         }
+        if self.agents_active().as_deref() == Some(id) {
+            // Another plugin takes over only if it may read messages too.
+            let other = self
+                .plugin_next_provider(id, registry::AGENTS)
+                .filter(|other| {
+                    self.settings.plugins.iter().any(|entry| {
+                        entry.id == *other && Self::plugin_need_effective(entry, Need::Messages)
+                    })
+                });
+            sentences.push(match other {
+                Some(other) => format!(
+                    "{} reads your allowed chats and suggests replies instead.",
+                    self.quoted_plugin_name(&other)
+                ),
+                None => "Agents stop reading your allowed chats and suggesting replies. \
+                         Your allow lists are kept."
+                    .to_owned(),
+            });
+            match self.agent_proposals.count_from(id) {
+                0 => {}
+                1 => sentences.push("1 pending suggestion is discarded.".to_owned()),
+                n => sentences.push(format!("{n} pending suggestions are discarded.")),
+            }
+        }
         if sentences.is_empty() {
             return None;
         }

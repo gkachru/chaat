@@ -56,9 +56,14 @@ added." or "Not checked yet." (see [File pinning](#file-pinning)) and
 Chaat's words, what happens, with the plugin names in quotation marks. For
 example "Turn off “Name”? “Other” provides push updates
 instead.", "Push updates stop until you turn it back on or set a relay
-address." or "Chaat stops showing incoming calls from this plugin." Nothing
-is asked for a plugin that provides neither. While a relay address is set, no
-plugin counts as providing push, so push is left out of the question.
+address." or "Chaat stops showing incoming calls from this plugin." The
+active agents plugin asks too: "Agents stop reading your allowed chats and
+suggesting replies. Your allow lists are kept.", or "“Other” reads your
+allowed chats and suggests replies instead." when another enabled agents
+plugin has the `messages` need approved, followed by "N pending suggestions
+are discarded." when any are waiting. Nothing is asked for a plugin that
+provides none of these. While a relay address is set, no plugin counts as
+providing push, so push is left out of the question.
 
 **Remove plugin…** asks in place: "Remove “Name”? Chaat stops it, deletes its
 saved secrets and tells it to forget your sign-ins.", plus the same sentence
