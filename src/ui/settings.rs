@@ -922,9 +922,11 @@ fn push_plugin_id(app: &App) -> Option<String> {
             .iter()
             .filter(|entry| entry.enabled)
             .find(|entry| {
-                app.plugins
-                    .get(&entry.id)
-                    .is_some_and(|state| state.offers.contains(&crate::plugin::registry::PUSH))
+                app.plugins.get(&entry.id).is_some_and(|state| {
+                    state
+                        .offers
+                        .contains(&crate::plugin::registry::Capability::Push)
+                })
             })
             .map(|entry| entry.id.clone())
     })

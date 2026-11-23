@@ -8,7 +8,7 @@ use super::super::widgets::{group, note};
 use super::page::{forget_confirm, request_enabled, turn_off_ask};
 use crate::app::{App, PluginSummary, SummaryLevel};
 use crate::model::{Action, PluginAction};
-use crate::plugin::registry;
+use crate::plugin::registry::Capability;
 use crate::theme::{self, Icon, Palette};
 use egui::{Align, Frame, Layout, Margin, Sense, Stroke, UiBuilder, vec2};
 
@@ -213,15 +213,15 @@ fn row(app: &App, ui: &mut egui::Ui, id: &str, summary: &PluginSummary, actions:
 /// What a plugin does for push and call alerts, for the reorder mode.
 fn reorder_summary(app: &App, id: &str) -> String {
     let provides = app.plugin_provides(id);
-    let word = |c: &str| {
-        if c == registry::PUSH {
+    let word = |c: Capability| {
+        if c == Capability::Push {
             "push updates"
         } else {
             "call alerts"
         }
     };
     if !provides.is_empty() {
-        let words: Vec<&str> = provides.iter().map(|c| word(c)).collect();
+        let words: Vec<&str> = provides.iter().map(|c| word(*c)).collect();
         return format!("Provides {}", words.join(" and "));
     }
     let running = app.plugins.get(id).filter(|s| s.running);
@@ -235,8 +235,8 @@ fn reorder_summary(app: &App, id: &str) -> String {
             None
         };
         for (capability, owner) in [
-            (registry::PUSH, push_owner),
-            (registry::CALL_ALERTS, app.call_alerts_owner()),
+            (Capability::Push, push_owner),
+            (Capability::CallAlerts, app.call_alerts_owner()),
         ] {
             if state.offers.contains(&capability) && owner.is_some_and(|o| o != id) {
                 beaten.push(word(capability));
@@ -425,7 +425,7 @@ mod tests {
             });
             let state = app.plugins.entry(id.into()).or_default();
             state.running = true;
-            state.offers = vec![registry::PUSH];
+            state.offers = vec![Capability::Push];
         }
         assert_eq!(reorder_summary(&app, "a"), "Provides push updates");
         assert_eq!(

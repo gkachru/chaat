@@ -18,9 +18,9 @@ pub enum PluginEvent {
     Ready {
         info: PluginInfo,
         /// Known capabilities the plugin offers.
-        offers: Vec<&'static str>,
+        offers: Vec<registry::Capability>,
         /// Known needs the plugin asked for.
-        needs: Vec<&'static str>,
+        needs: Vec<registry::Need>,
         options: Vec<OptionSpec>,
         forgotten: Vec<String>,
     },
@@ -338,8 +338,8 @@ mod tests {
             panic!("ready");
         };
         assert_eq!(info.name.as_deref(), Some("Status light"));
-        assert_eq!(offers, [registry::PRESENCE_DISPLAY]);
-        assert_eq!(needs, ["presence"]);
+        assert_eq!(offers, [registry::Capability::PresenceDisplay]);
+        assert_eq!(needs, [registry::Need::Presence]);
         assert_eq!(options.len(), 1);
         assert_eq!(options[0].id, "ip");
         assert!(forgotten.is_empty());

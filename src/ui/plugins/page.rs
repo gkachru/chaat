@@ -11,7 +11,7 @@ use super::{file_changed_items, need_words, notice, pending_items};
 use crate::app::{App, PluginState};
 use crate::model::{Action, PluginAction, SettingsPage};
 use crate::plugin::protocol::OptionSpec;
-use crate::plugin::registry;
+use crate::plugin::registry::Capability;
 use crate::settings::PluginEntry;
 use crate::theme;
 
@@ -288,7 +288,7 @@ fn status_section(
             .wrap(),
         );
     });
-    let offers_alerts = state.is_some_and(|s| s.offers.contains(&registry::CALL_ALERTS));
+    let offers_alerts = state.is_some_and(|s| s.offers.contains(&Capability::CallAlerts));
     let owner = app.call_alerts_owner();
     if offers_alerts && entry.enabled && owner.as_deref().is_some_and(|o| o != entry.id) {
         note(
@@ -298,7 +298,7 @@ fn status_section(
         );
     }
     for capability in app.plugin_provides(&entry.id) {
-        let (line, label, page) = if capability == registry::PUSH {
+        let (line, label, page) = if capability == Capability::Push {
             (
                 "Push updates use this plugin's tunnel.",
                 "Open Push updates \u{203A}",

@@ -18,11 +18,6 @@ pub const AGENTS: &str = "agents";
 /// The capabilities Chaat knows.
 pub const KNOWN: &[&str] = &[CALL_ALERTS, PRESENCE_DISPLAY, PUSH, AGENTS];
 
-/// Needs a plugin may ask for: account ids and sign-in names, and the
-/// person's availability and activity (never the status message), and
-/// per-account push channels, and cached messages for an agent.
-const NEEDS: &[&str] = &["accounts", "presence", PUSH, "messages"];
-
 /// A capability Chaat knows, the typed form of the strings in [`KNOWN`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Capability {
@@ -102,20 +97,18 @@ pub fn is_exclusive(capability: &str) -> bool {
 
 /// The known capabilities among `capabilities`, once each, in the order
 /// Chaat lists them.
-pub fn offered(capabilities: &[String]) -> Vec<&'static str> {
-    KNOWN
-        .iter()
-        .copied()
-        .filter(|known| capabilities.iter().any(|c| c == known))
+pub fn offered(capabilities: &[String]) -> Vec<Capability> {
+    Capability::ALL
+        .into_iter()
+        .filter(|known| capabilities.iter().any(|c| c == known.as_str()))
         .collect()
 }
 
 /// The known needs among `raw`, once each; unknown needs are dropped.
-pub fn needs(raw: &[String]) -> Vec<&'static str> {
-    NEEDS
-        .iter()
-        .copied()
-        .filter(|known| raw.iter().any(|n| n == known))
+pub fn needs(raw: &[String]) -> Vec<Need> {
+    Need::ALL
+        .into_iter()
+        .filter(|known| raw.iter().any(|n| n == known.as_str()))
         .collect()
 }
 
@@ -131,7 +124,7 @@ mod tests {
     fn offered_keeps_only_known_capabilities() {
         assert_eq!(
             offered(&strings(&["presence_display", "x"])),
-            [PRESENCE_DISPLAY]
+            [Capability::PresenceDisplay]
         );
         assert_eq!(
             offered(&strings(&[
@@ -139,7 +132,7 @@ mod tests {
                 "call_alerts",
                 "call_alerts"
             ])),
-            [CALL_ALERTS, PRESENCE_DISPLAY]
+            [Capability::CallAlerts, Capability::PresenceDisplay]
         );
         assert!(offered(&[]).is_empty());
     }
@@ -148,25 +141,25 @@ mod tests {
     fn unknown_needs_are_dropped() {
         assert_eq!(
             needs(&strings(&["presence", "tokens", "accounts", "presence"])),
-            ["accounts", "presence"]
+            [Need::Accounts, Need::Presence]
         );
         assert!(needs(&strings(&["tokens", "secrets"])).is_empty());
-        assert_eq!(needs(&strings(&["messages", "x"])), ["messages"]);
+        assert_eq!(needs(&strings(&["messages", "x"])), [Need::Messages]);
     }
 
     #[test]
     fn registry_knows_push() {
         assert!(KNOWN.contains(&"push"));
         assert!(is_exclusive("push"));
-        assert_eq!(needs(&strings(&["push", "x"])), ["push"]);
-        assert_eq!(offered(&strings(&["push"])), [PUSH]);
+        assert_eq!(needs(&strings(&["push", "x"])), [Need::Push]);
+        assert_eq!(offered(&strings(&["push"])), [Capability::Push]);
     }
 
     #[test]
     fn registry_knows_agents() {
         assert!(KNOWN.contains(&"agents"));
         assert!(is_exclusive(AGENTS));
-        assert_eq!(offered(&strings(&["agents", "x"])), [AGENTS]);
+        assert_eq!(offered(&strings(&["agents", "x"])), [Capability::Agents]);
     }
 
     #[test]
@@ -185,7 +178,7 @@ mod tests {
         assert_eq!(Need::parse("status"), None);
         assert_eq!(Need::parse(""), None);
         let names: Vec<&str> = Need::ALL.iter().map(|n| n.as_str()).collect();
-        assert_eq!(names, NEEDS);
+        assert_eq!(names, ["accounts", "presence", "push", "messages"]);
     }
 
     #[test]

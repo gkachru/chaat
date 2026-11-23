@@ -14,7 +14,7 @@ use crate::agents::access::Access;
 use crate::agents::proposals::{Proposal, ProposalKind};
 use crate::app::App;
 use crate::model::{Action, AgentAction, ConversationId};
-use crate::plugin::registry;
+use crate::plugin::registry::Capability;
 use crate::theme::{self, Icon};
 
 /// Longest agent name shown, in characters. The name is the plugin's word,
@@ -283,7 +283,7 @@ pub fn access_section(ui: &mut egui::Ui, app: &App, plugin: &str, actions: &mut 
     let offers = app
         .plugins
         .get(plugin)
-        .is_some_and(|state| state.offers.contains(&registry::AGENTS));
+        .is_some_and(|state| state.offers.contains(&Capability::Agents));
     if !offers {
         return;
     }

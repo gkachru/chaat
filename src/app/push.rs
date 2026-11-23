@@ -7,7 +7,7 @@ use super::App;
 use crate::backend::{AccountCommand, PushRoute};
 use crate::plugin::event::PushEvent;
 use crate::plugin::protocol::HostMessage;
-use crate::plugin::registry::{self, Capability, Need};
+use crate::plugin::registry::{Capability, Need};
 
 /// What Settings › Push updates shows about the push plugin.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -75,14 +75,14 @@ impl App {
                 .find(|entry| {
                     self.plugins
                         .get(&entry.id)
-                        .is_some_and(|state| state.offers.contains(&registry::PUSH))
+                        .is_some_and(|state| state.offers.contains(&Capability::Push))
                 })
                 .map(|entry| entry.id.clone())
         })?;
         let declared = self
             .plugins
             .get(&id)
-            .is_some_and(|state| state.needs.contains(&registry::PUSH));
+            .is_some_and(|state| state.needs.contains(&Need::Push));
         let state = if declared && !self.push_allowed(&id) {
             PushPluginState::NeedsApproval
         } else if let Some((generation, url)) = self.push_plugin.origins.get(&id)
@@ -231,7 +231,7 @@ impl App {
             && self
                 .plugins
                 .get(id)
-                .is_some_and(|state| state.running && state.offers.contains(&registry::PUSH))
+                .is_some_and(|state| state.running && state.offers.contains(&Capability::Push))
     }
 
     /// Applies a push message from a plugin. Only the owner is heard; its
@@ -374,8 +374,8 @@ mod tests {
             "pr".into(),
             PluginState {
                 running: true,
-                offers: vec![registry::PUSH],
-                needs: vec!["push"],
+                offers: vec![Capability::Push],
+                needs: vec![Need::Push],
                 pending_needs: if approved { vec![] } else { vec!["push"] },
                 ..Default::default()
             },
@@ -521,8 +521,8 @@ mod tests {
             "other".into(),
             PluginState {
                 running: true,
-                offers: vec![registry::PUSH],
-                needs: vec!["push"],
+                offers: vec![Capability::Push],
+                needs: vec![Need::Push],
                 ..Default::default()
             },
         );
@@ -563,8 +563,8 @@ mod tests {
             "other".into(),
             PluginState {
                 running: true,
-                offers: vec![registry::PUSH],
-                needs: vec!["push"],
+                offers: vec![Capability::Push],
+                needs: vec![Need::Push],
                 ..Default::default()
             },
         );

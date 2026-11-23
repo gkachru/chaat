@@ -3324,7 +3324,7 @@ fn the_call_alerts_sign_in_panel_shows_the_code_in_both_themes_and_widths() {
             {
                 let state = h.app.plugins.entry("ca".into()).or_default();
                 state.running = true;
-                state.offers = vec!["call_alerts"];
+                state.offers = vec![chaat::plugin::registry::Capability::CallAlerts];
             }
             h.app.handle_service(
                 chaat::backend::ServiceEvent::Plugin {
@@ -4888,8 +4888,8 @@ fn push_plugin_harness(width: f32, theme: ThemeChoice, allowed: bool) -> Harness
         entry.approved_needs.push("push".into());
     }
     let state = h.app.plugins.get_mut("demo-alerts").unwrap();
-    state.offers.push("push");
-    state.needs.push("push");
+    state.offers.push(chaat::plugin::registry::Capability::Push);
+    state.needs.push(chaat::plugin::registry::Need::Push);
     if !allowed {
         state.pending_needs.push("push");
     }

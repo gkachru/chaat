@@ -81,9 +81,9 @@ pub struct PluginState {
     /// How the plugin describes itself (plain, shortened text).
     pub info: PluginInfo,
     /// Known capabilities its `ready` offered.
-    pub offers: Vec<&'static str>,
+    pub offers: Vec<Capability>,
     /// Known needs its `ready` asked for.
-    pub needs: Vec<&'static str>,
+    pub needs: Vec<Need>,
     /// The options it described.
     pub options: Vec<OptionSpec>,
     /// Whether the current run sent its `ready`; no option values go to a run
@@ -263,7 +263,6 @@ impl App {
     /// The first enabled plugin in list order that is running and offers
     /// `capability`.
     pub fn owner_of(&self, capability: Capability) -> Option<String> {
-        let name = capability.as_str();
         self.settings
             .plugins
             .iter()
@@ -271,7 +270,7 @@ impl App {
             .find(|entry| {
                 self.plugins
                     .get(&entry.id)
-                    .is_some_and(|state| state.running && state.offers.contains(&name))
+                    .is_some_and(|state| state.running && state.offers.contains(&capability))
             })
             .map(|entry| entry.id.clone())
     }
@@ -600,7 +599,7 @@ impl App {
                 });
             if state.running
                 && allowed
-                && state.needs.contains(&"presence")
+                && state.needs.contains(&Need::Presence)
                 && state.sent_presence.as_ref() != Some(&key)
             {
                 state.sent_presence = Some(key.clone());
@@ -685,7 +684,7 @@ impl App {
         let offers = self
             .plugins
             .get(id)
-            .is_some_and(|state| state.offers.contains(&registry::CALL_ALERTS));
+            .is_some_and(|state| state.offers.contains(&Capability::CallAlerts));
         !offers || self.call_alerts_owner().as_deref() == Some(id)
     }
 
@@ -857,8 +856,8 @@ impl App {
         &mut self,
         id: &str,
         info: PluginInfo,
-        offers: Vec<&'static str>,
-        needs: Vec<&'static str>,
+        offers: Vec<Capability>,
+        needs: Vec<Need>,
         options: Vec<OptionSpec>,
         forgotten: Vec<String>,
     ) {
@@ -871,10 +870,10 @@ impl App {
             .map(|e| (e.approved_needs.clone(), e.denied_needs.clone()))
             .unwrap_or_default();
         let wants_accounts =
-            needs.contains(&"accounts") && approved.iter().any(|n| n == "accounts");
+            needs.contains(&Need::Accounts) && approved.iter().any(|n| n == "accounts");
         let pending: Vec<&'static str> = needs
             .iter()
-            .copied()
+            .map(|need| need.as_str())
             .filter(|need| !approved.iter().any(|n| n == need) && !denied.iter().any(|n| n == need))
             .collect();
         let state = self.plugins.entry(id.to_owned()).or_default();
@@ -969,7 +968,7 @@ impl App {
         // A restarted process has not been sent the presence yet.
         state.sent_presence = None;
         let first_accounts = wants_accounts && state.sent_accounts.is_none();
-        let needs: Vec<String> = needs.iter().map(|need| (*need).to_owned()).collect();
+        let needs: Vec<String> = needs.iter().map(|need| need.as_str().to_owned()).collect();
         if let Some(entry) = self.settings.plugins.iter_mut().find(|e| e.id == id)
             && entry.needs != needs
         {
@@ -1470,20 +1469,20 @@ impl App {
     /// The capabilities this plugin provides now, push first: it is the first
     /// enabled, running plugin that offers them. Push does not come from a
     /// plugin while a manual relay address is set.
-    pub fn plugin_provides(&self, id: &str) -> Vec<&'static str> {
+    pub fn plugin_provides(&self, id: &str) -> Vec<Capability> {
         let mut provides = Vec::new();
         if self.settings.relay_url.is_none() && self.push_owner().as_deref() == Some(id) {
-            provides.push(registry::PUSH);
+            provides.push(Capability::Push);
         }
         if self.call_alerts_owner().as_deref() == Some(id) {
-            provides.push(registry::CALL_ALERTS);
+            provides.push(Capability::CallAlerts);
         }
         provides
     }
 
     /// The first other plugin, in list order, that is enabled, running and
     /// offers `capability`: the one that would take over.
-    fn plugin_next_provider(&self, id: &str, capability: &str) -> Option<String> {
+    fn plugin_next_provider(&self, id: &str, capability: Capability) -> Option<String> {
         self.settings
             .plugins
             .iter()
@@ -1522,13 +1521,13 @@ impl App {
         for capability in provides {
             let other = self.plugin_next_provider(id, capability);
             sentences.push(match (capability, other) {
-                (registry::PUSH, Some(other)) => {
+                (Capability::Push, Some(other)) => {
                     format!(
                         "{} provides push updates instead.",
                         self.quoted_plugin_name(&other)
                     )
                 }
-                (registry::PUSH, None) => {
+                (Capability::Push, None) => {
                     "Push updates stop until you turn it back on or set a relay address.".to_owned()
                 }
                 (_, Some(other)) => {
@@ -1543,7 +1542,7 @@ impl App {
         if self.agents_active().as_deref() == Some(id) {
             // Another plugin takes over only if it may read messages too.
             let other = self
-                .plugin_next_provider(id, registry::AGENTS)
+                .plugin_next_provider(id, Capability::Agents)
                 .filter(|other| {
                     self.settings.plugins.iter().any(|entry| {
                         entry.id == *other && Self::plugin_need_effective(entry, Need::Messages)
@@ -1703,10 +1702,10 @@ impl App {
                 PushPluginState::NeedsApproval => {}
             }
         }
-        let loses_calls = state.offers.contains(&registry::CALL_ALERTS)
+        let loses_calls = state.offers.contains(&Capability::CallAlerts)
             && self.call_alerts_owner().as_deref() != Some(id);
         let loses_push = push_by_plugin
-            && state.offers.contains(&registry::PUSH)
+            && state.offers.contains(&Capability::Push)
             && self.push_owner().as_deref() != Some(id);
         if loses_calls || loses_push {
             let what = if loses_calls { "calls" } else { "push" };
@@ -1772,7 +1771,7 @@ impl App {
         // Sign-in notices belong to the plugin that provides call alerts.
         let owner = self.call_alerts_owner();
         for (plugin, state) in &mut self.plugins {
-            if state.offers.contains(&registry::CALL_ALERTS)
+            if state.offers.contains(&Capability::CallAlerts)
                 && owner.as_deref() != Some(plugin.as_str())
             {
                 state.sign_in.clear();

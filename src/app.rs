@@ -1751,6 +1751,7 @@ mod tests {
     use super::*;
     use crate::backend::Command;
     use crate::html::RichText;
+    use crate::plugin::registry::{Capability, Need};
     #[test]
     fn inactive_conversations_are_bounded_but_unsent_messages_and_drafts_survive() {
         let (mut app, mut commands) = app();
@@ -2092,8 +2093,8 @@ mod tests {
     }
 
     pub(crate) fn ready_event(
-        needs: &[&'static str],
-        offers: &[&'static str],
+        needs: &[Need],
+        offers: &[Capability],
         options: Vec<crate::plugin::protocol::OptionSpec>,
         forgotten: &[&str],
     ) -> crate::plugin::event::PluginEvent {
@@ -2127,8 +2128,8 @@ mod tests {
             id.into(),
             PluginState {
                 running: true,
-                offers: vec![crate::plugin::registry::CALL_ALERTS],
-                needs: vec!["accounts"],
+                offers: vec![Capability::CallAlerts],
+                needs: vec![Need::Accounts],
                 ..Default::default()
             },
         );

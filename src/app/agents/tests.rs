@@ -12,7 +12,7 @@ use crate::backend::{
 };
 use crate::model::{Delivery, Message};
 use crate::paths::AppDirs;
-use crate::plugin::registry;
+use crate::plugin::registry::Capability;
 use crate::settings::{PluginEntry, Settings};
 
 const ACCOUNT: &str = "u.t";
@@ -42,7 +42,7 @@ fn plugin(app: &mut App, id: &str, approved: bool) {
         id.into(),
         PluginState {
             running: true,
-            offers: vec![registry::AGENTS],
+            offers: vec![Capability::Agents],
             ready_seen: true,
             ..PluginState::default()
         },

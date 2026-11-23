@@ -26,7 +26,7 @@ fn owner_of_skips_disabled_and_stopped() {
         });
         let state = app.plugins.entry(id.into()).or_default();
         state.running = true;
-        state.offers = vec![registry::PUSH];
+        state.offers = vec![Capability::Push];
     }
     assert_eq!(app.owner_of(Capability::Push).as_deref(), Some("a"));
     assert_eq!(app.owner_of(Capability::CallAlerts), None);
@@ -166,7 +166,7 @@ fn a_ready_that_drops_accounts_clears_the_stored_restart_hello() {
         approved_needs: vec!["accounts".into()],
         ..PluginEntry::default()
     });
-    let ready = |app: &mut App, needs: Vec<&'static str>| {
+    let ready = |app: &mut App, needs: Vec<Need>| {
         app.on_plugin_ready(
             "p",
             PluginInfo::default(),
@@ -176,7 +176,7 @@ fn a_ready_that_drops_accounts_clears_the_stored_restart_hello() {
             Vec::new(),
         );
     };
-    ready(&mut app, vec!["accounts"]);
+    ready(&mut app, vec![Need::Accounts]);
     while commands.try_recv().is_ok() {}
     ready(&mut app, Vec::new());
     let sent: Vec<Command> = std::iter::from_fn(|| commands.try_recv().ok()).collect();
@@ -814,7 +814,7 @@ impl App {
             "p",
             PluginInfo::default(),
             Vec::new(),
-            vec!["accounts", "presence"],
+            vec![Need::Accounts, Need::Presence],
             Vec::new(),
             Vec::new(),
         );
@@ -945,8 +945,8 @@ fn two_providers() -> (
             id.into(),
             PluginState {
                 running: true,
-                offers: vec![registry::CALL_ALERTS, registry::PUSH],
-                needs: vec!["push"],
+                offers: vec![Capability::CallAlerts, Capability::Push],
+                needs: vec![Need::Push],
                 ready_seen: true,
                 ..PluginState::default()
             },
@@ -972,7 +972,7 @@ fn move_plugin_switches_owners() {
     assert_eq!(app.call_alerts_owner().as_deref(), Some("a"));
     assert_eq!(
         app.plugin_provides("a"),
-        [registry::PUSH, registry::CALL_ALERTS]
+        [Capability::Push, Capability::CallAlerts]
     );
     assert!(app.plugin_provides("b").is_empty());
     app.plugins
@@ -1003,7 +1003,7 @@ fn move_plugin_switches_owners() {
     assert_eq!(app.call_alerts_owner().as_deref(), Some("b"));
     assert_eq!(
         app.plugin_provides("b"),
-        [registry::PUSH, registry::CALL_ALERTS]
+        [Capability::Push, Capability::CallAlerts]
     );
     assert!(app.plugin_provides("a").is_empty());
     assert!(
@@ -1038,14 +1038,14 @@ fn move_plugin_switches_owners() {
 fn plugin_provides_leaves_push_out_while_a_relay_is_set() {
     let (mut app, ..) = two_providers();
     app.settings.relay_url = Some("https://relay.example".into());
-    assert_eq!(app.plugin_provides("a"), [registry::CALL_ALERTS]);
+    assert_eq!(app.plugin_provides("a"), [Capability::CallAlerts]);
 }
 
 #[test]
 fn summary_ignores_push_while_a_relay_is_set() {
     let (mut app, ..) = two_providers();
-    app.plugins.get_mut("a").unwrap().offers = vec![registry::PUSH];
-    app.plugins.get_mut("b").unwrap().offers = vec![registry::PUSH];
+    app.plugins.get_mut("a").unwrap().offers = vec![Capability::Push];
+    app.plugins.get_mut("b").unwrap().offers = vec![Capability::Push];
     assert_eq!(
         app.plugin_summary("a").text,
         "Tunnel at a.trycloudflare.com"
@@ -1118,7 +1118,7 @@ fn turn_off_question_texts() {
         )
     );
     // Push only.
-    app.plugins.get_mut("a").unwrap().offers = vec![registry::PUSH];
+    app.plugins.get_mut("a").unwrap().offers = vec![Capability::Push];
     assert_eq!(
         app.turn_off_question("a").as_deref(),
         Some(
@@ -1126,20 +1126,20 @@ fn turn_off_question_texts() {
         )
     );
     // Calls only.
-    app.plugins.get_mut("a").unwrap().offers = vec![registry::CALL_ALERTS];
+    app.plugins.get_mut("a").unwrap().offers = vec![Capability::CallAlerts];
     assert_eq!(
         app.turn_off_question("a").as_deref(),
         Some("Turn off “Alpha”? Chaat stops showing incoming calls from this plugin.")
     );
     // Calls only, another takes over.
-    app.plugins.get_mut("b").unwrap().offers = vec![registry::CALL_ALERTS];
+    app.plugins.get_mut("b").unwrap().offers = vec![Capability::CallAlerts];
     assert_eq!(
         app.turn_off_question("a").as_deref(),
         Some("Turn off “Alpha”? “Beta” provides call alerts instead.")
     );
     // A relay address set: push is left out, and with nothing else
     // provided no question is asked.
-    app.plugins.get_mut("a").unwrap().offers = vec![registry::PUSH];
+    app.plugins.get_mut("a").unwrap().offers = vec![Capability::Push];
     app.settings.relay_url = Some("https://relay.example".into());
     assert_eq!(app.turn_off_question("a"), None);
 }
@@ -1229,18 +1229,18 @@ fn summary_order_follows_the_table() {
     app.plugins.get_mut("b").unwrap().offers.clear();
     assert_eq!(summary_of(&app, "b"), (Ok, "Running".into()));
     // 9: another plugin owns what it offers.
-    app.plugins.get_mut("b").unwrap().offers = vec![registry::CALL_ALERTS];
+    app.plugins.get_mut("b").unwrap().offers = vec![Capability::CallAlerts];
     assert_eq!(
         summary_of(&app, "b"),
         (Off, "Not used: another plugin provides calls".into())
     );
-    app.plugins.get_mut("b").unwrap().offers = vec![registry::PUSH];
+    app.plugins.get_mut("b").unwrap().offers = vec![Capability::Push];
     assert_eq!(
         summary_of(&app, "b"),
         (Off, "Not used: another plugin provides push".into())
     );
     // 8: push owner, tunnel up, then down, then waiting.
-    app.plugins.get_mut("a").unwrap().offers = vec![registry::PUSH];
+    app.plugins.get_mut("a").unwrap().offers = vec![Capability::Push];
     assert_eq!(
         summary_of(&app, "a"),
         (Ok, "Tunnel at a.trycloudflare.com".into())
@@ -1254,7 +1254,7 @@ fn summary_order_follows_the_table() {
     app.push_plugin_stopped("a");
     assert_eq!(summary_of(&app, "a"), (Ok, "Waiting for its tunnel".into()));
     // 7: call alerts owner.
-    app.plugins.get_mut("a").unwrap().offers = vec![registry::CALL_ALERTS];
+    app.plugins.get_mut("a").unwrap().offers = vec![Capability::CallAlerts];
     app.plugins.get_mut("a").unwrap().listening = vec!["u1.t".into()];
     assert_eq!(summary_of(&app, "a"), (Ok, "Listening on 1 account".into()));
     app.plugins.get_mut("a").unwrap().listening = vec!["u1.t".into(), "u2.t".into()];
@@ -1610,7 +1610,7 @@ fn a_ready_that_asks_for_accounts_gets_them_once() {
         plugin_event(
             &app,
             "new",
-            ready_event(&["accounts"], &[], Vec::new(), &[]),
+            ready_event(&[Need::Accounts], &[], Vec::new(), &[]),
         ),
         &ctx,
     );
@@ -1627,7 +1627,7 @@ fn a_ready_that_asks_for_accounts_gets_them_once() {
         plugin_event(
             &app,
             "new",
-            ready_event(&["accounts"], &[], Vec::new(), &[]),
+            ready_event(&[Need::Accounts], &[], Vec::new(), &[]),
         ),
         &ctx,
     );
@@ -1653,7 +1653,12 @@ fn presence_goes_only_to_plugins_that_need_it() {
         plugin_event(
             &app,
             "light",
-            ready_event(&["presence"], &["presence_display"], Vec::new(), &[]),
+            ready_event(
+                &[Need::Presence],
+                &[Capability::PresenceDisplay],
+                Vec::new(),
+                &[],
+            ),
         ),
         &ctx,
     );
@@ -1661,7 +1666,7 @@ fn presence_goes_only_to_plugins_that_need_it() {
         plugin_event(
             &app,
             "other",
-            ready_event(&[], &["presence_display"], Vec::new(), &[]),
+            ready_event(&[], &[Capability::PresenceDisplay], Vec::new(), &[]),
         ),
         &ctx,
     );
@@ -1696,7 +1701,7 @@ fn presence_is_resent_only_when_it_changes() {
         plugin_event(
             &app,
             "light",
-            ready_event(&["presence"], &[], Vec::new(), &[]),
+            ready_event(&[Need::Presence], &[], Vec::new(), &[]),
         ),
         &ctx,
     );
@@ -1739,7 +1744,7 @@ fn presence_is_resent_when_the_account_signs_out() {
         plugin_event(
             &app,
             "light",
-            ready_event(&["presence"], &[], Vec::new(), &[]),
+            ready_event(&[Need::Presence], &[], Vec::new(), &[]),
         ),
         &ctx,
     );
@@ -1767,7 +1772,11 @@ fn a_plugin_that_drops_and_regains_the_accounts_need_is_sent_them_again() {
     assert!(app.plugins["p"].sent_accounts.is_none());
     sent(&mut commands);
     app.handle_service(
-        plugin_event(&app, "p", ready_event(&["accounts"], &[], Vec::new(), &[])),
+        plugin_event(
+            &app,
+            "p",
+            ready_event(&[Need::Accounts], &[], Vec::new(), &[]),
+        ),
         &ctx,
     );
     assert!(sent(&mut commands).iter().any(|c| matches!(
@@ -2071,7 +2080,7 @@ fn signing_out_with_a_plugin_off_still_clears_its_sign_in() {
         plugin_event(
             &app,
             "ca",
-            ready_event(&["accounts"], &[], Vec::new(), &["u-me.t1"]),
+            ready_event(&[Need::Accounts], &[], Vec::new(), &["u-me.t1"]),
         ),
         &ctx,
     );
@@ -2160,7 +2169,11 @@ fn a_sign_out_stays_queued_until_the_plugin_confirms_or_the_account_returns() {
     assert_eq!(app.settings.plugins[0].forget, vec!["u-me.t1".to_owned()]);
     // A ready that didn't clear it keeps it queued.
     app.handle_service(
-        plugin_event(&app, "ca", ready_event(&["accounts"], &[], Vec::new(), &[])),
+        plugin_event(
+            &app,
+            "ca",
+            ready_event(&[Need::Accounts], &[], Vec::new(), &[]),
+        ),
         &ctx,
     );
     assert_eq!(app.settings.plugins[0].forget, vec!["u-me.t1".to_owned()]);
@@ -2296,7 +2309,7 @@ fn a_new_need_waits_for_approval() {
             plugin_event(
                 app,
                 "light",
-                ready_event(&["accounts", "presence"], &[], Vec::new(), &[]),
+                ready_event(&[Need::Accounts, Need::Presence], &[], Vec::new(), &[]),
             ),
             &ctx,
         );
@@ -2331,7 +2344,7 @@ fn approved_needs_flow_and_denied_ones_dont() {
             plugin_event(
                 app,
                 "light",
-                ready_event(&["accounts", "presence"], &[], Vec::new(), &[]),
+                ready_event(&[Need::Accounts, Need::Presence], &[], Vec::new(), &[]),
             ),
             &ctx,
         );

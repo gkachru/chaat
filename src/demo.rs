@@ -7,6 +7,7 @@ use crate::app::{App, Conversation};
 use crate::backend::AuthStatus;
 use crate::html::{self, RichText};
 use crate::model::*;
+use crate::plugin::registry::{Capability, Need};
 
 const ME: &str = "u-me";
 const MINUTE: i64 = 60_000;
@@ -848,8 +849,8 @@ fn populate_plugins(app: &mut App) {
         description: Some("Tells Chaat who is calling you in Teams.".into()),
         docs_url: Some("https://example.com/call-alerts".into()),
     };
-    alerts.offers = vec!["call_alerts"];
-    alerts.needs = vec!["accounts"];
+    alerts.offers = vec![Capability::CallAlerts];
+    alerts.needs = vec![Need::Accounts];
     alerts.listening = accounts.first().map(|a| a.id.clone()).into_iter().collect();
     if let Some(second) = accounts.get(1) {
         alerts.sign_in.push(PluginSignIn {
@@ -867,8 +868,8 @@ fn populate_plugins(app: &mut App) {
         description: Some("Shows your Teams presence on a bulb.".into()),
         docs_url: None,
     };
-    light.offers = vec!["presence_display"];
-    light.needs = vec!["presence"];
+    light.offers = vec![Capability::PresenceDisplay];
+    light.needs = vec![Need::Presence];
     // Asks for presence; the person has not answered yet.
     light.pending_needs = vec!["presence"];
     light.options = demo_light_options();
@@ -1273,8 +1274,8 @@ pub fn populate_agents(app: &mut App) {
     let state = app.plugins.entry("demo-agents".into()).or_default();
     state.running = true;
     state.info.name = Some("Agents".into());
-    state.offers = vec![crate::plugin::registry::AGENTS];
-    state.needs = vec!["messages"];
+    state.offers = vec![Capability::Agents];
+    state.needs = vec![Need::Messages];
 
     let account = app.id.clone().unwrap_or_default();
     let conversation = ConversationId::Chat(AGENTS_CHAT.into());

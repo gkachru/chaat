@@ -525,7 +525,9 @@ fn rings(app: &mut App, ctx: &egui::Context) {
                 .plugins
                 .values()
                 .flat_map(|state| {
-                    let call_alerts = state.offers.contains(&crate::plugin::registry::CALL_ALERTS);
+                    let call_alerts = state
+                        .offers
+                        .contains(&crate::plugin::registry::Capability::CallAlerts);
                     state
                         .sign_in
                         .iter()
