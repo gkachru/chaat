@@ -99,9 +99,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     if app.settings.perf_overlay {
         perf(app, &ctx);
     }
-    if !app.demo {
-        widgets::request_photos(app, &ctx);
-    }
+    widgets::request_photos(app, &ctx);
 }
 
 /// Above the cached workspace while its account needs to sign in again: why,

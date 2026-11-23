@@ -1161,6 +1161,8 @@ pub enum Action {
     RetryRelay,
     /// Look up the names Graph left out of a system event, by user id.
     LookUpNames(Vec<String>),
+    /// Load the photos of avatars drawn without one, by user id.
+    LoadPhotos(Vec<String>),
     TogglePerfOverlay,
     /// Open the folder holding Chaat's log in the file manager.
     OpenLogFolder,

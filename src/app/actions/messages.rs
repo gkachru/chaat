@@ -156,6 +156,25 @@ impl App {
         self.send_account(AccountCommand::DropOutbox(local_id));
     }
 
+    /// Asks for each photo not loaded yet, or whose texture was evicted;
+    /// the demo has no directory to ask.
+    pub(in crate::app) fn apply_load_photos(&mut self, users: Vec<String>, ctx: &egui::Context) {
+        if self.demo {
+            return;
+        }
+        for user in users {
+            let missing = match self.photos.get(&user) {
+                Some(Image::Ready(uri)) => !crate::images::contains(ctx, uri),
+                None => true,
+                _ => false,
+            };
+            if missing {
+                self.photos.insert(user.clone(), Image::Loading);
+                self.backend.send(AccountCommand::Photo(user));
+            }
+        }
+    }
+
     pub(in crate::app) fn apply_load_media(&mut self, url: String, ctx: &egui::Context) {
         let missing = match self.media.get(&url) {
             Some(Image::Ready(uri)) => !crate::images::contains(ctx, uri),

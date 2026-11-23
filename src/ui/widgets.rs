@@ -452,24 +452,16 @@ pub fn section_label(ui: &mut Ui, palette: &Palette, text: &str) {
     );
 }
 
-/// Requests photos for avatars drawn this frame (collected by [`avatar`]).
+/// Asks for the photos of avatars drawn this frame without one (collected
+/// by [`avatar`]).
 pub fn request_photos(app: &mut App, ctx: &egui::Context) {
     let wants: Vec<String> = ctx.data_mut(|data| {
         std::mem::take(
             data.get_temp_mut_or_default::<Vec<String>>(egui::Id::new("chaat-photo-wants")),
         )
     });
-    for user in wants {
-        let missing = match app.photos.get(&user) {
-            Some(Image::Ready(uri)) => !crate::images::contains(ctx, uri),
-            None => true,
-            _ => false,
-        };
-        if missing {
-            app.photos.insert(user.clone(), Image::Loading);
-            app.backend
-                .send(crate::backend::AccountCommand::Photo(user));
-        }
+    if !wants.is_empty() {
+        app.actions.push(Action::LoadPhotos(wants));
     }
 }
 

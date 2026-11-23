@@ -1524,6 +1524,7 @@ impl App {
             Action::AddFiles(paths) => self.add_files(paths),
             Action::RemoveFile(index) => self.apply_remove_file(index),
             Action::LoadMedia(url) => self.apply_load_media(url, ctx),
+            Action::LoadPhotos(users) => self.apply_load_photos(users, ctx),
             Action::SignIn => self.apply_sign_in(),
             Action::SignInWithCode => self.backend.send(AccountCommand::SignIn {
                 extra_scopes: Vec::new(),
@@ -1846,6 +1847,25 @@ mod tests {
             body: RichText::plain(id),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn photos_are_asked_once_while_loading_and_never_in_the_demo() {
+        let (mut app, mut commands) = app();
+        let ctx = egui::Context::default();
+        while commands.try_recv().is_ok() {}
+        app.apply(Action::LoadPhotos(vec!["u-1".into()]), &ctx);
+        assert!(matches!(
+            commands.try_recv().unwrap(),
+            Command::Account(AccountCommand::Photo(id)) if id == "u-1"
+        ));
+        assert!(matches!(app.photos.get("u-1"), Some(Image::Loading)));
+        app.apply(Action::LoadPhotos(vec!["u-1".into()]), &ctx);
+        assert!(commands.try_recv().is_err(), "not asked while loading");
+
+        let (mut demo, _dir) = demo_app();
+        demo.apply(Action::LoadPhotos(vec!["u-2".into()]), &ctx);
+        assert!(!demo.photos.contains_key("u-2"), "the demo asks nobody");
     }
 
     #[test]
