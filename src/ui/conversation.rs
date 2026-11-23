@@ -2141,6 +2141,11 @@ fn thread_card(
                         .clicked()
                     {
                         actions.push(Action::ToggleThread(root.id.clone()));
+                        // Expanding shows the thread as Graph has it now.
+                        actions.push(Action::LoadReplies {
+                            conversation: conversation.clone(),
+                            message: root.id.clone(),
+                        });
                     }
                 }
                 let shown: Vec<&Message> = if expanded || count <= 2 {

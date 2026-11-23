@@ -536,27 +536,32 @@ impl Graph {
         })
     }
 
-    /// A post's replies (ChannelMessage.Read.All).
+    /// All of a post's replies, oldest first (ChannelMessage.Read.All). Pages
+    /// of 50, the endpoint's largest, up to `REPLY_PAGES` of them: more than
+    /// the 200 a channel page's `$expand=replies` carries.
     pub async fn channel_replies(
         &self,
         team: &str,
         channel: &str,
         root: &str,
     ) -> Result<Vec<Message>, GraphError> {
+        const REPLY_PAGES: usize = 20;
         let conversation = ConversationId::Channel {
             team: team.to_owned(),
             channel: channel.to_owned(),
         };
-        let page: g::Page<g::ChatMessage> = self
-            .get(&format!(
-                "teams/{}/channels/{}/messages/{}/replies?$top={PAGE}",
-                segment(team),
-                segment(channel),
-                segment(root)
-            ))
+        let raw: Vec<g::ChatMessage> = self
+            .pages(
+                &format!(
+                    "teams/{}/channels/{}/messages/{}/replies?$top={PAGE}",
+                    segment(team),
+                    segment(channel),
+                    segment(root)
+                ),
+                REPLY_PAGES,
+            )
             .await?;
-        let mut replies: Vec<Message> = page
-            .value
+        let mut replies: Vec<Message> = raw
             .into_iter()
             .map(|m| convert::message(m, Some(&conversation), self.my_id(), &self.base))
             .collect();
@@ -897,6 +902,39 @@ mod tests {
             testing::session("at", &server.uri()).await,
             &server.uri(),
         )
+    }
+
+    #[tokio::test]
+    async fn channel_replies_follow_next_links_oldest_first() {
+        let server = MockServer::start().await;
+        let replies = "/teams/t/channels/c/messages/root/replies";
+        Mock::given(method("GET"))
+            .and(path(replies))
+            .and(query_param("$top", "50"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "value": [{"id": "r3", "createdDateTime": "2026-10-10T09:03:00Z"}],
+                "@odata.nextLink": format!("{}{replies}?$skiptoken=two", server.uri())
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(replies))
+            .and(query_param("$skiptoken", "two"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "value": [
+                    {"id": "r2", "createdDateTime": "2026-10-10T09:02:00Z"},
+                    {"id": "r1", "createdDateTime": "2026-10-10T09:01:00Z"}
+                ]
+            })))
+            .mount(&server)
+            .await;
+        let got = graph(&server)
+            .await
+            .channel_replies("t", "c", "root")
+            .await
+            .unwrap();
+        let ids: Vec<&str> = got.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["r1", "r2", "r3"]);
     }
 
     #[tokio::test]

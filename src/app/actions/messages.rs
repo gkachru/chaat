@@ -81,11 +81,22 @@ impl App {
         }
     }
 
+    /// Asks Graph for a thread's replies, at most once a minute per thread.
     pub(in crate::app) fn apply_load_replies(
         &mut self,
         conversation: ConversationId,
         message: String,
     ) {
+        let now = Instant::now();
+        let entry = self.conversations.entry(conversation.clone()).or_default();
+        if entry
+            .replies_asked
+            .get(&message)
+            .is_some_and(|at| now.duration_since(*at) < Self::REPLIES_REUSE)
+        {
+            return;
+        }
+        entry.replies_asked.insert(message.clone(), now);
         self.send_account(AccountCommand::LoadReplies {
             conversation,
             root: message,

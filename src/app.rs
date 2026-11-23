@@ -68,6 +68,8 @@ pub struct Conversation {
     pub heights: HashMap<String, f32>,
     /// Channel threads shown expanded.
     pub expanded: HashSet<String>,
+    /// When each thread's replies were last asked for, by root id.
+    pub replies_asked: HashMap<String, Instant>,
     /// First visible row and its offset from the viewport top.
     pub history_anchor: Option<(String, f32)>,
     pub restore_history_anchor: bool,
@@ -1429,6 +1431,8 @@ impl App {
 
     /// How long the find query stays unchanged before Microsoft Search runs.
     const FIND_REMOTE_DELAY: Duration = Duration::from_millis(500);
+    /// A thread expanded again this soon shows the replies already loaded.
+    const REPLIES_REUSE: Duration = Duration::from_secs(60);
 
     // -- Actions -------------------------------------------------------------------
 
@@ -1847,6 +1851,58 @@ mod tests {
             body: RichText::plain(id),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn thread_replies_are_asked_once_a_minute_and_keep_unsent_ones() {
+        let (mut app, mut commands) = app();
+        let ctx = egui::Context::default();
+        while commands.try_recv().is_ok() {}
+        let channel = ConversationId::Channel {
+            team: "t".into(),
+            channel: "c".into(),
+        };
+        let load = || Action::LoadReplies {
+            conversation: channel.clone(),
+            message: "root".into(),
+        };
+        app.apply(load(), &ctx);
+        assert!(matches!(
+            commands.try_recv().unwrap(),
+            Command::Account(AccountCommand::LoadReplies { root, .. }) if root == "root"
+        ));
+        app.apply(load(), &ctx);
+        assert!(commands.try_recv().is_err(), "reused within a minute");
+
+        let message = |id: &str, delivery: Delivery| Message {
+            id: id.into(),
+            delivery,
+            ..Message::default()
+        };
+        let mut root = message("root", Delivery::Sent);
+        root.replies = vec![
+            message("old", Delivery::Sent),
+            message("local-1", Delivery::Sending),
+            message("local-2", Delivery::Failed),
+        ];
+        app.conversations.get_mut(&channel).unwrap().messages = vec![root];
+        app.handle(
+            AccountEvent::Replies {
+                conversation: channel.clone(),
+                root: "root".into(),
+                replies: vec![
+                    message("old", Delivery::Sent),
+                    message("new", Delivery::Sent),
+                ],
+            },
+            &ctx,
+        );
+        let ids: Vec<String> = app.conversations[&channel].messages[0]
+            .replies
+            .iter()
+            .map(|r| r.id.clone())
+            .collect();
+        assert_eq!(ids, ["old", "new", "local-1", "local-2"]);
     }
 
     #[test]

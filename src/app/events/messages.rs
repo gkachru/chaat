@@ -60,7 +60,14 @@ impl App {
         entry.layout.invalidate();
         entry.heights.remove(&root);
         if let Some(root) = entry.messages.iter_mut().find(|m| m.id == root) {
+            // Replies still sending, or failed with Retry, stay after the
+            // ones Graph has.
+            let unsent: Vec<Message> = std::mem::take(&mut root.replies)
+                .into_iter()
+                .filter(|r| r.delivery != Delivery::Sent && !replies.iter().any(|n| n.id == r.id))
+                .collect();
             root.replies = replies;
+            root.replies.extend(unsent);
         }
     }
 

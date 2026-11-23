@@ -51,7 +51,7 @@ Status as of Chaat 0.1 (unreleased).
 | Feature | Status | Notes |
 |---|---|---|
 | Joined teams and their channels (incl. private and shared) | Works | Team.ReadBasic.All, Channel.ReadBasic.All |
-| Channel posts with threaded replies | Works, needs admin consent | ChannelMessage.Read.All. Without it, Chaat explains and offers "Request access" and "Open in Teams" |
+| Channel posts with threaded replies | Works, needs admin consent | ChannelMessage.Read.All. Without it, Chaat explains and offers "Request access" and "Open in Teams". Posts arrive with their replies (`$expand=replies`, which Microsoft documents as up to 200 per post). Expanding a collapsed thread ("N replies from …") loads all of its replies again, up to 1,000, at most once a minute per thread. Tested headless only |
 | New posts and thread replies | Works | ChannelMessage.Send |
 
 ## Calls and meetings

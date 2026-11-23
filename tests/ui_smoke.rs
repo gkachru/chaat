@@ -1644,6 +1644,48 @@ fn channel_replies_land_in_their_thread() {
 }
 
 #[test]
+fn expanding_a_thread_asks_for_its_replies() {
+    let mut h = Harness::new();
+    let channel = ConversationId::Channel {
+        team: "t-eng".into(),
+        channel: "19:eng-desktop@thread.tacv2".into(),
+    };
+    h.act(Action::OpenConversation(channel.clone()));
+    let view = h.app.conversations.get_mut(&channel).unwrap();
+    let root = &mut view.messages[0];
+    let template = root
+        .replies
+        .first()
+        .cloned()
+        .unwrap_or_else(|| root.clone());
+    root.replies = (0..4)
+        .map(|i| {
+            let mut reply = template.clone();
+            reply.id = format!("reply-{i}");
+            reply.replies.clear();
+            reply
+        })
+        .collect();
+    let root_id = root.id.clone();
+    view.expanded.remove(&root_id);
+    view.layout.invalidate();
+    h.frames(3);
+
+    let link = painted_texts(&h)
+        .into_iter()
+        .find(|text| text.starts_with("4 replies from"))
+        .expect("the collapsed thread offers its replies");
+    h.click(text_center(&h, &link).unwrap());
+    h.frames(2);
+    let view = h.app.conversation(&channel).unwrap();
+    assert!(view.expanded.contains(&root_id), "the thread expands");
+    assert!(
+        view.replies_asked.contains_key(&root_id),
+        "and asks Graph for its replies"
+    );
+}
+
+#[test]
 fn switcher_finds_people_and_messages() {
     let mut h = Harness::new();
     h.act(Action::OpenSwitcher);
