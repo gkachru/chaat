@@ -21,7 +21,11 @@ impl App {
         conversation: ConversationId,
         message: String,
     ) {
-        self.open_conversation(conversation);
+        // Already open (the pinned bar): only jump. Reopening would pull the
+        // view to the end and the cursor into the composer.
+        if self.open.as_ref() != Some(&conversation) || self.settings_page.is_some() {
+            self.open_conversation(conversation);
+        }
         self.jump_to = Some(message);
         self.overlay = None;
     }

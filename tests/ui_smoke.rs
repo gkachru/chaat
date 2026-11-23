@@ -6287,6 +6287,50 @@ fn jump_to_latest_shows_when_scrolled_up_and_returns_to_the_end() {
 }
 
 #[test]
+fn opening_a_pinned_message_in_the_open_chat_scrolls_to_it_and_keeps_focus() {
+    each_view(|h| {
+        let chat = first_chat(h);
+        h.act(Action::OpenConversation(chat.clone()));
+        h.frames(3);
+        let entry = h.app.conversations.get_mut(&chat).unwrap();
+        let template = entry.messages.last().unwrap().clone();
+        let count = 120;
+        let mut all: Vec<_> = (0..count)
+            .map(|i| {
+                let mut m = template.clone();
+                m.id = format!("long-{i}");
+                m.created = template.created - (count - i) as i64 * 60_000;
+                m
+            })
+            .collect();
+        all.append(&mut entry.messages);
+        entry.messages = all;
+        entry.layout.invalidate();
+        h.app.scroll_to_end = 4;
+        h.frames(8);
+        assert_eq!(jump_buttons(h), 0, "starts at the bottom");
+        h.ctx.memory_mut(|m| {
+            if let Some(id) = m.focused() {
+                m.surrender_focus(id);
+            }
+        });
+        h.frames(1);
+
+        h.act(Action::OpenMessage {
+            conversation: chat.clone(),
+            message: "long-5".into(),
+        });
+        assert_eq!(
+            h.ctx.memory(|m| m.focused()),
+            None,
+            "the composer does not take focus"
+        );
+        h.frames(40);
+        assert_eq!(jump_buttons(h), 1, "scrolled up to the pinned message");
+    });
+}
+
+#[test]
 fn a_draft_previews_in_its_chat_row_but_not_in_the_open_chat() {
     each_view(|h| {
         let other = ConversationId::Chat("19:demo-grace@unq.gbl.spaces".into());

@@ -648,6 +648,14 @@ fn history(app: &mut App, ui: &mut egui::Ui, conversation: &ConversationId) {
     let now = crate::time::now();
     let mut actions: Vec<Action> = Vec::new();
     let jump = app.jump_to.take();
+    // A jump to a loaded message wins over the end-scroll of an opening.
+    if jump.as_ref().is_some_and(|id| {
+        app.conversations
+            .get(conversation)
+            .is_some_and(|view| view.messages.iter().any(|m| &m.id == id))
+    }) {
+        app.scroll_to_end = 0;
+    }
     let hover_id = egui::Id::new(("chaat-hover-row", conversation.key()));
     let previous_hover: Option<(String, egui::Rect)> = ui.ctx().data(|d| d.get_temp(hover_id));
     let pointer = ui.input(|i| i.pointer.hover_pos());
