@@ -4,10 +4,13 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use super::*;
+
+const MESSAGES: &str = "messages";
 use crate::app::PluginState;
 use crate::backend::{Backend, Event, Merge, Waker};
 use crate::model::{Delivery, Message};
 use crate::paths::AppDirs;
+use crate::plugin::registry;
 use crate::settings::{PluginEntry, Settings};
 
 const ACCOUNT: &str = "u.t";
@@ -112,9 +115,29 @@ fn propose(app: &mut App, request: u64, proposal: AgentProposal) {
 }
 
 fn accept(id: &str) -> Action {
-    Action::AgentSend {
+    Action::Agent(AgentAction::Send {
         proposal: id.into(),
-    }
+    })
+}
+
+#[test]
+fn agent_events_need_messages() {
+    let event = || HostMessage::AgentEvent {
+        account: ACCOUNT.into(),
+        event: json!({"type": "new_message"}),
+    };
+    let mut rig = rig(false);
+    rig.app.agent_send("a", event());
+    assert!(lines(&mut rig.service).is_empty());
+    // An answer to the plugin's own request is never held back.
+    rig.app.agent_answer("a", 1, Err("not_allowed"));
+    assert_eq!(lines(&mut rig.service).len(), 1);
+    let mut rig = self::rig(true);
+    rig.app.agent_send("a", event());
+    assert_eq!(lines(&mut rig.service).len(), 1);
+    rig.app.plugins.get_mut("a").unwrap().running = false;
+    rig.app.agent_send("a", event());
+    assert!(lines(&mut rig.service).is_empty());
 }
 
 #[test]
@@ -380,9 +403,9 @@ fn edit_fills_draft() {
     propose(&mut rig.app, 1, reply("draft me"));
     lines(&mut rig.service);
     rig.app.apply(
-        Action::AgentEdit {
+        Action::Agent(AgentAction::Edit {
             proposal: "p1".into(),
-        },
+        }),
         &rig.ctx,
     );
     assert_eq!(rig.app.drafts[&conversation()].text, "draft me");
@@ -443,9 +466,9 @@ fn accept_after_delete_outdated() {
     lines(&mut rig.service);
     load(&mut rig.app, &[]);
     rig.app.apply(
-        Action::AgentAcceptReaction {
+        Action::Agent(AgentAction::AcceptReaction {
             proposal: "p1".into(),
-        },
+        }),
         &rig.ctx,
     );
     let sent = lines(&mut rig.service);
@@ -469,15 +492,15 @@ fn discard_and_accept_reaction() {
     propose(&mut rig.app, 2, reaction("m2"));
     lines(&mut rig.service);
     rig.app.apply(
-        Action::AgentDiscard {
+        Action::Agent(AgentAction::Discard {
             proposal: "p1".into(),
-        },
+        }),
         &rig.ctx,
     );
     rig.app.apply(
-        Action::AgentAcceptReaction {
+        Action::Agent(AgentAction::AcceptReaction {
             proposal: "p2".into(),
-        },
+        }),
         &rig.ctx,
     );
     let outcomes: Vec<String> = lines(&mut rig.service)
@@ -494,9 +517,11 @@ fn discard_and_accept_reaction() {
 #[test]
 fn access_actions_edit_settings() {
     let mut rig = rig(true);
-    let on = |on| Action::LetAgentsRead {
-        conversation: conversation(),
-        on,
+    let on = |on| {
+        Action::Agent(AgentAction::LetRead {
+            conversation: conversation(),
+            on,
+        })
     };
     rig.app.apply(on(true), &rig.ctx);
     assert!(rig.app.agent_access_of(ACCOUNT).can_read(&conversation()));
@@ -507,10 +532,10 @@ fn access_actions_edit_settings() {
         ..AgentAccess::default()
     };
     rig.app.apply(
-        Action::SetAgentAccess {
+        Action::Agent(AgentAction::SetAccess {
             account: ACCOUNT.into(),
             access: all.clone(),
-        },
+        }),
         &rig.ctx,
     );
     assert_eq!(rig.app.agent_access_of(ACCOUNT), all);
@@ -552,10 +577,10 @@ fn proposals_do_not_outlive_their_plugin_or_access() {
     propose(&mut rig.app, 1, reply("hello"));
     lines(&mut rig.service);
     rig.app.apply(
-        Action::LetAgentsRead {
+        Action::Agent(AgentAction::LetRead {
             conversation: conversation(),
             on: false,
-        },
+        }),
         &rig.ctx,
     );
     assert!(rig.app.agent_proposals.get("p1").is_none());

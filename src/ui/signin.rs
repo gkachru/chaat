@@ -6,7 +6,7 @@ use super::widgets;
 use crate::app::App;
 use crate::app::SetupStage;
 use crate::backend::AuthStatus;
-use crate::model::Action;
+use crate::model::{Action, SetupAction};
 use crate::theme;
 use crate::theme::Icon;
 
@@ -245,7 +245,7 @@ fn state_card(app: &mut App, ui: &mut egui::Ui) {
             if railed(app) && !matches!(status, AuthStatus::Expired { .. }) {
                 ui.add_space(4.0);
                 if ui.link("Use a different setup file").clicked() {
-                    app.actions.push(Action::ChooseSetupFile);
+                    app.actions.push(Action::Setup(SetupAction::ChooseFile));
                 }
             }
             ui.add_space(8.0);
@@ -433,7 +433,8 @@ fn connect_step(app: &mut App, ui: &mut egui::Ui) {
                 "Enter details manually"
             };
             if ui.link(label).clicked() {
-                app.actions.push(Action::ShowSetupManual(!manual));
+                app.actions
+                    .push(Action::Setup(SetupAction::ShowManual(!manual)));
             }
         }
         SetupStage::Passphrase(_) | SetupStage::Opening(_) => {
@@ -456,7 +457,7 @@ fn connect_step(app: &mut App, ui: &mut egui::Ui) {
         && matches!(app.setup.stage, SetupStage::Failed(_))
         && ui.link("Back to sign in").clicked()
     {
-        app.actions.push(Action::CancelSetup);
+        app.actions.push(Action::Setup(SetupAction::Cancel));
     }
 }
 

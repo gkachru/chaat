@@ -1077,13 +1077,7 @@ impl Worker {
         };
         let (stop, stopped) = watch::channel(false);
         let graph = Arc::clone(&account.graph);
-        let me = account
-            .record
-            .id
-            .split('.')
-            .next()
-            .unwrap_or_default()
-            .to_owned();
+        let me = account.record.user_id().to_owned();
         let out = self.out.clone();
         let internal = self.internal.clone();
         let secrets = Arc::clone(&self.secrets);
@@ -1342,7 +1336,7 @@ impl Worker {
                 out.send(Event::Reachable(!lost));
             }
             if result.is_ok() && resource == Resource::Chats {
-                let me = record.id.split('.').next().unwrap_or_default().to_owned();
+                let me = record.user_id().to_owned();
                 let people = contacts_of(&store, me, record.tenant_id.clone()).await;
                 let _ = internal.send(Internal::Contacts { people, trigger });
             }
@@ -1610,7 +1604,7 @@ impl Worker {
                 checked.insert(entry.conversation.clone());
             }
             drop(checked);
-            let me = record.id.split('.').next().unwrap_or_default().to_owned();
+            let me = record.user_id().to_owned();
             let recent = {
                 let key = entry.conversation.clone();
                 let store = Arc::clone(&store);
@@ -1656,13 +1650,7 @@ impl Worker {
         let graph = Arc::clone(&account.graph);
         let store = Arc::clone(&account.store);
         let out = self.out.clone();
-        let me = account
-            .record
-            .id
-            .split('.')
-            .next()
-            .unwrap_or_default()
-            .to_owned();
+        let me = account.record.user_id().to_owned();
         tokio::spawn(async move {
             match graph.create_chat(&me, &others, topic.as_deref()).await {
                 Ok(chat) => {
@@ -1709,13 +1697,7 @@ impl Worker {
         let graph = Arc::clone(&account.graph);
         let store = Arc::clone(&account.store);
         let out = self.out.clone();
-        let me = account
-            .record
-            .id
-            .split('.')
-            .next()
-            .unwrap_or_default()
-            .to_owned();
+        let me = account.record.user_id().to_owned();
         tokio::spawn(async move {
             // The membership id is read now, never kept: it changes when
             // the person is removed and added again.
@@ -1780,13 +1762,7 @@ impl Worker {
         let Some(account) = &self.account else { return };
         let graph = Arc::clone(&account.graph);
         let out = self.out.clone();
-        let me = account
-            .record
-            .id
-            .split('.')
-            .next()
-            .unwrap_or_default()
-            .to_owned();
+        let me = account.record.user_id().to_owned();
         tokio::spawn(async move {
             match graph.set_preferred_presence(&me, availability).await {
                 Ok(()) => {
@@ -1803,13 +1779,7 @@ impl Worker {
         let Some(account) = &self.account else { return };
         let graph = Arc::clone(&account.graph);
         let out = self.out.clone();
-        let me = account
-            .record
-            .id
-            .split('.')
-            .next()
-            .unwrap_or_default()
-            .to_owned();
+        let me = account.record.user_id().to_owned();
         tokio::spawn(async move {
             match graph.set_status_message(&me, &text, expires).await {
                 Ok(()) => {
@@ -1871,13 +1841,7 @@ impl Worker {
         }
         self.session_refreshed = Some(now);
         let graph = Arc::clone(&account.graph);
-        let me = account
-            .record
-            .id
-            .split('.')
-            .next()
-            .unwrap_or_default()
-            .to_owned();
+        let me = account.record.user_id().to_owned();
         let client = config.client_id.clone();
         tokio::spawn(async move {
             if let Err(error) = graph.set_presence_session(&me, &client, false, 60).await {
@@ -1895,13 +1859,7 @@ impl Worker {
         let (Some(account), Some(config)) = (&self.account, &self.config) else {
             return;
         };
-        let me = account
-            .record
-            .id
-            .split('.')
-            .next()
-            .unwrap_or_default()
-            .to_owned();
+        let me = account.record.user_id().to_owned();
         let clear = account.graph.clear_presence_session(&me, &config.client_id);
         if let Ok(Err(error)) = tokio::time::timeout(Duration::from_secs(3), clear).await {
             log::info!("could not end the presence session: {error}");
@@ -1928,13 +1886,7 @@ impl Worker {
         let graph = Arc::clone(&account.graph);
         let store = Arc::clone(&account.store);
         let out = self.out.clone();
-        let me = account
-            .record
-            .id
-            .split('.')
-            .next()
-            .unwrap_or_default()
-            .to_owned();
+        let me = account.record.user_id().to_owned();
         tokio::spawn(async move {
             match graph.delete_message(&me, &conversation, &message).await {
                 Ok(()) => {
@@ -1970,13 +1922,7 @@ impl Worker {
     fn mark_read(&mut self, chat: String) {
         let Some(account) = &self.account else { return };
         let graph = Arc::clone(&account.graph);
-        let me = account
-            .record
-            .id
-            .split('.')
-            .next()
-            .unwrap_or_default()
-            .to_owned();
+        let me = account.record.user_id().to_owned();
         let tenant = account.record.tenant_id.clone();
         tokio::spawn(async move {
             if let Err(error) = graph.mark_chat_read(&chat, &me, &tenant).await {
@@ -1990,13 +1936,7 @@ impl Worker {
         let graph = Arc::clone(&account.graph);
         let store = Arc::clone(&account.store);
         let out = self.out.clone();
-        let me = account
-            .record
-            .id
-            .split('.')
-            .next()
-            .unwrap_or_default()
-            .to_owned();
+        let me = account.record.user_id().to_owned();
         let tenant = account.record.tenant_id.clone();
         tokio::spawn(async move {
             match graph.hide_chat(&chat, &me, &tenant, hide).await {
@@ -2034,13 +1974,7 @@ impl Worker {
         let Some(account) = &self.account else { return };
         let graph = Arc::clone(&account.graph);
         let out = self.out.clone();
-        let me = account
-            .record
-            .id
-            .split('.')
-            .next()
-            .unwrap_or_default()
-            .to_owned();
+        let me = account.record.user_id().to_owned();
         let tenant = account.record.tenant_id.clone();
         tokio::spawn(async move {
             if let Err(error) = graph.mark_chat_unread(&chat, &me, &tenant).await {
@@ -2153,15 +2087,9 @@ impl Worker {
 
     /// The signed-in person's user id.
     fn me_id(&self) -> Option<String> {
-        self.account.as_ref().map(|account| {
-            account
-                .record
-                .id
-                .split('.')
-                .next()
-                .unwrap_or_default()
-                .to_owned()
-        })
+        self.account
+            .as_ref()
+            .map(|account| account.record.user_id().to_owned())
     }
 
     /// Looks up a name once per person every ten minutes, like photos.
@@ -2271,7 +2199,7 @@ impl Worker {
             return;
         };
         let store = Arc::clone(&account.store);
-        let me = account.record.id.split('.').next().unwrap_or_default();
+        let me = account.record.user_id();
         let me = me.to_owned();
         tokio::spawn(async move {
             let data = super::agents::answer(store, me, query, access).await;
@@ -2662,7 +2590,7 @@ async fn fetch_resource(
             // leaves the rest of the list as it is.
             let me = crate::model::Member {
                 tenant_id: None,
-                user_id: record.id.split('.').next().unwrap_or_default().to_owned(),
+                user_id: record.user_id().to_owned(),
                 display_name: record.display_name.clone(),
                 email: Some(record.username.clone()).filter(|u| !u.is_empty()),
             };
@@ -2822,7 +2750,7 @@ async fn fetch_resource(
             out.send(Event::MyPresence(presence));
         }
         Resource::Pins(chat) => {
-            let me = record.id.split('.').next().unwrap_or_default();
+            let me = record.user_id();
             let pins = graph.pinned_messages(chat, me).await?;
             out.send(Event::Pins {
                 chat: chat.clone(),

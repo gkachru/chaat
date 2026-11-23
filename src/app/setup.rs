@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use super::App;
 use crate::backend::{AuthStatus, Command};
-use crate::model::Action;
+use crate::model::SetupAction;
 use crate::setup_file::SetupSummary;
 
 /// Set to `1` to show the welcome screen at launch even when Chaat is
@@ -48,10 +48,10 @@ pub struct SetupFlow {
 }
 
 impl App {
-    /// Runs one setup flow action.
-    pub fn setup_action(&mut self, action: Action) {
+    /// Runs one setup action: the file flow and the export form.
+    pub fn apply_setup_action(&mut self, action: SetupAction) {
         match action {
-            Action::ChooseSetupFile => {
+            SetupAction::ChooseFile => {
                 if self.setup_busy() {
                     return;
                 }
@@ -64,13 +64,13 @@ impl App {
                 };
                 self.setup_picked(path);
             }
-            Action::DroppedSetupFile(path) => {
+            SetupAction::DroppedFile(path) => {
                 if self.setup_busy() {
                     return;
                 }
                 self.setup_picked(path);
             }
-            Action::OpenSetupFile => {
+            SetupAction::OpenFile => {
                 let SetupStage::Passphrase(path) = self.setup.stage.clone() else {
                     return;
                 };
@@ -86,7 +86,7 @@ impl App {
                 });
                 self.setup.stage = SetupStage::Opening(path);
             }
-            Action::ApplySetup => {
+            SetupAction::Apply => {
                 let SetupStage::Review(summary) = self.setup.stage.clone() else {
                     return;
                 };
@@ -120,14 +120,16 @@ impl App {
                     }
                 }
             }
-            Action::CancelSetup => {
+            SetupAction::Cancel => {
                 self.discard_setup();
                 self.setup.stage = SetupStage::Idle;
                 self.setup.passphrase.clear();
                 self.setup.error = None;
             }
-            Action::ShowSetupManual(show) => self.setup.manual = show,
-            _ => {}
+            SetupAction::ShowManual(show) => self.setup.manual = show,
+            SetupAction::OpenExportForm(open) => self.open_export_form(open),
+            SetupAction::Export => self.export_setup(),
+            SetupAction::DismissPassphrase => self.dismiss_export_passphrase(),
         }
     }
 
@@ -217,12 +219,12 @@ mod tests {
     #[test]
     fn wrong_extension_failed() {
         let (mut app, _) = app();
-        app.setup_action(Action::DroppedSetupFile("a.txt".into()));
+        app.apply_setup_action(SetupAction::DroppedFile("a.txt".into()));
         assert_eq!(
             app.setup.stage,
             SetupStage::Failed("Only a .chaatsetup file can be imported here".into())
         );
-        app.setup_action(Action::DroppedSetupFile("a.chaatsetup".into()));
+        app.apply_setup_action(SetupAction::DroppedFile("a.chaatsetup".into()));
         assert_eq!(
             app.setup.stage,
             SetupStage::Passphrase(PathBuf::from("a.chaatsetup"))
@@ -232,11 +234,11 @@ mod tests {
     #[test]
     fn open_keeps_passphrase_and_bumps_token() {
         let (mut app, mut commands) = app();
-        app.setup_action(Action::DroppedSetupFile("a.chaatsetup".into()));
+        app.apply_setup_action(SetupAction::DroppedFile("a.chaatsetup".into()));
         app.setup.passphrase = "  Apple Banana-cherry ".into();
         app.setup.error = Some("old".into());
         let before = app.setup.token;
-        app.setup_action(Action::OpenSetupFile);
+        app.apply_setup_action(SetupAction::OpenFile);
         assert_eq!(app.setup.token, before + 1);
         // Kept for a retry; cleared once the file opens (setup_events).
         assert_eq!(app.setup.passphrase, "  Apple Banana-cherry ");
@@ -258,7 +260,7 @@ mod tests {
             _ => panic!("expected OpenSetupFile"),
         }
         // Only from the passphrase stage.
-        app.setup_action(Action::OpenSetupFile);
+        app.apply_setup_action(SetupAction::OpenFile);
         assert!(commands.try_recv().is_err());
     }
 
@@ -267,7 +269,7 @@ mod tests {
         let (mut app, mut commands) = app();
         app.setup.token = 4;
         app.setup.stage = SetupStage::Review(summary());
-        app.setup_action(Action::CancelSetup);
+        app.apply_setup_action(SetupAction::Cancel);
         assert_eq!(app.setup.stage, SetupStage::Idle);
         assert!(matches!(
             commands.try_recv(),
@@ -275,7 +277,7 @@ mod tests {
         ));
         assert_eq!(app.setup.token, 5, "a late answer is stale");
         // Nothing pending: nothing to discard.
-        app.setup_action(Action::CancelSetup);
+        app.apply_setup_action(SetupAction::Cancel);
         assert!(commands.try_recv().is_err());
     }
 
@@ -284,7 +286,7 @@ mod tests {
         let (mut app, mut commands) = app();
         app.setup.token = 7;
         app.setup.stage = SetupStage::Review(summary());
-        app.setup_action(Action::ApplySetup);
+        app.apply_setup_action(SetupAction::Apply);
         let s = summary();
         assert_eq!(app.settings.client_id, s.client_id);
         assert_eq!(app.settings.tenant, s.tenant);
@@ -311,7 +313,7 @@ mod tests {
         app.onboarding_forced = true;
         app.setup.token = 3;
         app.setup.stage = SetupStage::Review(summary());
-        app.setup_action(Action::ApplySetup);
+        app.apply_setup_action(SetupAction::Apply);
         // Still forced while applying, so the progress stays on screen.
         assert!(app.onboarding_forced);
         app.on_setup_event(crate::backend::Event::SetupApplied { token: 3, ok: true });
@@ -321,9 +323,9 @@ mod tests {
     #[test]
     fn manual_toggles() {
         let (mut app, _) = app();
-        app.setup_action(Action::ShowSetupManual(true));
+        app.apply_setup_action(SetupAction::ShowManual(true));
         assert!(app.setup.manual);
-        app.setup_action(Action::ShowSetupManual(false));
+        app.apply_setup_action(SetupAction::ShowManual(false));
         assert!(!app.setup.manual);
     }
 }

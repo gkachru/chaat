@@ -9,7 +9,7 @@ use egui::{Align, CornerRadius, Frame, Key, Layout, Margin, Modifiers, Sense, St
 use super::{composer_tools, find, rich, widgets};
 use crate::app::{App, Draft};
 use crate::model::{
-    Access, Action, AttachmentKind, ChatKind, ConversationId, Delivery, Message,
+    Access, Action, AgentAction, AttachmentKind, ChatKind, ConversationId, Delivery, Message,
     QUICK_REACTION_NAMES, QUICK_REACTIONS,
 };
 use crate::theme::{self, Icon};
@@ -463,10 +463,10 @@ fn agents_menu(
                     let on = menu == super::agents::ReadMenu::Let;
                     let icon = if on { Icon::Plus } else { Icon::Close };
                     if widgets::menu_item(ui, palette, icon, label) {
-                        actions.push(Action::LetAgentsRead {
+                        actions.push(Action::Agent(AgentAction::LetRead {
                             conversation: conversation.clone(),
                             on,
-                        });
+                        }));
                     }
                 }
                 None => {

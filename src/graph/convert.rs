@@ -81,7 +81,7 @@ pub fn chat(chat: g::Chat, me: &str) -> Chat {
         let text = if deleted {
             "This message was deleted".to_owned()
         } else if system {
-            system_summary(preview.event_detail.as_ref(), me)
+            system_summary(&detail_of(preview.event_detail.as_ref()), me)
         } else {
             body_text(preview.body.as_ref()).summary(140)
         };
@@ -106,7 +106,7 @@ pub fn chat(chat: g::Chat, me: &str) -> Chat {
             deleted,
             system,
             membership: system
-                .then(|| membership(preview.event_detail.as_ref()))
+                .then(|| membership(&detail_of(preview.event_detail.as_ref())))
                 .flatten(),
         }
     });
@@ -134,113 +134,93 @@ pub fn chat(chat: g::Chat, me: &str) -> Chat {
     }
 }
 
+/// An `eventDetail` read through [`g::EventDetail`]. Missing, unknown and
+/// malformed details are all `Other`.
+fn detail_of(detail: Option<&serde_json::Value>) -> g::EventDetail {
+    detail.map_or(g::EventDetail::Other, g::EventDetail::from_value)
+}
+
 /// Words for a system event, from its `eventDetail` type. `me` is the
 /// signed-in person's id, to tell a missed call from one they placed.
-fn system_summary(detail: Option<&serde_json::Value>, me: &str) -> String {
-    let Some(detail) = detail else {
-        return "Chat event".into();
-    };
-    let kind = detail
-        .get("@odata.type")
-        .and_then(|t| t.as_str())
-        .unwrap_or_default()
-        .trim_start_matches("#microsoft.graph.");
-    let initiator = detail
-        .pointer("/initiator/user/displayName")
-        .and_then(|n| n.as_str())
-        .filter(|n| !n.is_empty());
-    let who = initiator.unwrap_or("Someone");
-    if let Some(membership) = membership(Some(detail)) {
+fn system_summary(detail: &g::EventDetail, me: &str) -> String {
+    use g::EventDetail as D;
+    let who = |who: &Option<String>| who.clone().unwrap_or_else(|| "Someone".into());
+    if let Some(membership) = membership(detail) {
         return membership.describe(|_| None);
     }
-    match kind {
-        "chatRenamedEventMessageDetail" => {
-            let name = detail
-                .get("chatDisplayName")
-                .and_then(|n| n.as_str())
-                .unwrap_or_default();
-            format!("{who} renamed the chat to “{name}”")
-        }
-        "callStartedEventMessageDetail" if is_meeting(detail) => "Meeting started".into(),
-        "callStartedEventMessageDetail" => "Call started".into(),
-        "callEndedEventMessageDetail" if call_missed(Some(detail), me) => "Missed call".into(),
-        "callEndedEventMessageDetail" => {
-            let ended = if is_meeting(detail) {
+    match detail {
+        D::ChatRenamed {
+            who: by,
+            chat_display_name,
+        } => format!("{} renamed the chat to “{chat_display_name}”", who(by)),
+        D::CallStarted { meeting: true } => "Meeting started".into(),
+        D::CallStarted { meeting: false } => "Call started".into(),
+        D::CallEnded { .. } if call_missed_detail(detail, me) => "Missed call".into(),
+        D::CallEnded {
+            meeting, duration, ..
+        } => {
+            let ended = if *meeting {
                 "Meeting ended"
             } else {
                 "Call ended"
             };
-            match call_duration(detail) {
+            match duration.as_deref().and_then(call_duration) {
                 Some(duration) => format!("{ended} after {duration}"),
                 None => ended.into(),
             }
         }
-        "callRecordingEventMessageDetail" => "Call recorded".into(),
-        "callTranscriptEventMessageDetail" => "Transcript available".into(),
-        "meetingPolicyUpdatedEventMessageDetail" => "Meeting settings changed".into(),
-        "messagePinnedEventMessageDetail" => format!("{who} pinned a message"),
-        "messageUnpinnedEventMessageDetail" => format!("{who} unpinned a message"),
-        "teamRenamedEventMessageDetail" | "channelRenamedEventMessageDetail" => {
-            format!("{who} renamed the conversation")
-        }
-        "channelAddedEventMessageDetail" => format!("{who} added a channel"),
-        "tabUpdatedEventMessageDetail" => format!("{who} updated a tab"),
-        _ => "Chat event".into(),
+        D::CallRecorded => "Call recorded".into(),
+        D::TranscriptAvailable => "Transcript available".into(),
+        D::MeetingPolicyUpdated => "Meeting settings changed".into(),
+        D::MessagePinned { who: by } => format!("{} pinned a message", who(by)),
+        D::MessageUnpinned { who: by } => format!("{} unpinned a message", who(by)),
+        D::ConversationRenamed { who: by } => format!("{} renamed the conversation", who(by)),
+        D::ChannelAdded { who: by } => format!("{} added a channel", who(by)),
+        D::TabUpdated { who: by } => format!("{} updated a tab", who(by)),
+        D::Members { .. } | D::Other => "Chat event".into(),
     }
 }
 
 /// People added to or removed from a chat, by id and, when Graph says, by
 /// name. Graph often leaves `displayName` empty in these events.
-fn membership(detail: Option<&serde_json::Value>) -> Option<crate::model::Membership> {
+fn membership(detail: &g::EventDetail) -> Option<crate::model::Membership> {
     use crate::model::{EventPerson, MemberChange, Membership};
-    let detail = detail?;
-    let change = match detail.get("@odata.type").and_then(|t| t.as_str())? {
-        "#microsoft.graph.membersAddedEventMessageDetail" => MemberChange::Added,
-        "#microsoft.graph.membersDeletedEventMessageDetail" => MemberChange::Removed,
-        "#microsoft.graph.membersJoinedEventMessageDetail" => MemberChange::Joined,
-        "#microsoft.graph.membersLeftEventMessageDetail" => MemberChange::Left,
-        _ => return None,
+    let g::EventDetail::Members { kind, by, members } = detail else {
+        return None;
     };
-    let person = |value: &serde_json::Value| {
-        let id = value.get("id").and_then(|i| i.as_str())?;
-        Some(EventPerson {
-            id: id.to_owned(),
-            name: value
-                .get("displayName")
-                .and_then(|n| n.as_str())
-                .filter(|n| !n.is_empty())
-                .map(str::to_owned),
-        })
+    let person = |person: &g::EventPerson| EventPerson {
+        id: person.id.clone(),
+        name: person.name.clone(),
     };
     Some(Membership {
-        change,
-        by: detail.pointer("/initiator/user").and_then(person),
-        members: detail
-            .get("members")
-            .and_then(|m| m.as_array())
-            .map(|members| members.iter().filter_map(person).collect())
-            .unwrap_or_default(),
+        change: match kind {
+            g::MembershipKind::Added => MemberChange::Added,
+            g::MembershipKind::Removed => MemberChange::Removed,
+            g::MembershipKind::Joined => MemberChange::Joined,
+            g::MembershipKind::Left => MemberChange::Left,
+        },
+        by: by.as_ref().map(person),
+        members: members.iter().map(person).collect(),
     })
 }
 
 /// A call or meeting starting or ending, for its icon and duration.
-fn call_event(detail: Option<&serde_json::Value>) -> Option<crate::model::CallEvent> {
-    let detail = detail?;
-    let ended = match detail.get("@odata.type").and_then(|t| t.as_str())? {
-        "#microsoft.graph.callStartedEventMessageDetail" => false,
-        "#microsoft.graph.callEndedEventMessageDetail" => true,
-        _ => return None,
-    };
-    Some(crate::model::CallEvent {
-        meeting: is_meeting(detail),
-        ended,
-        duration: ended.then(|| call_duration(detail)).flatten(),
-    })
-}
-
-/// Whether a call event belongs to a meeting rather than a call.
-fn is_meeting(detail: &serde_json::Value) -> bool {
-    detail.get("callEventType").and_then(|t| t.as_str()) == Some("meeting")
+fn call_event(detail: &g::EventDetail) -> Option<crate::model::CallEvent> {
+    match detail {
+        g::EventDetail::CallStarted { meeting } => Some(crate::model::CallEvent {
+            meeting: *meeting,
+            ended: false,
+            duration: None,
+        }),
+        g::EventDetail::CallEnded {
+            meeting, duration, ..
+        } => Some(crate::model::CallEvent {
+            meeting: *meeting,
+            ended: true,
+            duration: duration.as_deref().and_then(call_duration),
+        }),
+        _ => None,
+    }
 }
 
 /// Whether an ended call went unanswered by anyone: a call (not a meeting)
@@ -249,24 +229,25 @@ fn is_meeting(detail: &serde_json::Value) -> bool {
 /// decline looks the same, and a group call one other person answered does
 /// not count as missed.
 pub fn call_missed(detail: Option<&serde_json::Value>, me: &str) -> bool {
-    let Some(detail) = detail else {
+    call_missed_detail(&detail_of(detail), me)
+}
+
+fn call_missed_detail(detail: &g::EventDetail, me: &str) -> bool {
+    let g::EventDetail::CallEnded {
+        meeting,
+        participants,
+        initiator_id,
+        ..
+    } = detail
+    else {
         return false;
     };
-    let ended = detail.get("@odata.type").and_then(|t| t.as_str())
-        == Some("#microsoft.graph.callEndedEventMessageDetail");
-    let joined = detail
-        .get("callParticipants")
-        .and_then(|p| p.as_array())
-        .map_or(0, Vec::len);
-    let initiator = detail
-        .pointer("/initiator/user/id")
-        .and_then(|id| id.as_str());
-    ended && !me.is_empty() && !is_meeting(detail) && joined < 2 && initiator != Some(me)
+    !me.is_empty() && !meeting && *participants < 2 && initiator_id.as_deref() != Some(me)
 }
 
 /// How long a call lasted ("4m 12s"), from its ISO 8601 `callDuration`.
-fn call_duration(detail: &serde_json::Value) -> Option<String> {
-    let seconds = iso_duration_seconds(detail.get("callDuration")?.as_str()?)?;
+fn call_duration(iso: &str) -> Option<String> {
+    let seconds = iso_duration_seconds(iso)?;
     (seconds > 0).then(|| short_duration(seconds))
 }
 
@@ -311,6 +292,7 @@ pub fn message(
     mut message: g::ChatMessage,
     conversation: Option<&ConversationId>,
     me: &str,
+    base: &str,
 ) -> Message {
     let system = message
         .message_type
@@ -318,7 +300,10 @@ pub fn message(
         .is_some_and(|kind| kind != "message");
     let deleted = message.deleted_date_time.is_some();
     let mut body = if system {
-        html::RichText::plain(&system_summary(message.event_detail.as_ref(), me))
+        html::RichText::plain(&system_summary(
+            &detail_of(message.event_detail.as_ref()),
+            me,
+        ))
     } else if deleted {
         html::RichText::default()
     } else {
@@ -384,7 +369,7 @@ pub fn message(
                 };
                 *src = format!(
                     "{}/{}/hostedContents/{}/$value",
-                    super::GRAPH_BASE,
+                    base,
                     path,
                     super::segment(content)
                 );
@@ -400,34 +385,24 @@ pub fn message(
         .replies
         .unwrap_or_default()
         .into_iter()
-        .map(|reply| self::message(reply, conversation.as_ref(), me))
+        .map(|reply| self::message(reply, conversation.as_ref(), me, base))
         .collect::<Vec<_>>();
     let mut replies = replies;
     replies.sort_by_key(|reply| reply.created);
+    let event = detail_of(message.event_detail.as_ref());
     let pin_event = system
-        && message
-            .event_detail
-            .as_ref()
-            .and_then(|d| d.get("@odata.type"))
-            .and_then(|t| t.as_str())
-            .is_some_and(|t| {
-                matches!(
-                    t.trim_start_matches("#microsoft.graph."),
-                    "messagePinnedEventMessageDetail" | "messageUnpinnedEventMessageDetail"
-                )
-            });
-    let missed_call = system && call_missed(message.event_detail.as_ref(), me);
+        && matches!(
+            event,
+            g::EventDetail::MessagePinned { .. } | g::EventDetail::MessageUnpinned { .. }
+        );
+    let missed_call = system && call_missed_detail(&event, me);
     let mentions = std::mem::take(&mut message.mentions);
     Message {
         web_url: message.web_url.filter(|url| !url.is_empty()),
         pin_event,
         missed_call,
-        membership: system
-            .then(|| membership(message.event_detail.as_ref()))
-            .flatten(),
-        call: system
-            .then(|| call_event(message.event_detail.as_ref()))
-            .flatten(),
+        membership: system.then(|| membership(&event)).flatten(),
+        call: system.then(|| call_event(&event)).flatten(),
         author_id: message
             .from
             .as_ref()
@@ -654,7 +629,12 @@ mod tests {
                 "What do you think?<attachment id=\"114bdbee-dd0c\"></attachment>"}
         }))
         .unwrap();
-        let message = message(raw, Some(&ConversationId::Chat("chat".into())), "u-me");
+        let message = message(
+            raw,
+            Some(&ConversationId::Chat("chat".into())),
+            "u-me",
+            crate::graph::GRAPH_BASE,
+        );
         assert_eq!(message.body.summary(200), "What do you think?");
         assert_eq!(
             without_attachment_tags("a <attachment id=\"x\">"),
@@ -673,7 +653,12 @@ mod tests {
         let raw: g::ChatMessage = serde_json::from_value(serde_json::json!({
             "id":"message", "body":{"contentType":"html", "content":"<img src=\"../hostedContents/1/$value\"><img src=\"https://outside.example/image.png\">"}
         })).unwrap();
-        let message = message(raw, Some(&ConversationId::Chat("chat".into())), "u-me");
+        let message = message(
+            raw,
+            Some(&ConversationId::Chat("chat".into())),
+            "u-me",
+            crate::graph::GRAPH_BASE,
+        );
         assert_eq!(
             message.body.images().collect::<Vec<_>>(),
             [
@@ -732,7 +717,7 @@ mod tests {
             ]
         }))
         .unwrap();
-        let message = message(raw, None, "u-me");
+        let message = message(raw, None, "u-me", crate::graph::GRAPH_BASE);
         assert_eq!(
             message.conversation,
             Some(ConversationId::Chat("19:abc@thread.v2".into()))
@@ -767,7 +752,7 @@ mod tests {
             }
         }))
         .unwrap();
-        let message = message(raw, None, "u-me");
+        let message = message(raw, None, "u-me", crate::graph::GRAPH_BASE);
         assert!(message.system);
         assert_eq!(message.body.to_plain(), "Ada added Grace to the chat.");
     }
@@ -784,7 +769,7 @@ mod tests {
             }
         }))
         .unwrap();
-        let message = message(raw, None, "u-me");
+        let message = message(raw, None, "u-me", crate::graph::GRAPH_BASE);
         assert_eq!(
             message.body.to_plain(),
             "Someone removed someone from the chat."
@@ -816,7 +801,9 @@ mod tests {
             }
         }))
         .unwrap();
-        let call = message(raw, None, "u-me").call.expect("a call event");
+        let call = message(raw, None, "u-me", crate::graph::GRAPH_BASE)
+            .call
+            .expect("a call event");
         assert!(call.meeting && call.ended);
         assert_eq!(call.duration.as_deref(), Some("8m 18s"));
     }
@@ -830,7 +817,27 @@ mod tests {
             "eventDetail": detail
         }))
         .unwrap();
-        message(raw, None, "u-me")
+        message(raw, None, "u-me", crate::graph::GRAPH_BASE)
+    }
+
+    #[test]
+    fn unknown_event_detail_keeps_message() {
+        for detail in [
+            serde_json::json!({"@odata.type": "#microsoft.graph.somethingNew"}),
+            serde_json::json!({"@odata.type": 7, "members": "x"}),
+            serde_json::json!("not an object"),
+        ] {
+            let raw: g::ChatMessage = serde_json::from_value(serde_json::json!({
+                "id": "1", "messageType": "systemEventMessage", "createdDateTime": "2026-10-10T10:00:00Z",
+                "body": {"contentType": "html", "content": "<systemEventMessage/>"},
+                "eventDetail": detail
+            }))
+            .unwrap();
+            let converted = message(raw, None, "u-me", crate::graph::GRAPH_BASE);
+            assert!(converted.system);
+            assert_eq!(converted.body.to_plain(), "Chat event");
+            assert!(converted.membership.is_none() && converted.call.is_none());
+        }
     }
 
     #[test]
@@ -936,7 +943,7 @@ mod tests {
             "body": {"contentType": "html", "content": "<p>secret</p>"}
         }))
         .unwrap();
-        let message = message(raw, None, "u-me");
+        let message = message(raw, None, "u-me", crate::graph::GRAPH_BASE);
         assert!(message.deleted);
         assert!(message.body.is_empty());
     }
@@ -975,7 +982,7 @@ mod tests {
             "webUrl": "https://teams.microsoft.com/l/message/c/1"
         }))
         .unwrap();
-        let plain = message(plain, None, "u-me");
+        let plain = message(plain, None, "u-me", crate::graph::GRAPH_BASE);
         assert_eq!(
             plain.web_url.as_deref(),
             Some("https://teams.microsoft.com/l/message/c/1")
@@ -990,7 +997,7 @@ mod tests {
                 "eventDetail": {"@odata.type": format!("#microsoft.graph.{kind}")}
             }))
             .unwrap();
-            let event = message(raw, None, "u-me");
+            let event = message(raw, None, "u-me", crate::graph::GRAPH_BASE);
             assert!(event.pin_event, "{kind}");
             assert!(event.system);
         }
@@ -1006,7 +1013,7 @@ mod tests {
             ]
         }))
         .unwrap();
-        let message = message(raw, None, "u-me");
+        let message = message(raw, None, "u-me", crate::graph::GRAPH_BASE);
         assert_eq!(
             message.attachments[0].content.as_deref(),
             Some("{\"type\":\"AdaptiveCard\"}")
@@ -1019,7 +1026,12 @@ mod tests {
         json.as_object_mut()
             .unwrap()
             .extend(extra.as_object().unwrap().clone());
-        message(serde_json::from_value(json).unwrap(), None, "u-me")
+        message(
+            serde_json::from_value(json).unwrap(),
+            None,
+            "u-me",
+            crate::graph::GRAPH_BASE,
+        )
     }
 
     #[test]

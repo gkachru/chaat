@@ -5,7 +5,7 @@ use super::widgets::note;
 use super::{onboarding, widgets};
 use crate::app::{App, SetupStage};
 use crate::backend::AuthStatus;
-use crate::model::Action;
+use crate::model::{Action, SetupAction};
 use crate::theme;
 
 /// The "Setup file" group on Settings › Advanced. Hidden in demo mode.
@@ -22,13 +22,13 @@ pub fn group(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
             .add_enabled(!busy, egui::Button::new("Import a setup file…"))
             .clicked()
         {
-            actions.push(Action::ChooseSetupFile);
+            actions.push(Action::Setup(SetupAction::ChooseFile));
         }
         if ui
             .add_enabled(!busy, egui::Button::new("Create a setup file…"))
             .clicked()
         {
-            actions.push(Action::OpenExportForm(true));
+            actions.push(Action::Setup(SetupAction::OpenExportForm(true)));
         }
     });
     note(
@@ -61,7 +61,7 @@ pub fn export_overlay(app: &mut App, ctx: &egui::Context) {
     // Escape or a click outside cancels the form. The passphrase is shown
     // only once, so only Done closes it.
     if response.should_close() && !revealing && !app.export.busy {
-        actions.push(Action::OpenExportForm(false));
+        actions.push(Action::Setup(SetupAction::OpenExportForm(false)));
     }
     app.actions.extend(actions);
 }
@@ -177,12 +177,12 @@ fn export_form(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         )
         .clicked()
         {
-            actions.push(Action::ExportSetup);
+            actions.push(Action::Setup(SetupAction::Export));
         }
         if busy {
             widgets::loading(ui, palette.secondary, 14.0);
         } else if widgets::secondary_button(ui, &palette, "  Cancel  ").clicked() {
-            actions.push(Action::OpenExportForm(false));
+            actions.push(Action::Setup(SetupAction::OpenExportForm(false)));
         }
     });
 }
@@ -211,7 +211,7 @@ fn reveal(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
     ui.add_space(14.0);
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         if widgets::primary_button(ui, &palette, "  Done  ").clicked() {
-            actions.push(Action::DismissSetupPassphrase);
+            actions.push(Action::Setup(SetupAction::DismissPassphrase));
         }
         if widgets::secondary_button(ui, &palette, "  Copy  ").clicked() {
             actions.push(Action::CopyText(passphrase));
@@ -271,13 +271,13 @@ pub fn import_overlay(app: &mut App, ctx: &egui::Context) {
                 );
                 ui.add_space(8.0);
                 if ui.button("Close").clicked() {
-                    app.actions.push(Action::CancelSetup);
+                    app.actions.push(Action::Setup(SetupAction::Cancel));
                 }
             }
         },
     );
     let working = matches!(stage, SetupStage::Opening(_) | SetupStage::Applying);
     if response.should_close() && !working {
-        app.actions.push(Action::CancelSetup);
+        app.actions.push(Action::Setup(SetupAction::Cancel));
     }
 }

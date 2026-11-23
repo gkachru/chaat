@@ -118,7 +118,7 @@ impl Graph {
         let combined = format!(
             "me/chats?$expand=members,lastMessagePreview&$orderby=lastMessagePreview/createdDateTime%20desc&$top={PAGE}"
         );
-        match self.chat_pages(&combined, pages).await {
+        match self.pages(&combined, pages).await {
             Err(GraphError::Http { status: 400, .. }) => {}
             other => {
                 return other.map(|chats| {
@@ -132,14 +132,14 @@ impl Graph {
         log::info!(
             "Graph refused the combined chat listing; listing members and previews separately"
         );
-        let mut previews = self
-            .chat_pages(
+        let mut previews: Vec<g::Chat> = self
+            .pages(
                 &format!("me/chats?$expand=lastMessagePreview&$orderby=lastMessagePreview/createdDateTime%20desc&$top={PAGE}"),
                 pages,
             )
             .await?;
-        let members = self
-            .chat_pages(&format!("me/chats?$expand=members&$top={PAGE}"), pages + 2)
+        let members: Vec<g::Chat> = self
+            .pages(&format!("me/chats?$expand=members&$top={PAGE}"), pages + 2)
             .await?;
         let mut members: std::collections::HashMap<String, Vec<g::ConversationMember>> = members
             .into_iter()
@@ -154,18 +154,24 @@ impl Graph {
             .collect())
     }
 
-    async fn chat_pages(&self, first: &str, pages: usize) -> Result<Vec<g::Chat>, GraphError> {
+    /// Follows Graph's paging links for at most `max_pages` pages (at least
+    /// one) and returns every item.
+    async fn pages<T: serde::de::DeserializeOwned>(
+        &self,
+        first: &str,
+        max_pages: usize,
+    ) -> Result<Vec<T>, GraphError> {
         let mut url = first.to_owned();
-        let mut chats = Vec::new();
-        for _ in 0..pages.max(1) {
-            let page: g::Page<g::Chat> = self.get(&url).await?;
-            chats.extend(page.value);
+        let mut items = Vec::new();
+        for _ in 0..max_pages.max(1) {
+            let page: g::Page<T> = self.get(&url).await?;
+            items.extend(page.value);
             match page.next_link {
                 Some(next) => url = next,
                 None => break,
             }
         }
-        Ok(chats)
+        Ok(items)
     }
 
     /// The person's notes chat, built from its newest message, or `None`
@@ -177,10 +183,10 @@ impl Graph {
             "chats/{}/messages?$top=1&$orderby=createdDateTime%20desc",
             segment(NOTES_CHAT)
         );
-        let page = match self.chat_message_page(NOTES_CHAT, &url).await {
-            Ok(page) => page,
-            Err(GraphError::NotFound) => return Ok(None),
-            Err(error) => return Err(error),
+        let page = match absent_as_empty(self.chat_message_page(NOTES_CHAT, &url).await.map(Some))?
+        {
+            Some(page) => page,
+            None => return Ok(None),
         };
         let preview = page.messages.first().map(|last| Preview {
             message_id: last.id.clone(),
@@ -246,7 +252,7 @@ impl Graph {
             messages: page
                 .value
                 .into_iter()
-                .map(|m| convert::message(m, Some(&conversation), self.my_id()))
+                .map(|m| convert::message(m, Some(&conversation), self.my_id(), &self.base))
                 .collect(),
             older: page.next_link,
         })
@@ -258,25 +264,16 @@ impl Graph {
     pub async fn chat_changes(&self, chat: &str, since: i64) -> Result<Vec<Message>, GraphError> {
         let conversation = ConversationId::Chat(chat.to_owned());
         let since = crate::time::to_iso(since);
-        let mut url = format!(
+        let url = format!(
             "chats/{}/messages?$top={PAGE}&$orderby=lastModifiedDateTime%20desc&$filter=lastModifiedDateTime%20gt%20{since}",
             segment(chat)
         );
-        let mut messages = Vec::new();
         // A burst larger than a few pages is reloaded as a fresh page instead.
-        for _ in 0..4 {
-            let page: g::Page<g::ChatMessage> = self.get(&url).await?;
-            messages.extend(
-                page.value
-                    .into_iter()
-                    .map(|m| convert::message(m, Some(&conversation), self.my_id())),
-            );
-            match page.next_link {
-                Some(next) => url = next,
-                None => break,
-            }
-        }
-        Ok(messages)
+        let raw: Vec<g::ChatMessage> = self.pages(&url, 4).await?;
+        Ok(raw
+            .into_iter()
+            .map(|m| convert::message(m, Some(&conversation), self.my_id(), &self.base))
+            .collect())
     }
 
     /// `POST /chats/{id}/messages` (ChatMessage.Send).
@@ -295,6 +292,7 @@ impl Graph {
             raw,
             Some(&ConversationId::Chat(chat.to_owned())),
             self.my_id(),
+            &self.base,
         ))
     }
 
@@ -315,6 +313,7 @@ impl Graph {
             raw,
             Some(&ConversationId::Chat(chat.to_owned())),
             self.my_id(),
+            &self.base,
         ))
     }
 
@@ -425,18 +424,15 @@ impl Graph {
         // Some chats answer 404 here although they exist (seen 22 Nov 2026
         // on a chat with nothing pinned). No pin list means nothing to show,
         // not an error for the person.
-        let pins: g::Page<g::PinnedChatMessage> = match self
-            .get(&format!(
+        let pins: Vec<g::PinnedChatMessage> = absent_as_empty(
+            self.get::<g::Page<g::PinnedChatMessage>>(&format!(
                 "chats/{}/pinnedMessages?$expand=message",
                 segment(chat)
             ))
             .await
-        {
-            Err(GraphError::NotFound) => return Ok(Vec::new()),
-            other => other?,
-        };
+            .map(|page| page.value),
+        )?;
         Ok(pins
-            .value
             .into_iter()
             .filter_map(convert::pinned_message)
             .collect())
@@ -534,7 +530,7 @@ impl Graph {
             messages: page
                 .value
                 .into_iter()
-                .map(|m| convert::message(m, Some(&conversation), self.my_id()))
+                .map(|m| convert::message(m, Some(&conversation), self.my_id(), &self.base))
                 .collect(),
             older: page.next_link,
         })
@@ -562,7 +558,7 @@ impl Graph {
         let mut replies: Vec<Message> = page
             .value
             .into_iter()
-            .map(|m| convert::message(m, Some(&conversation), self.my_id()))
+            .map(|m| convert::message(m, Some(&conversation), self.my_id(), &self.base))
             .collect();
         replies.sort_by_key(|m| m.created);
         Ok(replies)
@@ -589,7 +585,12 @@ impl Graph {
             path.push_str(&format!("/{}/replies", segment(root)));
         }
         let raw: g::ChatMessage = self.post(&path, &message.body()).await?;
-        Ok(convert::message(raw, Some(&conversation), self.my_id()))
+        Ok(convert::message(
+            raw,
+            Some(&conversation),
+            self.my_id(),
+            &self.base,
+        ))
     }
 
     /// `POST /communications/getPresencesByUserId`, up to 650 people per
@@ -627,30 +628,24 @@ impl Graph {
 
     /// A person's small photo, or `None` without one (User.ReadBasic.All).
     pub async fn photo(&self, user: &str) -> Result<Option<Vec<u8>>, GraphError> {
-        match self
-            .get_bytes(
+        absent_as_empty(
+            self.get_bytes(
                 &format!("users/{}/photos/96x96/$value", segment(user)),
                 super::api::MEDIA_LIMIT,
             )
             .await
-        {
-            Ok(bytes) => Ok(Some(bytes)),
-            Err(GraphError::NotFound) => Ok(None),
-            Err(error) => Err(error),
-        }
+            .map(Some),
+        )
     }
 
     /// A person's display name (User.ReadBasic.All). `None` when the
     /// directory no longer has them.
     pub async fn user_name(&self, user: &str) -> Result<Option<String>, GraphError> {
-        match self
-            .get::<g::User>(&format!("users/{}?$select=id,displayName", segment(user)))
-            .await
-        {
-            Ok(found) => Ok(found.display_name.filter(|n| !n.is_empty())),
-            Err(GraphError::NotFound) => Ok(None),
-            Err(error) => Err(error),
-        }
+        absent_as_empty(
+            self.get::<g::User>(&format!("users/{}?$select=id,displayName", segment(user)))
+                .await
+                .map(|found| found.display_name.filter(|n| !n.is_empty())),
+        )
     }
 
     /// Microsoft Search over chat messages (Chat.ReadWrite; channel posts
@@ -698,17 +693,7 @@ impl Graph {
     /// this app made for the signed-in person (no extra permission beyond the
     /// ones that made them). Follows paging links, at most 10 pages.
     pub async fn subscriptions(&self) -> Result<Vec<Subscription>, GraphError> {
-        let mut url = "subscriptions".to_owned();
-        let mut all = Vec::new();
-        for _ in 0..10 {
-            let page: g::Page<Subscription> = self.get(&url).await?;
-            all.extend(page.value);
-            match page.next_link {
-                Some(next) => url = next,
-                None => break,
-            }
-        }
-        Ok(all)
+        self.pages("subscriptions", 10).await
     }
 
     /// `POST /subscriptions` for all of the person's chat messages, without
@@ -813,10 +798,16 @@ impl Graph {
     /// `DELETE /subscriptions/{id}`. One that is already gone (expired, or
     /// removed by Graph) counts as deleted.
     pub async fn delete_subscription(&self, id: &str) -> Result<(), GraphError> {
-        match self.delete(&format!("subscriptions/{}", segment(id))).await {
-            Err(GraphError::NotFound) => Ok(()),
-            other => other,
-        }
+        absent_as_empty(self.delete(&format!("subscriptions/{}", segment(id))).await)
+    }
+}
+
+/// A 404 that means "nothing there" becomes the empty value; every other
+/// error stays an error.
+fn absent_as_empty<T: Default>(result: Result<T, GraphError>) -> Result<T, GraphError> {
+    match result {
+        Err(GraphError::NotFound) => Ok(T::default()),
+        other => other,
     }
 }
 
@@ -956,6 +947,115 @@ mod tests {
         let graph = graph(&server).await;
         assert!(graph.delete_subscription("gone").await.is_ok());
         assert!(graph.delete_subscription("denied").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn hosted_content_uses_graph_base() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/chats/c1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "value": [{"id": "m1", "createdDateTime": "2026-11-18T07:00:00Z",
+                    "body": {"contentType": "html", "content": "<img src=\"../hostedContents/h1/$value\">"}}]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/chats/c1/messages/m1/hostedContents/h1/$value"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![1u8, 2, 3]))
+            .mount(&server)
+            .await;
+        let graph = graph(&server).await;
+        let page = graph
+            .chat_message_page("c1", "chats/c1/messages")
+            .await
+            .unwrap();
+        let src = page.messages[0].body.images().next().unwrap().to_owned();
+        assert!(src.starts_with(&server.uri()), "{src}");
+        assert!(graph.is_graph_url(&src));
+        assert_eq!(graph.get_bytes(&src, 1024).await.unwrap(), vec![1u8, 2, 3]);
+    }
+
+    #[tokio::test]
+    async fn hosted_content_cached_absolute_url_still_loads() {
+        // Cached messages hold the production URL; with the production base
+        // it is still on the Graph origin and still fetched.
+        let old = "https://graph.microsoft.com/v1.0/chats/c1/messages/m1/hostedContents/h1/$value";
+        let graph = Graph::with_base(
+            reqwest::Client::new(),
+            testing::session("at", "http://unused.invalid").await,
+            crate::graph::GRAPH_BASE,
+        );
+        assert!(graph.is_graph_url(old));
+        assert_eq!(graph.url(old).unwrap(), old);
+        let raw: g::ChatMessage = serde_json::from_value(json!({
+            "id": "m1",
+            "body": {"contentType": "html", "content": "<img src=\"../hostedContents/h1/$value\">"}
+        }))
+        .unwrap();
+        let message = convert::message(
+            raw,
+            Some(&ConversationId::Chat("c1".into())),
+            "u-me",
+            crate::graph::GRAPH_BASE,
+        );
+        assert_eq!(message.body.images().next(), Some(old));
+    }
+
+    #[tokio::test]
+    async fn pages_stops_at_max() {
+        let server = MockServer::start().await;
+        for (n, next) in [("p1", Some("p2")), ("p2", Some("p3")), ("p3", None)] {
+            let mut body = json!({"value": [{"id": n}]});
+            if let Some(next) = next {
+                body["@odata.nextLink"] =
+                    json!(format!("{}/items?$skiptoken={next}", server.uri()));
+            }
+            let mock = Mock::given(method("GET")).and(path("/items"));
+            let mock = if n == "p1" {
+                mock.and(query_param("start", "1"))
+            } else {
+                mock.and(query_param("$skiptoken", n))
+            };
+            mock.respond_with(ResponseTemplate::new(200).set_body_json(body))
+                .mount(&server)
+                .await;
+        }
+        let items: Vec<serde_json::Value> = graph(&server)
+            .await
+            .pages("items?start=1", 2)
+            .await
+            .unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn pages_zero_means_one() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/items"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "value": [{"id": "a"}],
+                "@odata.nextLink": format!("{}/items?$skiptoken=x", server.uri())
+            })))
+            .mount(&server)
+            .await;
+        let items: Vec<serde_json::Value> = graph(&server).await.pages("items", 0).await.unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn absent_as_empty_keeps_other_errors() {
+        assert_eq!(
+            absent_as_empty::<Vec<u8>>(Err(GraphError::NotFound)).unwrap(),
+            Vec::<u8>::new()
+        );
+        assert_eq!(absent_as_empty(Ok(vec![1u8])).unwrap(), vec![1u8]);
+        assert!(
+            absent_as_empty::<Vec<u8>>(Err(GraphError::Forbidden { code: "x".into() })).is_err()
+        );
     }
 
     #[tokio::test]

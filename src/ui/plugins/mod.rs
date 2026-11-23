@@ -8,7 +8,7 @@ mod setup;
 
 use super::widgets;
 use crate::app::{App, PluginsView};
-use crate::model::Action;
+use crate::model::{Action, PluginAction};
 use crate::settings::PluginEntry;
 use crate::theme;
 use options::drop_stale_secret_buffers;
@@ -94,10 +94,10 @@ fn pending_items(
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             if widgets::primary_button(ui, &palette, "Allow").clicked() {
-                actions.push(Action::ApprovePluginNeeds(entry.id.clone()));
+                actions.push(Action::Plugin(PluginAction::ApproveNeeds(entry.id.clone())));
             }
             if widgets::secondary_button(ui, &palette, "Don't allow").clicked() {
-                actions.push(Action::DenyPluginNeeds(entry.id.clone()));
+                actions.push(Action::Plugin(PluginAction::DenyNeeds(entry.id.clone())));
             }
         });
     }
@@ -132,10 +132,10 @@ fn file_changed_items(
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             if widgets::secondary_button(ui, &palette, "Run the new file").clicked() {
-                actions.push(Action::TrustPluginFile(entry.id.clone()));
+                actions.push(Action::Plugin(PluginAction::TrustFile(entry.id.clone())));
             }
             if widgets::secondary_button(ui, &palette, "Keep it off").clicked() {
-                actions.push(Action::KeepPluginOff(entry.id.clone()));
+                actions.push(Action::Plugin(PluginAction::KeepOff(entry.id.clone())));
             }
         });
     }

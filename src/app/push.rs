@@ -7,7 +7,7 @@ use super::App;
 use crate::backend::{Command, PushRoute};
 use crate::plugin::event::PushEvent;
 use crate::plugin::protocol::HostMessage;
-use crate::plugin::registry;
+use crate::plugin::registry::{self, Capability, Need};
 
 /// What Settings › Push updates shows about the push plugin.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -52,16 +52,7 @@ impl App {
     /// The plugin that receives pushes: the first enabled one in list order
     /// that is running and offers `push`.
     pub fn push_owner(&self) -> Option<String> {
-        self.settings
-            .plugins
-            .iter()
-            .filter(|entry| entry.enabled)
-            .find(|entry| {
-                self.plugins
-                    .get(&entry.id)
-                    .is_some_and(|state| state.running && state.offers.contains(&registry::PUSH))
-            })
-            .map(|entry| entry.id.clone())
+        self.owner_of(Capability::Push)
     }
 
     /// Whether the plugin declared `push` and the person allowed it.
@@ -70,7 +61,7 @@ impl App {
             .plugins
             .iter()
             .find(|entry| entry.id == id)
-            .is_some_and(|entry| Self::plugin_need_effective(entry, registry::PUSH))
+            .is_some_and(|entry| Self::plugin_need_effective(entry, Need::Push))
     }
 
     /// What Settings › Push updates shows, or `None` when no enabled plugin
@@ -157,23 +148,23 @@ impl App {
                     && !list.is_empty()
                     && self.plugins.get(old).is_some_and(|state| state.running)
                 {
-                    self.service.send(Command::PluginSend {
-                        id: old.clone(),
-                        message: HostMessage::PushChannels {
+                    self.send_to_plugin(
+                        old,
+                        HostMessage::PushChannels {
                             channels: Vec::new(),
                         },
-                    });
+                    );
                     self.push_plugin.announced = None;
                 }
                 let told =
                     self.push_plugin.announced.as_ref() == Some(&(id.clone(), channels.clone()));
                 if resend || !told {
-                    self.service.send(Command::PluginSend {
-                        id: id.clone(),
-                        message: HostMessage::PushChannels {
+                    self.send_to_plugin(
+                        id,
+                        HostMessage::PushChannels {
                             channels: channels.clone(),
                         },
-                    });
+                    );
                     self.push_plugin.announced = Some((id.clone(), channels));
                 }
                 if resend || self.push_plugin.active != desired {
@@ -200,12 +191,12 @@ impl App {
                     && self.plugins_started.contains_key(&id)
                     && self.plugins.get(&id).is_some_and(|state| state.running)
                 {
-                    self.service.send(Command::PluginSend {
-                        id,
-                        message: HostMessage::PushChannels {
+                    self.send_to_plugin(
+                        &id,
+                        HostMessage::PushChannels {
                             channels: Vec::new(),
                         },
-                    });
+                    );
                 }
             }
         }
@@ -288,12 +279,12 @@ impl App {
                 }
                 if self.settings.relay_url.is_some() {
                     // The relay wins: the plugin accepts nothing.
-                    self.send_service(Command::PluginSend {
-                        id: id.to_owned(),
-                        message: HostMessage::PushChannels {
+                    self.send_to_plugin(
+                        id,
+                        HostMessage::PushChannels {
                             channels: Vec::new(),
                         },
-                    });
+                    );
                     self.push_plugin.announced = None;
                 }
                 self.sync_push_route(true);
@@ -324,7 +315,7 @@ mod tests {
     use super::*;
     use crate::app::{Account, PluginState};
     use crate::backend::{Backend, Waker};
-    use crate::model::Action;
+    use crate::model::{Action, PluginAction};
     use crate::paths::AppDirs;
     use crate::plugin::event::PluginEvent;
     use crate::settings::{PluginEntry, Settings};
@@ -652,7 +643,7 @@ mod tests {
         );
         // Allowing it later starts the route the plugin already announced.
         app.apply(
-            Action::ApprovePluginNeeds("pr".into()),
+            Action::Plugin(PluginAction::ApproveNeeds("pr".into())),
             &egui::Context::default(),
         );
         let list = channels(&app);
@@ -666,7 +657,7 @@ mod tests {
         let (mut app, mut service, mut first, _second) = setup(false);
         event(&mut app, "pr", ready(URL));
         app.apply(
-            Action::DenyPluginNeeds("pr".into()),
+            Action::Plugin(PluginAction::DenyNeeds("pr".into())),
             &egui::Context::default(),
         );
         assert!(drain(&mut service).is_empty() && drain(&mut first).is_empty());
@@ -746,7 +737,10 @@ mod tests {
         drain(&mut service);
         drain(&mut first);
         drain(&mut second);
-        app.apply(Action::SetPluginEnabled("pr".into(), false), &ctx);
+        app.apply(
+            Action::Plugin(PluginAction::SetEnabled("pr".into(), false)),
+            &ctx,
+        );
         same(drain(&mut first), vec![Command::PushPlugin(None)]);
         same(drain(&mut second), vec![Command::PushPlugin(None)]);
         assert!(
@@ -764,7 +758,7 @@ mod tests {
         event(&mut app, "pr", ready(URL));
         drain(&mut first);
         drain(&mut second);
-        app.apply(Action::RemovePlugin("pr".into()), &ctx);
+        app.apply(Action::Plugin(PluginAction::Remove("pr".into())), &ctx);
         same(drain(&mut first), vec![Command::PushPlugin(None)]);
         same(drain(&mut second), vec![Command::PushPlugin(None)]);
         assert!(app.push_plugin_view().is_none());

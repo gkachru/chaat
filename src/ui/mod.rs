@@ -27,7 +27,7 @@ pub mod widgets;
 use egui::{Align2, CornerRadius, Frame, Margin, Stroke, vec2};
 
 use crate::app::App;
-use crate::model::{Action, Section, ToastAction, ToastKind};
+use crate::model::{Action, PluginAction, Section, SetupAction, ToastAction, ToastKind};
 use crate::theme::{self, Icon};
 
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
@@ -178,7 +178,8 @@ fn drop_files(app: &mut App, ctx: &egui::Context) {
         .into_iter()
         .partition(|path| importing && crate::app::is_setup_file(path));
     if let Some(setup) = setups.into_iter().next() {
-        app.actions.push(Action::DroppedSetupFile(setup));
+        app.actions
+            .push(Action::Setup(SetupAction::DroppedFile(setup)));
     }
     if !files.is_empty() {
         app.actions.push(Action::AddFiles(files));
@@ -590,10 +591,10 @@ fn sign_in_card(
             widgets::on_click(
                 &close,
                 actions,
-                Action::HidePluginSignIn {
+                Action::Plugin(PluginAction::HideSignIn {
                     plugin: sign_in.plugin.clone(),
                     account: sign_in.account.clone(),
-                },
+                }),
             );
         });
     });

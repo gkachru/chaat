@@ -109,7 +109,7 @@ impl Graph {
     /// The signed-in person's object id: the account id before its tenant.
     pub fn my_id(&self) -> &str {
         let account = self.session.account.as_str();
-        account.split('.').next().unwrap_or(account)
+        crate::auth::session::user_id(account)
     }
 
     /// A path below the base, or a full URL on the Graph origin.

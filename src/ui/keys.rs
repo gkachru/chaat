@@ -3,7 +3,7 @@
 use egui::{Key, Modifiers};
 
 use crate::app::{App, Overlay, PluginsView};
-use crate::model::{Action, Section, SettingsPage};
+use crate::model::{Action, PluginAction, Section, SettingsPage};
 
 /// Shortcuts and what they do, in groups, for the settings page.
 pub const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
@@ -57,9 +57,9 @@ fn settings_escape(app: &App) -> Option<Action> {
         return Some(Action::CloseSettings);
     }
     if app.reordering {
-        Some(Action::EndReorder)
+        Some(Action::Plugin(PluginAction::EndReorder))
     } else if matches!(app.plugins_view, PluginsView::Plugin(_)) {
-        Some(Action::BackToPlugins)
+        Some(Action::Plugin(PluginAction::BackToPlugins))
     } else if matches!(app.plugins_view, PluginsView::Adding(_)) {
         // Leaving an add flow means Cancel, which asks for no confirm yet
         // stops the plugin: only its buttons do that, never a stray Esc.

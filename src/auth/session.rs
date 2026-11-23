@@ -40,6 +40,17 @@ impl AccountRecord {
         let json = serde_json::to_vec_pretty(self).map_err(std::io::Error::other)?;
         crate::paths::write_atomically(path, &json)
     }
+
+    /// The Entra object id, the part of an account id `oid.tid` before the dot.
+    pub fn user_id(&self) -> &str {
+        user_id(&self.id)
+    }
+}
+
+/// The Entra object id, the part of an account id `oid.tid` before the dot.
+/// The whole string when it has no dot.
+pub fn user_id(account: &str) -> &str {
+    account.split('.').next().unwrap_or(account)
 }
 
 struct Tokens {
@@ -378,5 +389,17 @@ mod tests {
             "User.Read Chat.ReadWrite openid profile offline_access"
         );
         assert!(refresh_scopes("").contains("Chat.ReadWrite"));
+    }
+
+    #[test]
+    fn user_id_takes_part_before_dot() {
+        assert_eq!(user_id("oid1.tid1"), "oid1");
+        assert_eq!(user_id("oid1"), "oid1");
+        assert_eq!(user_id(""), "");
+        let record = AccountRecord {
+            id: "oid1.tid1".into(),
+            ..AccountRecord::default()
+        };
+        assert_eq!(record.user_id(), "oid1");
     }
 }

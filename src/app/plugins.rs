@@ -10,14 +10,14 @@ use std::time::{Duration, Instant};
 use super::App;
 use super::PushPluginState;
 use crate::backend::Command;
-use crate::model::{Action, PluginSignIn, SettingsPage, ToastKind};
+use crate::model::{PluginAction, PluginSignIn, SettingsPage, ToastKind};
 use crate::plugin::event::PluginEvent;
 use crate::plugin::options;
 use crate::plugin::presence;
 use crate::plugin::protocol::{
     HostMessage, OptionKind, OptionSpec, PluginAccount, PluginInfo, StatusState,
 };
-use crate::plugin::registry;
+use crate::plugin::registry::{self, Capability, Need};
 use crate::settings::{PluginEntry, plugin_id_for};
 
 /// The shortest time between two toasts from one plugin.
@@ -177,6 +177,52 @@ impl App {
         }
     }
 
+    /// The need a message to a plugin depends on. Accounts need `accounts`,
+    /// presence `presence`, a non-empty channel list `push` and an agent event
+    /// `messages`. Everything else carries nothing the person has to allow
+    /// (an empty channel list tells the plugin to accept nothing, a result
+    /// answers the plugin's own request) and is never held back.
+    fn message_need(message: &HostMessage) -> Option<Need> {
+        match message {
+            HostMessage::Accounts { .. } => Some(Need::Accounts),
+            HostMessage::Presence { .. } => Some(Need::Presence),
+            HostMessage::PushChannels { channels } if !channels.is_empty() => Some(Need::Push),
+            HostMessage::AgentEvent { .. } => Some(Need::Messages),
+            _ => None,
+        }
+    }
+
+    /// Whether the gate in [`App::send_to_plugin`] lets `message` through to
+    /// plugin `id`.
+    fn plugin_may_receive(&self, id: &str, message: &HostMessage) -> bool {
+        let Some(need) = Self::message_need(message) else {
+            return true;
+        };
+        let Some(entry) = self.settings.plugins.iter().find(|e| e.id == id) else {
+            return false;
+        };
+        if !Self::plugin_need_effective(entry, need) {
+            return false;
+        }
+        let running = self.plugins.get(id).is_some_and(|state| state.running);
+        need == Need::Accounts || (entry.enabled && running)
+    }
+
+    /// Sends a message to a plugin, the one place `Command::PluginSend` is
+    /// built. A message that depends on a need goes only if the plugin
+    /// declared it and the person allowed it, and (except accounts, which the
+    /// plugin may be sent while it starts) only to a plugin that is enabled
+    /// and running. The gate can only drop a message.
+    pub(super) fn send_to_plugin(&self, id: &str, message: HostMessage) {
+        if !self.plugin_may_receive(id, &message) {
+            return;
+        }
+        self.send_service(Command::PluginSend {
+            id: id.to_owned(),
+            message,
+        });
+    }
+
     /// Chaat's signed-in accounts, as a plugin that needs them is told about
     /// them: ids and sign-in names only.
     pub fn plugin_accounts(&self) -> Vec<PluginAccount> {
@@ -211,26 +257,34 @@ impl App {
     /// The plugin that gets rings and sign-ins for call alerts: the first
     /// enabled one in list order that is running and offers `call_alerts`.
     pub fn call_alerts_owner(&self) -> Option<String> {
+        self.owner_of(Capability::CallAlerts)
+    }
+
+    /// The first enabled plugin in list order that is running and offers
+    /// `capability`.
+    pub fn owner_of(&self, capability: Capability) -> Option<String> {
+        let name = capability.as_str();
         self.settings
             .plugins
             .iter()
             .filter(|entry| entry.enabled)
             .find(|entry| {
-                self.plugins.get(&entry.id).is_some_and(|state| {
-                    state.running && state.offers.contains(&registry::CALL_ALERTS)
-                })
+                self.plugins
+                    .get(&entry.id)
+                    .is_some_and(|state| state.running && state.offers.contains(&name))
             })
             .map(|entry| entry.id.clone())
     }
 
     /// Whether the plugin declared `need` in its last `ready` and the person
     /// allowed it. Only such a need decides what Chaat sends.
-    pub(super) fn plugin_need_effective(entry: &PluginEntry, need: &str) -> bool {
-        entry.needs.iter().any(|n| n == need) && entry.approved_needs.iter().any(|n| n == need)
+    pub(super) fn plugin_need_effective(entry: &PluginEntry, need: Need) -> bool {
+        let name = need.as_str();
+        entry.needs.iter().any(|n| n == name) && entry.approved_needs.iter().any(|n| n == name)
     }
 
     fn plugin_needs_accounts(entry: &PluginEntry) -> bool {
-        Self::plugin_need_effective(entry, "accounts")
+        Self::plugin_need_effective(entry, Need::Accounts)
     }
 
     /// What a plugin receives from Chaat now, for Settings › Plugins:
@@ -244,9 +298,9 @@ impl App {
         };
         let state = self.plugins.get(id);
         let mut receives = Vec::new();
-        for need in ["accounts", "presence", registry::PUSH, "messages"] {
+        for need in Need::ALL {
             if Self::plugin_need_effective(entry, need) {
-                receives.push(need);
+                receives.push(need.as_str());
             }
         }
         if state.is_some_and(|state| !state.options.is_empty()) {
@@ -432,12 +486,14 @@ impl App {
     }
 
     fn send_plugin_accounts(&self, id: &str, accounts: Vec<PluginAccount>) {
-        self.send_service(Command::PluginSend {
-            id: id.to_owned(),
-            message: HostMessage::Accounts {
-                accounts: accounts.clone(),
-            },
-        });
+        let message = HostMessage::Accounts {
+            accounts: accounts.clone(),
+        };
+        // The restart hello must not carry accounts the gate holds back.
+        if !self.plugin_may_receive(id, &message) {
+            return;
+        }
+        self.send_to_plugin(id, message);
         self.send_service(Command::PluginHello {
             id: id.to_owned(),
             accounts: Some(accounts),
@@ -500,12 +556,12 @@ impl App {
                     .find(|e| e.id == id)
                     .map(|e| e.forget.clone())
                     .unwrap_or_default();
-                self.send_service(Command::PluginSend {
-                    id: id.clone(),
-                    message: HostMessage::Forget {
+                self.send_to_plugin(
+                    &id,
+                    HostMessage::Forget {
                         account: account.to_owned(),
                     },
-                });
+                );
                 self.send_service(Command::PluginHello {
                     id,
                     accounts: None,
@@ -537,11 +593,10 @@ impl App {
         let key = (availability.clone(), activity.clone());
         let mut to_send = Vec::new();
         for (id, state) in &mut self.plugins {
-            let allowed = self
-                .settings
-                .plugins
-                .iter()
-                .any(|entry| entry.id == *id && Self::plugin_need_effective(entry, "presence"));
+            let allowed =
+                self.settings.plugins.iter().any(|entry| {
+                    entry.id == *id && Self::plugin_need_effective(entry, Need::Presence)
+                });
             if state.running
                 && allowed
                 && state.needs.contains(&"presence")
@@ -552,10 +607,7 @@ impl App {
             }
         }
         for id in to_send {
-            self.send_service(Command::PluginSend {
-                id,
-                message: message.clone(),
-            });
+            self.send_to_plugin(&id, message.clone());
         }
     }
 
@@ -989,12 +1041,12 @@ impl App {
         };
         if self.plugins_started.contains_key(id) && Self::plugin_needs_accounts(&entry) {
             for account in self.plugin_accounts() {
-                self.send_service(Command::PluginSend {
-                    id: id.to_owned(),
-                    message: HostMessage::Forget {
+                self.send_to_plugin(
+                    id,
+                    HostMessage::Forget {
                         account: account.id,
                     },
-                });
+                );
             }
         }
         // Every secret option the plugin described may have a stored value,
@@ -1059,44 +1111,44 @@ impl App {
     }
 
     /// Runs the plugin actions.
-    pub(super) fn apply_plugin_action(&mut self, action: Action) {
+    pub(super) fn apply_plugin_action(&mut self, action: PluginAction) {
         match action {
-            Action::AddPlugin => self.choose_plugin(),
-            Action::RemovePlugin(id) => self.remove_plugin(&id),
-            Action::SetPluginEnabled(id, enabled) => {
+            PluginAction::Add => self.choose_plugin(),
+            PluginAction::Remove(id) => self.remove_plugin(&id),
+            PluginAction::SetEnabled(id, enabled) => {
                 if let Some(entry) = self.settings.plugins.iter_mut().find(|e| e.id == id) {
                     entry.enabled = enabled;
                     self.mark_settings_dirty();
                     self.sync_plugins();
                 }
             }
-            Action::SetPluginOption {
+            PluginAction::SetOption {
                 plugin,
                 option,
                 value,
             } => {
                 self.set_plugin_option(plugin, option, value);
             }
-            Action::RunPluginAction { plugin, action } => self.run_plugin_action(plugin, action),
-            Action::ResetPluginSection { plugin, section } => {
+            PluginAction::RunAction { plugin, action } => self.run_plugin_action(plugin, action),
+            PluginAction::ResetSection { plugin, section } => {
                 self.reset_plugin_section(&plugin, section.as_deref());
             }
-            Action::OpenPlugin(id) => self.open_plugin(id),
-            Action::BackToPlugins => {
+            PluginAction::Open(id) => self.open_plugin(id),
+            PluginAction::BackToPlugins => {
                 self.plugins_view = PluginsView::List;
                 self.sync_plugins();
             }
-            Action::StartReorder => {
+            PluginAction::StartReorder => {
                 if self.settings.plugins.len() >= 2 {
                     self.reordering = true;
                     self.plugins_view = PluginsView::List;
                     self.sync_plugins();
                 }
             }
-            Action::EndReorder => self.reordering = false,
-            Action::MovePlugin { id, to } => self.move_plugin(&id, to),
-            Action::FinishPluginSetup { id, allow } => self.finish_plugin_setup(&id, &allow),
-            Action::CancelPluginSetup(id) => {
+            PluginAction::EndReorder => self.reordering = false,
+            PluginAction::Move { id, to } => self.move_plugin(&id, to),
+            PluginAction::FinishSetup { id, allow } => self.finish_plugin_setup(&id, &allow),
+            PluginAction::CancelSetup(id) => {
                 if self
                     .settings
                     .plugins
@@ -1106,16 +1158,16 @@ impl App {
                     self.remove_plugin(&id);
                 }
             }
-            Action::RetryPluginStart(id) => self.retry_plugin_start(&id),
-            Action::SetPluginSecret {
+            PluginAction::RetryStart(id) => self.retry_plugin_start(&id),
+            PluginAction::SetSecret {
                 plugin,
                 option,
                 value,
             } => self.set_plugin_secret(plugin, option, value),
-            Action::ApprovePluginNeeds(id) => self.decide_plugin_needs(&id, true),
-            Action::DenyPluginNeeds(id) => self.decide_plugin_needs(&id, false),
-            Action::TrustPluginFile(id) => self.trust_plugin_file(&id),
-            Action::KeepPluginOff(id) => {
+            PluginAction::ApproveNeeds(id) => self.decide_plugin_needs(&id, true),
+            PluginAction::DenyNeeds(id) => self.decide_plugin_needs(&id, false),
+            PluginAction::TrustFile(id) => self.trust_plugin_file(&id),
+            PluginAction::KeepOff(id) => {
                 if let Some(entry) = self.settings.plugins.iter_mut().find(|e| e.id == id) {
                     entry.enabled = false;
                     self.mark_settings_dirty();
@@ -1125,16 +1177,14 @@ impl App {
                 }
                 self.sync_plugins();
             }
-            Action::PluginSignIn { plugin, account } => self.send_service(Command::PluginSend {
-                id: plugin,
-                message: HostMessage::SignIn { account },
-            }),
-            Action::HidePluginSignIn { plugin, account } => {
+            PluginAction::SignIn { plugin, account } => {
+                self.send_to_plugin(&plugin, HostMessage::SignIn { account })
+            }
+            PluginAction::HideSignIn { plugin, account } => {
                 if let Some(state) = self.plugins.get_mut(&plugin) {
                     state.sign_in.retain(|s| s.account != account);
                 }
             }
-            _ => {}
         }
     }
 
@@ -1241,10 +1291,7 @@ impl App {
         // The last answer is old now; the button shows its wait.
         state.statuses.remove(&action);
         state.action_started.insert(action.clone(), Instant::now());
-        self.send_service(Command::PluginSend {
-            id: plugin,
-            message: HostMessage::Action { id: action },
-        });
+        self.send_to_plugin(&plugin, HostMessage::Action { id: action });
     }
 
     /// "Reset to defaults" for one section (`None` is the options with no

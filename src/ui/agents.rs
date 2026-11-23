@@ -13,7 +13,7 @@ use super::widgets::{group, note};
 use crate::agents::access::Access;
 use crate::agents::proposals::{Proposal, ProposalKind};
 use crate::app::App;
-use crate::model::{Action, ConversationId};
+use crate::model::{Action, AgentAction, ConversationId};
 use crate::plugin::registry;
 use crate::theme::{self, Icon};
 
@@ -122,19 +122,19 @@ pub fn proposal_card(
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = vec2(8.0, 6.0);
                 if !proposal.outdated && widgets::primary_button(ui, &palette, "Send").clicked() {
-                    actions.push(Action::AgentSend {
+                    actions.push(Action::Agent(AgentAction::Send {
                         proposal: proposal.id.clone(),
-                    });
+                    }));
                 }
                 if widgets::secondary_button(ui, &palette, "Edit").clicked() {
-                    actions.push(Action::AgentEdit {
+                    actions.push(Action::Agent(AgentAction::Edit {
                         proposal: proposal.id.clone(),
-                    });
+                    }));
                 }
                 if widgets::secondary_button(ui, &palette, "Discard").clicked() {
-                    actions.push(Action::AgentDiscard {
+                    actions.push(Action::Agent(AgentAction::Discard {
                         proposal: proposal.id.clone(),
-                    });
+                    }));
                 }
             });
         });
@@ -193,9 +193,9 @@ pub fn reaction_pills(
                         widgets::on_click(
                             &accept,
                             actions,
-                            Action::AgentAcceptReaction {
+                            Action::Agent(AgentAction::AcceptReaction {
                                 proposal: proposal.id.clone(),
-                            },
+                            }),
                         );
                         ui.label(
                             egui::RichText::new("\u{B7}")
@@ -207,9 +207,9 @@ pub fn reaction_pills(
                         widgets::on_click(
                             &discard,
                             actions,
-                            Action::AgentDiscard {
+                            Action::Agent(AgentAction::Discard {
                                 proposal: proposal.id.clone(),
-                            },
+                            }),
                         );
                     });
                 });
@@ -353,10 +353,10 @@ pub fn access_section(ui: &mut egui::Ui, app: &App, plugin: &str, actions: &mut 
             "Agents may propose replies and reactions",
         );
         if next != access {
-            actions.push(Action::SetAgentAccess {
+            actions.push(Action::Agent(AgentAction::SetAccess {
                 account: account.id.clone(),
                 access: next,
-            });
+            }));
         }
         ui.add_space(6.0);
         ui.separator();

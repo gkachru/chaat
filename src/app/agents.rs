@@ -10,13 +10,10 @@ use super::App;
 use crate::agents::access::{Access, AgentAccess};
 use crate::agents::proposals::{Proposal, ProposalKind};
 use crate::backend::Command;
-use crate::model::{Action, ConversationId, Message, ToastKind};
+use crate::model::{Action, AgentAction, ConversationId, Message, ToastKind};
 use crate::plugin::agent::{AgentProposal, AgentQuery, result_line};
 use crate::plugin::protocol::HostMessage;
-use crate::plugin::registry;
-
-/// The need that lets the agents plugin read and propose.
-const MESSAGES: &str = "messages";
+use crate::plugin::registry::{Capability, Need};
 
 /// The most bytes of one event line, like an answer (`MAX_LINE` is 64 KiB).
 const MAX_EVENT: usize = 60_000;
@@ -25,16 +22,7 @@ impl App {
     /// The plugin that gets agent answers and events: the first enabled one
     /// in list order that is running and offers `agents`.
     pub fn agents_owner(&self) -> Option<String> {
-        self.settings
-            .plugins
-            .iter()
-            .filter(|entry| entry.enabled)
-            .find(|entry| {
-                self.plugins
-                    .get(&entry.id)
-                    .is_some_and(|state| state.running && state.offers.contains(&registry::AGENTS))
-            })
-            .map(|entry| entry.id.clone())
+        self.owner_of(Capability::Agents)
     }
 
     /// The agents owner, when it declared `messages` and the person allowed
@@ -45,15 +33,12 @@ impl App {
             .plugins
             .iter()
             .find(|entry| entry.id == owner)
-            .is_some_and(|entry| Self::plugin_need_effective(entry, MESSAGES))
+            .is_some_and(|entry| Self::plugin_need_effective(entry, Need::Messages))
             .then_some(owner)
     }
 
     fn agent_send(&self, plugin: &str, message: HostMessage) {
-        self.send_service(Command::PluginSend {
-            id: plugin.to_owned(),
-            message,
-        });
+        self.send_to_plugin(plugin, message);
     }
 
     fn agent_answer(
@@ -308,13 +293,13 @@ impl App {
         }
     }
 
-    pub(super) fn apply_agent_action(&mut self, action: Action, ctx: &egui::Context) {
+    pub(super) fn apply_agent_action(&mut self, action: AgentAction, ctx: &egui::Context) {
         match action {
-            Action::SetAgentAccess { account, access } => {
+            AgentAction::SetAccess { account, access } => {
                 self.settings.agent_access.insert(account, access);
                 self.mark_settings_dirty();
             }
-            Action::LetAgentsRead { conversation, on } => {
+            AgentAction::LetRead { conversation, on } => {
                 let Some(account) = self.id.clone() else {
                     return;
                 };
@@ -336,7 +321,7 @@ impl App {
                 }
                 self.mark_settings_dirty();
             }
-            Action::AgentSend { proposal } => {
+            AgentAction::Send { proposal } => {
                 if let Some(p) = self.take_agent_proposal(&proposal, true)
                     && let ProposalKind::Reply { text, reply_to } = p.kind.clone()
                 {
@@ -353,7 +338,7 @@ impl App {
                     self.agent_outcome(&p.plugin, &p.id, "sent");
                 }
             }
-            Action::AgentEdit { proposal } => {
+            AgentAction::Edit { proposal } => {
                 if let Some(p) = self.take_agent_proposal(&proposal, true)
                     && let ProposalKind::Reply { text, reply_to } = p.kind.clone()
                 {
@@ -366,12 +351,12 @@ impl App {
                     self.agent_outcome(&p.plugin, &p.id, "edited");
                 }
             }
-            Action::AgentDiscard { proposal } => {
+            AgentAction::Discard { proposal } => {
                 if let Some(p) = self.agent_proposals.take(&proposal) {
                     self.agent_outcome(&p.plugin, &p.id, "discarded");
                 }
             }
-            Action::AgentAcceptReaction { proposal } => {
+            AgentAction::AcceptReaction { proposal } => {
                 if let Some(p) = self.take_agent_proposal(&proposal, false)
                     && let ProposalKind::Reaction { message, emoji } = p.kind.clone()
                 {
@@ -401,7 +386,6 @@ impl App {
                     self.agent_outcome(&p.plugin, &p.id, "accepted");
                 }
             }
-            _ => {}
         }
     }
 

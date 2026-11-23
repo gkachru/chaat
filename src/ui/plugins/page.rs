@@ -9,7 +9,7 @@ use super::super::widgets::{group, note};
 use super::options::{OptionsCx, options_block};
 use super::{file_changed_items, need_words, notice, pending_items};
 use crate::app::{App, PluginState};
-use crate::model::{Action, SettingsPage};
+use crate::model::{Action, PluginAction, SettingsPage};
 use crate::plugin::protocol::OptionSpec;
 use crate::plugin::registry;
 use crate::settings::PluginEntry;
@@ -57,7 +57,7 @@ pub(super) fn request_enabled(
     if !on && app.turn_off_question(id).is_some() {
         set_asking_off(ui, id, true);
     } else {
-        actions.push(Action::SetPluginEnabled(id.to_owned(), on));
+        actions.push(Action::Plugin(PluginAction::SetEnabled(id.to_owned(), on)));
     }
 }
 
@@ -91,7 +91,10 @@ pub(super) fn turn_off_ask(app: &App, ui: &mut egui::Ui, id: &str, actions: &mut
             ui.horizontal(|ui| {
                 if danger_button(ui, &palette, "Turn off").clicked() {
                     set_asking_off(ui, id, false);
-                    actions.push(Action::SetPluginEnabled(id.to_owned(), false));
+                    actions.push(Action::Plugin(PluginAction::SetEnabled(
+                        id.to_owned(),
+                        false,
+                    )));
                 }
                 if widgets::secondary_button(ui, &palette, "Cancel").clicked() {
                     set_asking_off(ui, id, false);
@@ -126,7 +129,7 @@ pub(super) fn plugin_page(
     if ui.link("\u{2039} Plugins").clicked() {
         forget_confirm(ui, &entry.id);
         set_asking_off(ui, &entry.id, false);
-        actions.push(Action::BackToPlugins);
+        actions.push(Action::Plugin(PluginAction::BackToPlugins));
     }
     ui.add_space(6.0);
     title(app, ui, entry, actions);
@@ -422,7 +425,7 @@ fn file_section(app: &App, ui: &mut egui::Ui, entry: &PluginEntry, actions: &mut
         ui.horizontal(|ui| {
             if danger_button(ui, &palette, "Remove").clicked() {
                 set_confirming(ui, &entry.id, false);
-                actions.push(Action::RemovePlugin(entry.id.clone()));
+                actions.push(Action::Plugin(PluginAction::Remove(entry.id.clone())));
             }
             if widgets::secondary_button(ui, &palette, "Cancel").clicked() {
                 set_confirming(ui, &entry.id, false);
@@ -490,10 +493,10 @@ fn account_rows(
                         .color(color),
                 );
                 if waiting && widgets::secondary_button(ui, &palette, "New code").clicked() {
-                    actions.push(Action::PluginSignIn {
+                    actions.push(Action::Plugin(PluginAction::SignIn {
                         plugin: entry.id.clone(),
                         account: account.id.clone(),
-                    });
+                    }));
                 }
             });
         };

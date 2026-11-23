@@ -817,6 +817,136 @@ impl Section {
     }
 }
 
+/// The setup file flow and export form, as `Action::Setup`.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SetupAction {
+    /// Choose a setup file with the file picker.
+    ChooseFile,
+    /// A setup file was dropped on the window.
+    DroppedFile(std::path::PathBuf),
+    /// Open the chosen setup file with the typed passphrase.
+    OpenFile,
+    /// Apply the reviewed setup file.
+    Apply,
+    /// Cancel the setup file flow.
+    Cancel,
+    /// Show or hide the manual sign-in fields.
+    ShowManual(bool),
+    /// Open or close the export form.
+    OpenExportForm(bool),
+    /// Write a setup file from the export form.
+    Export,
+    /// Hide the passphrase shown after an export.
+    DismissPassphrase,
+}
+
+/// The plugins list and pages in Settings, as `Action::Plugin`.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PluginAction {
+    /// Picks a plugin's executable with the system's file picker and adds it
+    /// to the plugin list, turned on.
+    Add,
+    /// Stops a plugin and removes it, with its stored secrets.
+    Remove(String),
+    SetEnabled(String, bool),
+    /// Allows everything the plugin's `ready` asked for that is still
+    /// pending (account IDs, presence), and sends it.
+    ApproveNeeds(String),
+    /// Refuses what is pending; the plugin keeps running without it.
+    DenyNeeds(String),
+    /// Runs the plugin file that no longer matches its stored hash: stores
+    /// the new hash, clears the approved and denied needs (the new program
+    /// must ask again) and restarts it.
+    TrustFile(String),
+    /// Turns a plugin off whose file changed, and drops the question.
+    KeepOff(String),
+    /// Changes one of a plugin's described options (never a secret). The
+    /// value is checked first; an invalid one is neither stored nor sent, and
+    /// its error appears in `App::plugin_option_errors`.
+    SetOption {
+        plugin: String,
+        option: String,
+        value: serde_json::Value,
+    },
+    /// Clicks the button of an `action` option. Sent only to a running plugin
+    /// that has said `ready`.
+    RunAction {
+        plugin: String,
+        action: String,
+    },
+    /// "Reset to defaults" for one section (`None`: options without a
+    /// section). Secrets stay.
+    ResetSection {
+        plugin: String,
+        section: Option<String>,
+    },
+    /// Opens a plugin's page in Settings › Plugins (also from Push updates
+    /// and Calls).
+    Open(String),
+    /// Back to the plugins list.
+    BackToPlugins,
+    /// Enters the reorder mode of the plugins list.
+    StartReorder,
+    EndReorder,
+    /// Moves a plugin to a place in the list (its final index). List order
+    /// decides which plugin provides push and call alerts.
+    Move {
+        id: String,
+        to: usize,
+    },
+    /// Finishes the add flow: approves the listed needs, refuses the other
+    /// pending ones and clears `setup_pending`.
+    FinishSetup {
+        id: String,
+        allow: Vec<String>,
+    },
+    /// Cancels the add flow: removes the entry as Remove does.
+    CancelSetup(String),
+    /// Starts a plugin again after it failed in the add flow.
+    RetryStart(String),
+    /// Stores (or, with `None`, removes) a plugin's secret option value in
+    /// the credential store.
+    SetSecret {
+        plugin: String,
+        option: String,
+        value: Option<String>,
+    },
+    /// Asks a plugin for a sign-in code for this account now.
+    SignIn {
+        plugin: String,
+        account: String,
+    },
+    /// Hides a plugin's sign-in panel; the plugin keeps waiting.
+    HideSignIn {
+        plugin: String,
+        account: Option<String>,
+    },
+}
+
+/// Agent access and proposals, as `Action::Agent`.
+#[derive(Clone, Debug, PartialEq)]
+pub enum AgentAction {
+    /// Replaces what agents may use in one account (`oid.tid`).
+    SetAccess {
+        account: String,
+        access: crate::agents::access::AgentAccess,
+    },
+    /// Lets agents read (or stop reading) one conversation of the active
+    /// account.
+    LetRead {
+        conversation: ConversationId,
+        on: bool,
+    },
+    /// Sends the proposed reply as the person.
+    Send { proposal: String },
+    /// Moves the proposed reply into the conversation's draft.
+    Edit { proposal: String },
+    /// Drops a proposed reply or reaction.
+    Discard { proposal: String },
+    /// Applies a proposed reaction.
+    AcceptReaction { proposal: String },
+}
+
 /// What a view asks the app to do. Views push these; `App::apply` runs them
 /// after the frame, so no view mutates state it is drawing from.
 #[derive(Clone, Debug, PartialEq)]
@@ -999,24 +1129,8 @@ pub enum Action {
     DockWindow(bool),
     /// Looks up the meeting's chat, asking for OnlineMeetings.Read first.
     FindMeetingChat,
-    /// Choose a setup file with the file picker.
-    ChooseSetupFile,
-    /// A setup file was dropped on the window.
-    DroppedSetupFile(std::path::PathBuf),
-    /// Open the chosen setup file with the typed passphrase.
-    OpenSetupFile,
-    /// Apply the reviewed setup file.
-    ApplySetup,
-    /// Cancel the setup file flow.
-    CancelSetup,
-    /// Show or hide the manual sign-in fields.
-    ShowSetupManual(bool),
-    /// Open or close the export form.
-    OpenExportForm(bool),
-    /// Write a setup file from the export form.
-    ExportSetup,
-    /// Hide the passphrase shown after an export.
-    DismissSetupPassphrase,
+    /// The setup file flow and export form.
+    Setup(SetupAction),
     /// Shows the call's join link as a QR code, to join on a phone.
     JoinOnPhone,
     /// Opens Teams on the web once, to sign in there ahead of calls.
@@ -1058,111 +1172,10 @@ pub enum Action {
     RingOpenChat(String),
     /// Closes a ring toast (by its call id).
     DismissRing(String),
-    /// Picks a plugin's executable with the system's file picker and adds it
-    /// to the plugin list, turned on.
-    AddPlugin,
-    /// Stops a plugin and removes it, with its stored secrets.
-    RemovePlugin(String),
-    SetPluginEnabled(String, bool),
-    /// Allows everything the plugin's `ready` asked for that is still
-    /// pending (account IDs, presence), and sends it.
-    ApprovePluginNeeds(String),
-    /// Refuses what is pending; the plugin keeps running without it.
-    DenyPluginNeeds(String),
-    /// Runs the plugin file that no longer matches its stored hash: stores
-    /// the new hash, clears the approved and denied needs (the new program
-    /// must ask again) and restarts it.
-    TrustPluginFile(String),
-    /// Turns a plugin off whose file changed, and drops the question.
-    KeepPluginOff(String),
-    /// Changes one of a plugin's described options (never a secret). The
-    /// value is checked first; an invalid one is neither stored nor sent, and
-    /// its error appears in `App::plugin_option_errors`.
-    SetPluginOption {
-        plugin: String,
-        option: String,
-        value: serde_json::Value,
-    },
-    /// Clicks the button of an `action` option. Sent only to a running plugin
-    /// that has said `ready`.
-    RunPluginAction {
-        plugin: String,
-        action: String,
-    },
-    /// "Reset to defaults" for one section (`None`: options without a
-    /// section). Secrets stay.
-    ResetPluginSection {
-        plugin: String,
-        section: Option<String>,
-    },
-    /// Opens a plugin's page in Settings › Plugins (also from Push updates
-    /// and Calls).
-    OpenPlugin(String),
-    /// Back to the plugins list.
-    BackToPlugins,
-    /// Enters the reorder mode of the plugins list.
-    StartReorder,
-    EndReorder,
-    /// Moves a plugin to a place in the list (its final index). List order
-    /// decides which plugin provides push and call alerts.
-    MovePlugin {
-        id: String,
-        to: usize,
-    },
-    /// Finishes the add flow: approves the listed needs, refuses the other
-    /// pending ones and clears `setup_pending`.
-    FinishPluginSetup {
-        id: String,
-        allow: Vec<String>,
-    },
-    /// Cancels the add flow: removes the entry as Remove does.
-    CancelPluginSetup(String),
-    /// Starts a plugin again after it failed in the add flow.
-    RetryPluginStart(String),
-    /// Stores (or, with `None`, removes) a plugin's secret option value in
-    /// the credential store.
-    SetPluginSecret {
-        plugin: String,
-        option: String,
-        value: Option<String>,
-    },
-    /// Asks a plugin for a sign-in code for this account now.
-    PluginSignIn {
-        plugin: String,
-        account: String,
-    },
-    /// Hides a plugin's sign-in panel; the plugin keeps waiting.
-    HidePluginSignIn {
-        plugin: String,
-        account: Option<String>,
-    },
-    /// Replaces what agents may use in one account (`oid.tid`).
-    SetAgentAccess {
-        account: String,
-        access: crate::agents::access::AgentAccess,
-    },
-    /// Lets agents read (or stop reading) one conversation of the active
-    /// account.
-    LetAgentsRead {
-        conversation: ConversationId,
-        on: bool,
-    },
-    /// Sends the proposed reply as the person.
-    AgentSend {
-        proposal: String,
-    },
-    /// Moves the proposed reply into the conversation's draft.
-    AgentEdit {
-        proposal: String,
-    },
-    /// Drops a proposed reply or reaction.
-    AgentDiscard {
-        proposal: String,
-    },
-    /// Applies a proposed reaction.
-    AgentAcceptReaction {
-        proposal: String,
-    },
+    /// The plugins list and pages in Settings.
+    Plugin(PluginAction),
+    /// What agents may use and what they propose.
+    Agent(AgentAction),
     Quit,
 }
 

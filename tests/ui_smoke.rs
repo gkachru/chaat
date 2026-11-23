@@ -4,7 +4,7 @@
 
 use chaat::app::{App, Overlay, PluginsView};
 use chaat::backend::{AuthStatus, Waker};
-use chaat::model::{Action, ConversationId, Section, SettingsPage};
+use chaat::model::{Action, AgentAction, ConversationId, PluginAction, Section, SettingsPage};
 use chaat::model::{Availability, MentionRef};
 use chaat::paths::AppDirs;
 use chaat::settings::{Settings, ThemeChoice};
@@ -3310,10 +3310,10 @@ fn the_call_alerts_sign_in_panel_shows_the_code_in_both_themes_and_widths() {
                 );
             }
             assert!(!h.app.plugins["ca"].sign_in.is_empty());
-            h.act(Action::HidePluginSignIn {
+            h.act(Action::Plugin(PluginAction::HideSignIn {
                 plugin: "ca".into(),
                 account: None,
-            });
+            }));
             assert!(!painted_texts(&h).iter().any(|t| t == "AB12CD34"));
         }
     }
@@ -3493,7 +3493,10 @@ fn add_plugin_button_stays_in_the_header() {
     plugins_page_frame(&mut h, vec![]);
     plugins_page_frame(&mut h, vec![]);
     let actions = plugins_page_click(&mut h, "Add\u{2026}");
-    assert!(actions.contains(&Action::AddPlugin), "{actions:?}");
+    assert!(
+        actions.contains(&Action::Plugin(PluginAction::Add)),
+        "{actions:?}"
+    );
 }
 
 #[test]
@@ -3504,15 +3507,15 @@ fn list_row_click_opens_the_plugin() {
     plugins_page_frame(&mut h, vec![]);
     let actions = plugins_page_click(&mut h, "Asks for your presence");
     assert!(
-        actions.contains(&Action::OpenPlugin("demo-light".into())),
+        actions.contains(&Action::Plugin(PluginAction::Open("demo-light".into()))),
         "{actions:?}"
     );
     let actions = plugins_page_click(&mut h, "Ring alerts");
-    assert!(actions.contains(&Action::OpenPlugin("demo-alerts".into())));
+    assert!(actions.contains(&Action::Plugin(PluginAction::Open("demo-alerts".into()))));
     assert!(
         !actions
             .iter()
-            .any(|a| matches!(a, Action::SetPluginEnabled(..))),
+            .any(|a| matches!(a, Action::Plugin(PluginAction::SetEnabled(..)))),
         "{actions:?}"
     );
 }
@@ -3526,11 +3529,16 @@ fn list_switch_does_not_open() {
     // The first row is the one that needs the person.
     let actions = plugins_page_click(&mut h, "Turn on");
     assert!(
-        actions.contains(&Action::SetPluginEnabled("demo-light".into(), false)),
+        actions.contains(&Action::Plugin(PluginAction::SetEnabled(
+            "demo-light".into(),
+            false
+        ))),
         "{actions:?}"
     );
     assert!(
-        !actions.iter().any(|a| matches!(a, Action::OpenPlugin(_))),
+        !actions
+            .iter()
+            .any(|a| matches!(a, Action::Plugin(PluginAction::Open(_)))),
         "{actions:?}"
     );
 }
@@ -3633,10 +3641,10 @@ fn each_account_row_says_whether_the_plugin_listens_waits_or_connects() {
     let mut h = plugins_page_harness_for("demo-alerts");
     let second = h.app.plugin_accounts()[1].id.clone();
     let actions = plugins_page_click(&mut h, "New code");
-    assert!(actions.contains(&Action::PluginSignIn {
+    assert!(actions.contains(&Action::Plugin(PluginAction::SignIn {
         plugin: "demo-alerts".into(),
         account: second,
-    }));
+    })));
 }
 
 #[test]
@@ -3716,12 +3724,22 @@ fn a_pending_need_shows_allow_and_dont_allow() {
     }
     let mut h = plugins_page_harness();
     let actions = plugins_page_click(&mut h, "Allow");
-    assert!(actions.contains(&Action::ApprovePluginNeeds("demo-light".into())));
-    assert!(!actions.contains(&Action::DenyPluginNeeds("demo-light".into())));
+    assert!(actions.contains(&Action::Plugin(PluginAction::ApproveNeeds(
+        "demo-light".into()
+    ))));
+    assert!(!actions.contains(&Action::Plugin(PluginAction::DenyNeeds(
+        "demo-light".into()
+    ))));
     let mut h = plugins_page_harness();
     let actions = plugins_page_click(&mut h, "Don't allow");
-    assert!(actions.contains(&Action::DenyPluginNeeds("demo-light".into())));
-    assert!(!actions.contains(&Action::ApprovePluginNeeds("demo-light".into())));
+    assert!(actions.contains(&Action::Plugin(PluginAction::DenyNeeds(
+        "demo-light".into()
+    ))));
+    assert!(
+        !actions.contains(&Action::Plugin(PluginAction::ApproveNeeds(
+            "demo-light".into()
+        )))
+    );
 }
 
 #[test]
@@ -3786,12 +3804,20 @@ fn a_changed_file_offers_run_or_keep_off() {
     }
     let mut h = plugins_page_harness_for("demo-changed");
     let actions = plugins_page_click(&mut h, "Run the new file");
-    assert!(actions.contains(&Action::TrustPluginFile("demo-changed".into())));
-    assert!(!actions.contains(&Action::KeepPluginOff("demo-changed".into())));
+    assert!(actions.contains(&Action::Plugin(PluginAction::TrustFile(
+        "demo-changed".into()
+    ))));
+    assert!(!actions.contains(&Action::Plugin(PluginAction::KeepOff(
+        "demo-changed".into()
+    ))));
     let mut h = plugins_page_harness_for("demo-changed");
     let actions = plugins_page_click(&mut h, "Keep it off");
-    assert!(actions.contains(&Action::KeepPluginOff("demo-changed".into())));
-    assert!(!actions.contains(&Action::TrustPluginFile("demo-changed".into())));
+    assert!(actions.contains(&Action::Plugin(PluginAction::KeepOff(
+        "demo-changed".into()
+    ))));
+    assert!(!actions.contains(&Action::Plugin(PluginAction::TrustFile(
+        "demo-changed".into()
+    ))));
 }
 
 #[test]
@@ -3819,10 +3845,12 @@ fn the_docs_link_shows_its_host() {
 
 #[test]
 fn a_secret_buffer_does_not_survive_leaving_the_page() {
-    let secret = |value: &str| Action::SetPluginSecret {
-        plugin: "demo-light".into(),
-        option: "token".into(),
-        value: Some(value.into()),
+    let secret = |value: &str| {
+        Action::Plugin(PluginAction::SetSecret {
+            plugin: "demo-light".into(),
+            option: "token".into(),
+            value: Some(value.into()),
+        })
     };
     let type_secret = |h: &mut Harness| {
         plugins_page_click(h, "New value");
@@ -3830,9 +3858,12 @@ fn a_secret_buffer_does_not_survive_leaving_the_page() {
         plugins_page_frame(h, vec![]);
     };
     let any_secret_save = |actions: &[Action]| {
-        actions
-            .iter()
-            .any(|a| matches!(a, Action::SetPluginSecret { value: Some(_), .. }))
+        actions.iter().any(|a| {
+            matches!(
+                a,
+                Action::Plugin(PluginAction::SetSecret { value: Some(_), .. })
+            )
+        })
     };
 
     // Control: what was typed saves, and saving empties the buffer.
@@ -3859,11 +3890,11 @@ fn a_secret_buffer_does_not_survive_leaving_the_page() {
     let mut h = plugins_page_harness();
     type_secret(&mut h);
     let actions = plugins_page_click(&mut h, "Clear");
-    assert!(actions.contains(&Action::SetPluginSecret {
+    assert!(actions.contains(&Action::Plugin(PluginAction::SetSecret {
         plugin: "demo-light".into(),
         option: "token".into(),
         value: None,
-    }));
+    })));
     let actions = plugins_page_click(&mut h, "Save");
     assert!(!any_secret_save(&actions), "Clear emptied the buffer");
 
@@ -4048,10 +4079,12 @@ fn a_plugin_sign_in_card_names_chaats_account_not_the_plugins_claim() {
 #[test]
 fn toggle_choice_and_text_options_push_set_plugin_option() {
     let mut h = plugins_page_harness();
-    let set = |option: &str, value: serde_json::Value| Action::SetPluginOption {
-        plugin: "demo-light".into(),
-        option: option.into(),
-        value,
+    let set = |option: &str, value: serde_json::Value| {
+        Action::Plugin(PluginAction::SetOption {
+            plugin: "demo-light".into(),
+            option: option.into(),
+            value,
+        })
     };
     let actions = plugins_page_click(&mut h, "Flash on calls");
     assert!(actions.contains(&set("flash", false.into())), "{actions:?}");
@@ -4091,7 +4124,7 @@ fn toggle_choice_and_text_options_push_set_plugin_option() {
     let value = actions
         .iter()
         .find_map(|a| match a {
-            Action::SetPluginOption { option, value, .. } if option == "ip" => {
+            Action::Plugin(PluginAction::SetOption { option, value, .. }) if option == "ip" => {
                 value.as_str().map(str::to_owned)
             }
             _ => None,
@@ -4129,17 +4162,17 @@ fn a_secret_option_never_shows_its_value() {
         "what is typed is masked"
     );
     let actions = plugins_page_click(&mut h, "Save");
-    assert!(actions.contains(&Action::SetPluginSecret {
+    assert!(actions.contains(&Action::Plugin(PluginAction::SetSecret {
         plugin: "demo-light".into(),
         option: "token".into(),
         value: Some("hunter2".into()),
-    }));
+    })));
     let actions = plugins_page_click(&mut h, "Clear");
-    assert!(actions.contains(&Action::SetPluginSecret {
+    assert!(actions.contains(&Action::Plugin(PluginAction::SetSecret {
         plugin: "demo-light".into(),
         option: "token".into(),
         value: None,
-    }));
+    })));
 }
 
 // Settings › Plugins: the rich options of a plugin.
@@ -4218,11 +4251,11 @@ fn plugins_page_enter(h: &mut Harness) -> Vec<Action> {
 }
 
 fn set_light(option: &str, value: serde_json::Value) -> Action {
-    Action::SetPluginOption {
+    Action::Plugin(PluginAction::SetOption {
         plugin: "demo-light".into(),
         option: option.into(),
         value,
-    }
+    })
 }
 
 fn texts_in_order(h: &Harness, wanted: &[&str]) -> bool {
@@ -4236,7 +4269,7 @@ fn texts_in_order(h: &Harness, wanted: &[&str]) -> bool {
 fn no_option_set(actions: &[Action]) -> bool {
     !actions
         .iter()
-        .any(|a| matches!(a, Action::SetPluginOption { .. }))
+        .any(|a| matches!(a, Action::Plugin(PluginAction::SetOption { .. })))
 }
 
 #[test]
@@ -4271,19 +4304,19 @@ fn reset_to_defaults_pushes_the_reset_of_that_section() {
     let first = text_pos_nth(&h, "Reset to defaults", 0).expect("Bulb's button");
     let actions = plugins_page_press(&mut h, first);
     assert!(
-        actions.contains(&Action::ResetPluginSection {
+        actions.contains(&Action::Plugin(PluginAction::ResetSection {
             plugin: "demo-light".into(),
             section: Some("Bulb".into()),
-        }),
+        })),
         "{actions:?}"
     );
     let second = text_pos_nth(&h, "Reset to defaults", 1).expect("Colors' button");
     let actions = plugins_page_press(&mut h, second);
     assert!(
-        actions.contains(&Action::ResetPluginSection {
+        actions.contains(&Action::Plugin(PluginAction::ResetSection {
             plugin: "demo-light".into(),
             section: Some("Colors".into()),
-        }),
+        })),
         "{actions:?}"
     );
 }
@@ -4585,7 +4618,9 @@ fn closing_the_color_picker_commits_the_picked_color() {
     let away = egui::pos2(850.0, 20.0);
     let actions = plugins_page_press(&mut h, away);
     let picked = actions.iter().find_map(|a| match a {
-        Action::SetPluginOption { option, value, .. } if option == "busy" => value.as_str(),
+        Action::Plugin(PluginAction::SetOption { option, value, .. }) if option == "busy" => {
+            value.as_str()
+        }
         _ => None,
     });
     let picked = picked.unwrap_or_else(|| panic!("closing commits it: {actions:?}"));
@@ -4612,17 +4647,17 @@ fn an_action_option_runs_on_click_and_waits_while_the_plugin_works() {
     let mut h = plugins_page_harness();
     let actions = plugins_page_click(&mut h, "Test the light");
     assert!(
-        actions.contains(&Action::RunPluginAction {
+        actions.contains(&Action::Plugin(PluginAction::RunAction {
             plugin: "demo-light".into(),
             action: "test".into(),
-        }),
+        })),
         "{actions:?}"
     );
     let actions = plugins_page_click(&mut h, "Working\u{2026}");
     assert!(
         !actions
             .iter()
-            .any(|a| matches!(a, Action::RunPluginAction { .. })),
+            .any(|a| matches!(a, Action::Plugin(PluginAction::RunAction { .. }))),
         "a button that is working is disabled: {actions:?}"
     );
     // Once the plugin answers, the button is a button again.
@@ -4635,10 +4670,10 @@ fn an_action_option_runs_on_click_and_waits_while_the_plugin_works() {
     plugins_page_frame(&mut h, vec![]);
     let actions = plugins_page_click(&mut h, "Find bulbs");
     assert!(
-        actions.contains(&Action::RunPluginAction {
+        actions.contains(&Action::Plugin(PluginAction::RunAction {
             plugin: "demo-light".into(),
             action: "scan".into(),
-        }),
+        })),
         "{actions:?}"
     );
 }
@@ -4735,7 +4770,7 @@ fn a_plugin_with_unset_required_options_shows_needs_setup_on_its_page_and_its_ro
     plugins_page_frame(&mut h, vec![]);
     let actions = plugins_page_click(&mut h, "Needs setup");
     assert!(
-        actions.contains(&Action::OpenPlugin("demo-light".into())),
+        actions.contains(&Action::Plugin(PluginAction::Open("demo-light".into()))),
         "{actions:?}"
     );
 }
@@ -4938,7 +4973,7 @@ fn push_updates_links_to_the_plugin() {
     assert!(
         h.app
             .actions
-            .contains(&Action::OpenPlugin("demo-alerts".into()))
+            .contains(&Action::Plugin(PluginAction::Open("demo-alerts".into())))
             || h.app.plugins_view == PluginsView::Plugin("demo-alerts".into())
     );
 }
@@ -5144,18 +5179,26 @@ fn remove_asks_in_place() {
             .any(|t| t == "Checked against the file you added." || t == "Not checked yet.")
     );
     let actions = plugins_page_click(&mut h, "Remove plugin\u{2026}");
-    assert!(!actions.iter().any(|a| matches!(a, Action::RemovePlugin(_))));
+    assert!(
+        !actions
+            .iter()
+            .any(|a| matches!(a, Action::Plugin(PluginAction::Remove(_))))
+    );
     let ask = "Remove \u{201C}Ring alerts\u{201D}? Chaat stops it, deletes its saved secrets and tells it to forget your sign-ins. Chaat stops showing incoming calls from this plugin.";
     assert!(painted_texts(&h).iter().any(|t| t == ask), "asked in place");
     // Cancel puts the question away without removing.
     let actions = plugins_page_click(&mut h, "Cancel");
-    assert!(!actions.iter().any(|a| matches!(a, Action::RemovePlugin(_))));
+    assert!(
+        !actions
+            .iter()
+            .any(|a| matches!(a, Action::Plugin(PluginAction::Remove(_))))
+    );
     assert!(!painted_texts(&h).iter().any(|t| t == ask));
     // Asking again and confirming sends today's action.
     plugins_page_click(&mut h, "Remove plugin\u{2026}");
     let actions = plugins_page_click(&mut h, "Remove");
     assert!(
-        actions.contains(&Action::RemovePlugin("demo-alerts".into())),
+        actions.contains(&Action::Plugin(PluginAction::Remove("demo-alerts".into()))),
         "{actions:?}"
     );
 }
@@ -5164,7 +5207,10 @@ fn remove_asks_in_place() {
 fn back_link_returns_to_the_list() {
     let mut h = plugins_page_harness_for("demo-alerts");
     let actions = plugins_page_click(&mut h, "\u{2039} Plugins");
-    assert!(actions.contains(&Action::BackToPlugins), "{actions:?}");
+    assert!(
+        actions.contains(&Action::Plugin(PluginAction::BackToPlugins)),
+        "{actions:?}"
+    );
 }
 
 #[test]
@@ -5229,7 +5275,7 @@ fn reorder_cases(check: impl Fn(&mut Harness, &str)) {
                 .sign_in
                 .clear();
             h.act(Action::ShowSettingsPage(SettingsPage::Plugins));
-            h.act(Action::StartReorder);
+            h.act(Action::Plugin(PluginAction::StartReorder));
             h.frames(3);
             check(&mut h, &format!("{width} in {theme:?}"));
         }
@@ -5334,7 +5380,7 @@ fn reorder_ends_on_done_and_escape() {
         h.frames(2);
         assert!(!h.app.reordering, "Done ends it at {at}");
         assert_eq!(h.app.settings_page, Some(SettingsPage::Plugins));
-        h.act(Action::StartReorder);
+        h.act(Action::Plugin(PluginAction::StartReorder));
         h.frames(2);
         assert!(h.app.reordering);
         h.frame_with(vec![escape_event()]);
@@ -5352,7 +5398,7 @@ fn reorder_ends_on_done_and_escape() {
 fn escape_on_plugin_page_goes_back_not_closing_settings() {
     let mut h = Harness::new();
     h.act(Action::ShowSettingsPage(SettingsPage::Plugins));
-    h.act(Action::OpenPlugin("demo-alerts".into()));
+    h.act(Action::Plugin(PluginAction::Open("demo-alerts".into())));
     h.frames(3);
     h.frame_with(vec![escape_event()]);
     h.frames(2);
@@ -5385,7 +5431,7 @@ fn turn_off_asks_for_a_provider_only() {
                 assert!(
                     !actions
                         .iter()
-                        .any(|a| matches!(a, Action::SetPluginEnabled(..))),
+                        .any(|a| matches!(a, Action::Plugin(PluginAction::SetEnabled(..)))),
                 );
                 assert!(painted_texts(&h).iter().any(|t| t == ask), "{at}");
                 assert!(
@@ -5399,14 +5445,17 @@ fn turn_off_asks_for_a_provider_only() {
                 assert!(
                     !actions
                         .iter()
-                        .any(|a| matches!(a, Action::SetPluginEnabled(..))),
+                        .any(|a| matches!(a, Action::Plugin(PluginAction::SetEnabled(..)))),
                     "{at}"
                 );
                 assert!(!painted_texts(&h).iter().any(|t| t == ask), "{at}");
                 plugins_page_click(&mut h, "Turn on");
                 let actions = plugins_page_click(&mut h, "Turn off");
                 assert!(
-                    actions.contains(&Action::SetPluginEnabled("demo-alerts".into(), false)),
+                    actions.contains(&Action::Plugin(PluginAction::SetEnabled(
+                        "demo-alerts".into(),
+                        false
+                    ))),
                     "{at}: {actions:?}"
                 );
             }
@@ -5426,7 +5475,10 @@ fn turn_off_asks_for_a_provider_only() {
         plugins_page_frame(&mut h, vec![]);
         let actions = plugins_page_click(&mut h, "Turn on");
         assert!(
-            actions.contains(&Action::SetPluginEnabled("demo-light".into(), false)),
+            actions.contains(&Action::Plugin(PluginAction::SetEnabled(
+                "demo-light".into(),
+                false
+            ))),
             "{actions:?}"
         );
     }
@@ -5503,7 +5555,9 @@ fn add_flow_starting_setup_failed_states() {
     h.app.plugins.get_mut("demo-light").unwrap().message = Some("exit 1".into());
     plugins_page_frame(&mut h, vec![]);
     let actions = plugins_page_click(&mut h, "Try again");
-    assert!(actions.contains(&Action::RetryPluginStart("demo-light".into())));
+    assert!(actions.contains(&Action::Plugin(PluginAction::RetryStart(
+        "demo-light".into()
+    ))));
 }
 
 #[test]
@@ -5579,7 +5633,7 @@ fn remove_confirm_and_turn_off_question_do_not_outlive_settings() {
     h.size = egui::vec2(900.0, 3000.0);
     h.app.settings.plugins.retain(|e| e.id == "demo-alerts");
     h.act(Action::ShowSettingsPage(SettingsPage::Plugins));
-    h.act(Action::OpenPlugin("demo-alerts".into()));
+    h.act(Action::Plugin(PluginAction::Open("demo-alerts".into())));
     plugins_page_frame(&mut h, vec![]);
     plugins_page_frame(&mut h, vec![]);
     plugins_page_click(&mut h, "Turn on");
@@ -5588,7 +5642,7 @@ fn remove_confirm_and_turn_off_question_do_not_outlive_settings() {
     h.act(Action::CloseSettings);
     h.frames(3);
     h.act(Action::ShowSettingsPage(SettingsPage::Plugins));
-    h.act(Action::OpenPlugin("demo-alerts".into()));
+    h.act(Action::Plugin(PluginAction::Open("demo-alerts".into())));
     h.frames(3);
     assert!(
         !painted_texts(&h).iter().any(|t| t == ask),
@@ -5606,7 +5660,7 @@ fn done_disabled_until_required_options_set() {
     assert!(
         !actions
             .iter()
-            .any(|a| matches!(a, Action::FinishPluginSetup { .. })),
+            .any(|a| matches!(a, Action::Plugin(PluginAction::FinishSetup { .. }))),
         "{actions:?}"
     );
     let mut h = plugins_page_harness();
@@ -5614,10 +5668,10 @@ fn done_disabled_until_required_options_set() {
     plugins_page_frame(&mut h, vec![]);
     let actions = plugins_page_click(&mut h, "Done");
     assert!(
-        actions.contains(&Action::FinishPluginSetup {
+        actions.contains(&Action::Plugin(PluginAction::FinishSetup {
             id: "demo-light".into(),
             allow: Vec::new()
-        }),
+        })),
         "{actions:?}"
     );
 }
@@ -5634,10 +5688,10 @@ fn need_boxes_start_unticked() {
     );
     let actions = plugins_page_click(&mut h, "Done");
     assert!(
-        actions.contains(&Action::FinishPluginSetup {
+        actions.contains(&Action::Plugin(PluginAction::FinishSetup {
             id: "demo-light".into(),
             allow: Vec::new()
-        }),
+        })),
         "nothing ticked sends nothing: {actions:?}"
     );
     adding_light(&mut h, true);
@@ -5645,10 +5699,10 @@ fn need_boxes_start_unticked() {
     plugins_page_click(&mut h, "your presence (availability and activity)");
     let actions = plugins_page_click(&mut h, "Done");
     assert!(
-        actions.contains(&Action::FinishPluginSetup {
+        actions.contains(&Action::Plugin(PluginAction::FinishSetup {
             id: "demo-light".into(),
             allow: vec!["presence".into()]
-        }),
+        })),
         "only the ticked one: {actions:?}"
     );
 }
@@ -5660,7 +5714,9 @@ fn cancel_removes_the_new_plugin() {
     adding_light(&mut h, true);
     h.frames(3);
     let before = h.app.settings.plugins.len();
-    h.act(Action::CancelPluginSetup("demo-light".into()));
+    h.act(Action::Plugin(PluginAction::CancelSetup(
+        "demo-light".into(),
+    )));
     assert_eq!(h.app.settings.plugins.len(), before - 1);
     assert_eq!(h.app.plugins_view, PluginsView::List);
 }
@@ -5675,10 +5731,10 @@ fn finish_setup_row_reopens_setup() {
     plugins_page_frame(&mut h, vec![]);
     let actions = plugins_page_click(&mut h, "Finish setup");
     assert!(
-        actions.contains(&Action::OpenPlugin("demo-light".into())),
+        actions.contains(&Action::Plugin(PluginAction::Open("demo-light".into()))),
         "{actions:?}"
     );
-    h.act(Action::OpenPlugin("demo-light".into()));
+    h.act(Action::Plugin(PluginAction::Open("demo-light".into())));
     assert_eq!(h.app.plugins_view, PluginsView::Adding("demo-light".into()));
 }
 
@@ -5828,12 +5884,13 @@ fn list_rows_open_with_tab_and_enter_and_the_switch_toggles_with_space() {
     for _ in 0..12 {
         plugins_page_key(&mut h, egui::Key::Tab);
         let actions = plugins_page_key(&mut h, egui::Key::Enter);
-        opened |= actions.contains(&Action::OpenPlugin("demo-light".into()));
+        opened |= actions.contains(&Action::Plugin(PluginAction::Open("demo-light".into())));
         let actions = plugins_page_key(&mut h, egui::Key::Space);
-        toggled |= actions
+        toggled |= actions.iter().any(
+            |a| matches!(a, Action::Plugin(PluginAction::SetEnabled(id, _)) if id == "demo-light"),
+        ) && !actions
             .iter()
-            .any(|a| matches!(a, Action::SetPluginEnabled(id, _) if id == "demo-light"))
-            && !actions.iter().any(|a| matches!(a, Action::OpenPlugin(_)));
+            .any(|a| matches!(a, Action::Plugin(PluginAction::Open(_))));
     }
     assert!(opened, "a row opens its plugin from the keyboard");
     assert!(toggled, "Space on the switch toggles without opening");
@@ -7327,21 +7384,23 @@ fn send_button_pushes_agent_send() {
     let mut h = agents_harness(1400.0, ThemeChoice::Dark);
     let actions = agents_click(&mut h, "Send");
     assert!(
-        actions.contains(&Action::AgentSend {
+        actions.contains(&Action::Agent(AgentAction::Send {
             proposal: "p1".into()
-        }),
+        })),
         "{actions:?}"
     );
     let mut h = agents_harness(1400.0, ThemeChoice::Dark);
     let actions = agents_click(&mut h, "Edit");
-    assert!(actions.contains(&Action::AgentEdit {
+    assert!(actions.contains(&Action::Agent(AgentAction::Edit {
         proposal: "p1".into()
-    }));
+    })));
     let mut h = agents_harness(1400.0, ThemeChoice::Dark);
     let actions = agents_click(&mut h, "Accept");
-    assert!(actions.contains(&Action::AgentAcceptReaction {
-        proposal: "p2".into()
-    }));
+    assert!(
+        actions.contains(&Action::Agent(AgentAction::AcceptReaction {
+            proposal: "p2".into()
+        }))
+    );
 }
 
 #[test]
@@ -7410,7 +7469,7 @@ fn access_section_pushes_changes() {
     let actions = plugins_page_click(&mut h, "All");
     assert!(
         actions.iter().any(
-            |a| matches!(a, Action::SetAgentAccess { account: id, access }
+            |a| matches!(a, Action::Agent(AgentAction::SetAccess { account: id, access })
             if *id == account && access.chats == Access::All)
         ),
         "{actions:?}"
@@ -7438,19 +7497,19 @@ fn header_menu_toggles() {
             "none" => {
                 assert!(has("Let agents read this chat"), "{painted:?}");
                 let actions = agents_click(&mut h, "Let agents read this chat");
-                assert!(actions.contains(&Action::LetAgentsRead {
+                assert!(actions.contains(&Action::Agent(AgentAction::LetRead {
                     conversation: agents_chat(),
                     on: true
-                }));
+                })));
             }
             "selected" => {
                 assert!(has("Stop agents reading this chat"), "{painted:?}");
                 assert!(!has("Let agents read this chat"));
                 let actions = agents_click(&mut h, "Stop agents reading this chat");
-                assert!(actions.contains(&Action::LetAgentsRead {
+                assert!(actions.contains(&Action::Agent(AgentAction::LetRead {
                     conversation: agents_chat(),
                     on: false
-                }));
+                })));
             }
             _ => {
                 assert!(!has("Let agents read this chat"));

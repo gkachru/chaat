@@ -3,7 +3,7 @@
 //! such; the words around it are Chaat's (see `mod.rs`).
 
 use crate::app::{App, PluginState};
-use crate::model::Action;
+use crate::model::{Action, PluginAction};
 use crate::plugin::options;
 use crate::plugin::protocol::{OptionKind, OptionSpec, StatusState};
 use crate::settings::PluginEntry;
@@ -219,10 +219,10 @@ pub(super) fn options_block(
                             theme::regular(12.0),
                         );
                         if reset.clicked() {
-                            actions.push(Action::ResetPluginSection {
+                            actions.push(Action::Plugin(PluginAction::ResetSection {
                                 plugin: cx.entry.id.clone(),
                                 section: section.map(str::to_owned),
-                            });
+                            }));
                         }
                     });
                 }
@@ -347,10 +347,12 @@ pub(super) fn color_control(
 ) {
     let palette = cx.app.palette;
     let entry = cx.entry;
-    let set = |value: String| Action::SetPluginOption {
-        plugin: entry.id.clone(),
-        option: option.id.clone(),
-        value: value.into(),
+    let set = |value: String| {
+        Action::Plugin(PluginAction::SetOption {
+            plugin: entry.id.clone(),
+            option: option.id.clone(),
+            value: value.into(),
+        })
     };
     let id = buffer_id(&entry.id, &option.id, "color");
     let picked_id = id.with("picked");
@@ -492,10 +494,12 @@ pub(super) fn option_row(
         .get(&option.id)
         .or(option.default.as_ref())
         .cloned();
-    let set = |value: serde_json::Value| Action::SetPluginOption {
-        plugin: entry.id.clone(),
-        option: option.id.clone(),
-        value,
+    let set = |value: serde_json::Value| {
+        Action::Plugin(PluginAction::SetOption {
+            plugin: entry.id.clone(),
+            option: option.id.clone(),
+            value,
+        })
     };
     let failed = cx.error(&option.id).is_some();
     let hint = option.placeholder.as_deref().unwrap_or(&option.label);
@@ -621,10 +625,10 @@ pub(super) fn option_row(
                 })
                 .inner;
             if response.clicked() {
-                actions.push(Action::RunPluginAction {
+                actions.push(Action::Plugin(PluginAction::RunAction {
                     plugin: entry.id.clone(),
                     action: option.id.clone(),
-                });
+                }));
             }
             if !running {
                 response.on_disabled_hover_text("The plugin is not running.");
@@ -660,20 +664,20 @@ pub(super) fn option_row(
                 let typed = !buffer.is_empty();
                 if ui.add_enabled(typed, egui::Button::new("Save")).clicked() {
                     forget_secret_edit_state(ui.ctx(), field);
-                    actions.push(Action::SetPluginSecret {
+                    actions.push(Action::Plugin(PluginAction::SetSecret {
                         plugin: entry.id.clone(),
                         option: option.id.clone(),
                         value: Some(std::mem::take(&mut buffer)),
-                    });
+                    }));
                 }
                 if ui.add_enabled(saved, egui::Button::new("Clear")).clicked() {
                     buffer.clear();
                     forget_secret_edit_state(ui.ctx(), field);
-                    actions.push(Action::SetPluginSecret {
+                    actions.push(Action::Plugin(PluginAction::SetSecret {
                         plugin: entry.id.clone(),
                         option: option.id.clone(),
                         value: None,
-                    });
+                    }));
                 }
             });
             set_secret_buffer(ui, &entry.id, &option.id, buffer);

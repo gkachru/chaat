@@ -6,7 +6,7 @@ use super::super::widgets::{group, note};
 use super::options::{OptionsCx, option_row, options_block};
 use super::{heading, need_words};
 use crate::app::{App, SummaryLevel};
-use crate::model::Action;
+use crate::model::{Action, PluginAction};
 use crate::plugin::protocol::OptionSpec;
 use crate::settings::PluginEntry;
 use crate::theme;
@@ -96,7 +96,7 @@ fn starting(app: &App, ui: &mut egui::Ui, entry: &PluginEntry, actions: &mut Vec
     ui.add_space(10.0);
     if widgets::secondary_button(ui, &palette, "Cancel").clicked() {
         clear_scratch(ui, &entry.id);
-        actions.push(Action::CancelPluginSetup(entry.id.clone()));
+        actions.push(Action::Plugin(PluginAction::CancelSetup(entry.id.clone())));
     }
 }
 
@@ -132,10 +132,10 @@ fn failed(app: &App, ui: &mut egui::Ui, entry: &PluginEntry, actions: &mut Vec<A
     ui.horizontal(|ui| {
         if widgets::secondary_button(ui, &palette, "Remove").clicked() {
             clear_scratch(ui, &entry.id);
-            actions.push(Action::CancelPluginSetup(entry.id.clone()));
+            actions.push(Action::Plugin(PluginAction::CancelSetup(entry.id.clone())));
         }
         if widgets::primary_button(ui, &palette, "Try again").clicked() {
-            actions.push(Action::RetryPluginStart(entry.id.clone()));
+            actions.push(Action::Plugin(PluginAction::RetryStart(entry.id.clone())));
         }
     });
 }
@@ -204,7 +204,7 @@ fn setup(app: &App, ui: &mut egui::Ui, entry: &PluginEntry, actions: &mut Vec<Ac
     ui.horizontal(|ui| {
         if widgets::secondary_button(ui, &palette, "Cancel").clicked() {
             clear_scratch(ui, &entry.id);
-            actions.push(Action::CancelPluginSetup(entry.id.clone()));
+            actions.push(Action::Plugin(PluginAction::CancelSetup(entry.id.clone())));
         }
         ui.add_enabled_ui(can_finish, |ui| {
             if widgets::primary_button(ui, &palette, "Done").clicked() {
@@ -217,10 +217,10 @@ fn setup(app: &App, ui: &mut egui::Ui, entry: &PluginEntry, actions: &mut Vec<Ac
                     .map(str::to_owned)
                     .collect();
                 clear_scratch(ui, &entry.id);
-                actions.push(Action::FinishPluginSetup {
+                actions.push(Action::Plugin(PluginAction::FinishSetup {
                     id: entry.id.clone(),
                     allow,
-                });
+                }));
             }
         });
     });

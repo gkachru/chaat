@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use chaat::app::{App, SetupStage};
 use chaat::backend::{AuthStatus, Waker};
-use chaat::model::{Action, SettingsPage};
+use chaat::model::{Action, SettingsPage, SetupAction};
 use chaat::paths::AppDirs;
 use chaat::settings::{Settings, ThemeChoice};
 use chaat::setup_file::SetupSummary;
@@ -233,7 +233,7 @@ fn every_stage_draws() {
                 h.app.settings.theme = theme.clone();
                 h.app.settings.relay_url = Some("https://relay.example.com".into());
                 h.app.settings.relay_key_set = true;
-                h.act(Action::OpenExportForm(true));
+                h.act(Action::Setup(SetupAction::OpenExportForm(true)));
                 h.app.export.passphrase = passphrase;
                 h.frames(3);
                 assert!(h.has_text("SETUP FILE"));
@@ -267,7 +267,7 @@ fn relay_checkbox_hidden_without_key() {
     let mut h = Harness::advanced();
     h.app.settings.relay_url = Some("https://relay.example.com".into());
     h.app.settings.relay_key_set = false;
-    h.act(Action::OpenExportForm(true));
+    h.act(Action::Setup(SetupAction::OpenExportForm(true)));
     assert!(h.has_text("Organization name"));
     assert!(!h.has_text(LABEL));
     h.app.settings.relay_key_set = true;
@@ -278,7 +278,7 @@ fn relay_checkbox_hidden_without_key() {
 #[test]
 fn create_disabled_without_label() {
     let mut h = Harness::advanced();
-    h.act(Action::OpenExportForm(true));
+    h.act(Action::Setup(SetupAction::OpenExportForm(true)));
     h.app.export.org_label.clear();
     h.frames(2);
     let disabled = h.text_look("  Create file…  ").expect("button drawn");
@@ -465,7 +465,7 @@ fn export_opens_in_a_dialog_and_escape_cancels_it() {
 #[test]
 fn export_passphrase_stays_until_done() {
     let mut h = Harness::advanced();
-    h.act(Action::OpenExportForm(true));
+    h.act(Action::Setup(SetupAction::OpenExportForm(true)));
     h.app.export.passphrase = Some("one-two-three-four-five-six".into());
     h.frames(2);
     assert!(h.has_text("Setup file created"));
@@ -487,7 +487,7 @@ fn export_dialog_draws_in_both_themes_and_widths() {
             h.app.settings.theme = theme;
             h.app.settings.relay_url = Some("https://relay.example.com".into());
             h.app.settings.relay_key_set = true;
-            h.act(Action::OpenExportForm(true));
+            h.act(Action::Setup(SetupAction::OpenExportForm(true)));
             h.app.export.org_label = "Contoso".into();
             h.frames(2);
             assert!(h.has_text("They see \"Set up for Contoso\"."));

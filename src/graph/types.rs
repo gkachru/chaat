@@ -370,3 +370,232 @@ impl DriveItem {
 pub struct UploadSession {
     pub upload_url: String,
 }
+
+/// A person named in an event detail, by id and (when Graph says) name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EventPerson {
+    pub id: String,
+    pub name: Option<String>,
+}
+
+/// How a membership event changed the chat.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MembershipKind {
+    Added,
+    Removed,
+    Joined,
+    Left,
+}
+
+/// A system message's `eventDetail`, as far as Chaat reads it. Built by
+/// [`EventDetail::from_value`], which never fails: anything unknown or
+/// malformed is [`EventDetail::Other`]. `who` is the initiator's display
+/// name, when Graph gives a non-empty one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EventDetail {
+    Members {
+        kind: MembershipKind,
+        by: Option<EventPerson>,
+        members: Vec<EventPerson>,
+    },
+    ChatRenamed {
+        who: Option<String>,
+        chat_display_name: String,
+    },
+    CallStarted {
+        meeting: bool,
+    },
+    CallEnded {
+        meeting: bool,
+        /// How many people joined (`callParticipants`).
+        participants: usize,
+        initiator_id: Option<String>,
+        /// ISO 8601 `callDuration`, as sent.
+        duration: Option<String>,
+    },
+    CallRecorded,
+    TranscriptAvailable,
+    MeetingPolicyUpdated,
+    MessagePinned {
+        who: Option<String>,
+    },
+    MessageUnpinned {
+        who: Option<String>,
+    },
+    ConversationRenamed {
+        who: Option<String>,
+    },
+    ChannelAdded {
+        who: Option<String>,
+    },
+    TabUpdated {
+        who: Option<String>,
+    },
+    Other,
+}
+
+impl EventDetail {
+    /// Reads an `eventDetail` value. Never fails: an unknown or missing
+    /// `@odata.type`, or a known one with a field of the wrong shape that
+    /// Chaat needs (`members` not a list), is `Other`.
+    pub fn from_value(value: &serde_json::Value) -> EventDetail {
+        let Some(odata) = value.get("@odata.type").and_then(|t| t.as_str()) else {
+            return EventDetail::Other;
+        };
+        let kind = odata.trim_start_matches("#microsoft.graph.");
+        let who = || {
+            value
+                .pointer("/initiator/user/displayName")
+                .and_then(|n| n.as_str())
+                .filter(|n| !n.is_empty())
+                .map(str::to_owned)
+        };
+        let meeting = || value.get("callEventType").and_then(|t| t.as_str()) == Some("meeting");
+        let membership = match odata {
+            "#microsoft.graph.membersAddedEventMessageDetail" => Some(MembershipKind::Added),
+            "#microsoft.graph.membersDeletedEventMessageDetail" => Some(MembershipKind::Removed),
+            "#microsoft.graph.membersJoinedEventMessageDetail" => Some(MembershipKind::Joined),
+            "#microsoft.graph.membersLeftEventMessageDetail" => Some(MembershipKind::Left),
+            _ => None,
+        };
+        if let Some(kind) = membership {
+            let members = match value.get("members") {
+                Some(serde_json::Value::Array(list)) => {
+                    list.iter().filter_map(Self::person).collect()
+                }
+                _ => Vec::new(),
+            };
+            return EventDetail::Members {
+                kind,
+                by: value.pointer("/initiator/user").and_then(Self::person),
+                members,
+            };
+        }
+        match kind {
+            "chatRenamedEventMessageDetail" => EventDetail::ChatRenamed {
+                who: who(),
+                chat_display_name: value
+                    .get("chatDisplayName")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or_default()
+                    .to_owned(),
+            },
+            "callStartedEventMessageDetail" => EventDetail::CallStarted { meeting: meeting() },
+            "callEndedEventMessageDetail" => EventDetail::CallEnded {
+                meeting: meeting(),
+                participants: value
+                    .get("callParticipants")
+                    .and_then(|p| p.as_array())
+                    .map_or(0, Vec::len),
+                initiator_id: value
+                    .pointer("/initiator/user/id")
+                    .and_then(|id| id.as_str())
+                    .map(str::to_owned),
+                duration: value
+                    .get("callDuration")
+                    .and_then(|d| d.as_str())
+                    .map(str::to_owned),
+            },
+            "callRecordingEventMessageDetail" => EventDetail::CallRecorded,
+            "callTranscriptEventMessageDetail" => EventDetail::TranscriptAvailable,
+            "meetingPolicyUpdatedEventMessageDetail" => EventDetail::MeetingPolicyUpdated,
+            "messagePinnedEventMessageDetail" => EventDetail::MessagePinned { who: who() },
+            "messageUnpinnedEventMessageDetail" => EventDetail::MessageUnpinned { who: who() },
+            "teamRenamedEventMessageDetail" | "channelRenamedEventMessageDetail" => {
+                EventDetail::ConversationRenamed { who: who() }
+            }
+            "channelAddedEventMessageDetail" => EventDetail::ChannelAdded { who: who() },
+            "tabUpdatedEventMessageDetail" => EventDetail::TabUpdated { who: who() },
+            _ => EventDetail::Other,
+        }
+    }
+
+    fn person(value: &serde_json::Value) -> Option<EventPerson> {
+        let id = value.get("id").and_then(|i| i.as_str())?;
+        Some(EventPerson {
+            id: id.to_owned(),
+            name: value
+                .get("displayName")
+                .and_then(|n| n.as_str())
+                .filter(|n| !n.is_empty())
+                .map(str::to_owned),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn unknown_event_detail_is_other() {
+        let value = json!({"@odata.type": "#microsoft.graph.somethingNew"});
+        assert_eq!(EventDetail::from_value(&value), EventDetail::Other);
+    }
+
+    #[test]
+    fn malformed_event_detail_is_other() {
+        let value = json!({"@odata.type": 7, "members": "x"});
+        assert_eq!(EventDetail::from_value(&value), EventDetail::Other);
+        // A known type with a non-list `members` keeps an empty list, as before.
+        let value = json!({
+            "@odata.type": "#microsoft.graph.membersAddedEventMessageDetail",
+            "members": "x"
+        });
+        assert_eq!(
+            EventDetail::from_value(&value),
+            EventDetail::Members {
+                kind: MembershipKind::Added,
+                by: None,
+                members: Vec::new()
+            }
+        );
+        assert_eq!(EventDetail::from_value(&json!("text")), EventDetail::Other);
+        assert_eq!(EventDetail::from_value(&json!(null)), EventDetail::Other);
+    }
+
+    #[test]
+    fn missing_odata_type_is_other() {
+        assert_eq!(EventDetail::from_value(&json!({})), EventDetail::Other);
+    }
+
+    #[test]
+    fn known_detail_lands_in_its_variant() {
+        let value = json!({
+            "@odata.type": "#microsoft.graph.callEndedEventMessageDetail",
+            "callEventType": "meeting",
+            "callDuration": "PT4M12S",
+            "callParticipants": [{}, {}],
+            "initiator": {"user": {"id": "u-1", "displayName": "Ada"}}
+        });
+        assert_eq!(
+            EventDetail::from_value(&value),
+            EventDetail::CallEnded {
+                meeting: true,
+                participants: 2,
+                initiator_id: Some("u-1".into()),
+                duration: Some("PT4M12S".into()),
+            }
+        );
+        let value = json!({
+            "@odata.type": "#microsoft.graph.membersAddedEventMessageDetail",
+            "initiator": {"user": {"id": "u-1", "displayName": "Ada"}},
+            "members": [{"id": "u-2", "displayName": ""}, {"nope": 1}]
+        });
+        assert_eq!(
+            EventDetail::from_value(&value),
+            EventDetail::Members {
+                kind: MembershipKind::Added,
+                by: Some(EventPerson {
+                    id: "u-1".into(),
+                    name: Some("Ada".into())
+                }),
+                members: vec![EventPerson {
+                    id: "u-2".into(),
+                    name: None
+                }],
+            }
+        );
+    }
+}

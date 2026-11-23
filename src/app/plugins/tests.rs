@@ -1,9 +1,149 @@
 use super::*;
 use crate::app::tests::*;
 use crate::backend::{AuthStatus, Backend, Event, Waker};
-use crate::model::Presence;
+use crate::model::{Action, PluginAction, Presence};
 use crate::paths::AppDirs;
 use crate::settings::Settings;
+
+#[test]
+fn owner_of_skips_disabled_and_stopped() {
+    let (backend, _) = Backend::recording();
+    let dir = std::env::temp_dir().join("chaat-test-unused");
+    let mut app = App::with_backend(
+        AppDirs::under(&dir),
+        Settings::default(),
+        Waker::default(),
+        backend,
+        false,
+    );
+    for id in ["a", "b", "c"] {
+        app.settings.plugins.push(PluginEntry {
+            id: id.into(),
+            enabled: true,
+            ..PluginEntry::default()
+        });
+        let state = app.plugins.entry(id.into()).or_default();
+        state.running = true;
+        state.offers = vec![registry::PUSH];
+    }
+    assert_eq!(app.owner_of(Capability::Push).as_deref(), Some("a"));
+    assert_eq!(app.owner_of(Capability::CallAlerts), None);
+    app.settings.plugins[0].enabled = false;
+    assert_eq!(app.owner_of(Capability::Push).as_deref(), Some("b"));
+    app.plugins.get_mut("b").unwrap().running = false;
+    assert_eq!(app.owner_of(Capability::Push).as_deref(), Some("c"));
+    app.plugins.get_mut("c").unwrap().running = false;
+    assert_eq!(app.owner_of(Capability::Push), None);
+}
+
+fn presence_line() -> HostMessage {
+    HostMessage::Presence {
+        availability: "Busy".into(),
+        activity: None,
+    }
+}
+
+fn gate_app(approved: bool) -> (App, tokio::sync::mpsc::UnboundedReceiver<Command>) {
+    let (mut app, commands) = option_app();
+    app.settings.plugins[0].needs = vec!["presence".into()];
+    if approved {
+        app.settings.plugins[0].approved_needs = vec!["presence".into()];
+    }
+    let state = app.plugins.entry("p".into()).or_default();
+    state.running = true;
+    (app, commands)
+}
+
+fn sent_count(commands: &mut tokio::sync::mpsc::UnboundedReceiver<Command>) -> usize {
+    std::iter::from_fn(|| commands.try_recv().ok()).count()
+}
+
+#[test]
+fn send_gate_drops_presence_without_approval() {
+    let (app, mut commands) = gate_app(false);
+    app.send_to_plugin("p", presence_line());
+    assert_eq!(sent_count(&mut commands), 0);
+    let (app, mut commands) = gate_app(true);
+    app.send_to_plugin("p", presence_line());
+    assert_eq!(sent_count(&mut commands), 1);
+    // Nothing the person has to allow: sent without any approval.
+    let (app, mut commands) = gate_app(false);
+    app.send_to_plugin("p", HostMessage::Action { id: "x".into() });
+    app.send_to_plugin(
+        "p",
+        HostMessage::PushChannels {
+            channels: Vec::new(),
+        },
+    );
+    assert_eq!(sent_count(&mut commands), 2);
+    app.send_to_plugin(
+        "p",
+        HostMessage::PushChannels {
+            channels: vec!["c".into()],
+        },
+    );
+    assert_eq!(sent_count(&mut commands), 0);
+}
+
+#[test]
+fn send_gate_drops_to_stopped_plugin() {
+    let (mut app, mut commands) = gate_app(true);
+    app.plugins.get_mut("p").unwrap().running = false;
+    app.send_to_plugin("p", presence_line());
+    assert_eq!(sent_count(&mut commands), 0);
+    app.plugins.get_mut("p").unwrap().running = true;
+    app.settings.plugins[0].enabled = false;
+    app.send_to_plugin("p", presence_line());
+    assert_eq!(sent_count(&mut commands), 0);
+    app.send_to_plugin("unknown", presence_line());
+    assert_eq!(sent_count(&mut commands), 0);
+    app.settings.plugins[0].enabled = true;
+    app.send_to_plugin("p", presence_line());
+    assert_eq!(sent_count(&mut commands), 1);
+}
+
+#[test]
+fn unapproved_accounts_send_neither_line_nor_restart_hello() {
+    let (mut app, mut commands) = option_app();
+    app.settings.plugins[0].needs = vec!["accounts".into()];
+    let accounts = vec![PluginAccount {
+        id: "u.t".into(),
+        username: "n".into(),
+    }];
+    app.send_plugin_accounts("p", accounts.clone());
+    assert_eq!(sent_count(&mut commands), 0);
+    app.settings.plugins[0].approved_needs = vec!["accounts".into()];
+    app.send_plugin_accounts("p", accounts);
+    let sent: Vec<Command> = std::iter::from_fn(|| commands.try_recv().ok()).collect();
+    assert!(matches!(
+        sent.as_slice(),
+        [
+            Command::PluginSend {
+                message: HostMessage::Accounts { .. },
+                ..
+            },
+            Command::PluginHello {
+                accounts: Some(_),
+                ..
+            }
+        ]
+    ));
+}
+
+#[test]
+fn settings_needs_round_trip() {
+    let raw = r#"{"plugins":[{"id":"p","needs":["presence","unknown"]}]}"#;
+    let settings: Settings = serde_json::from_str(raw).unwrap();
+    assert_eq!(settings.plugins[0].needs, ["presence", "unknown"]);
+    let saved = serde_json::to_value(&settings).unwrap();
+    assert_eq!(
+        saved["plugins"][0]["needs"],
+        serde_json::json!(["presence", "unknown"])
+    );
+    let entry = &settings.plugins[0];
+    assert!(!App::plugin_need_effective(entry, Need::Presence));
+    assert_eq!(Need::parse("unknown"), None);
+}
 
 #[test]
 fn a_ready_that_drops_accounts_clears_the_stored_restart_hello() {
@@ -96,7 +236,7 @@ fn option_commands(commands: &mut tokio::sync::mpsc::UnboundedReceiver<Command>)
 }
 
 fn change_and_answer(app: &mut App) {
-    app.apply_plugin_action(Action::SetPluginOption {
+    app.apply_plugin_action(PluginAction::SetOption {
         plugin: "p".into(),
         option: "name".into(),
         value: serde_json::json!("x"),
@@ -377,7 +517,7 @@ fn invalid_values_are_not_stored_or_sent() {
     );
     drain(&mut commands);
     let set = |app: &mut App, option: &str, value| {
-        app.apply_plugin_action(Action::SetPluginOption {
+        app.apply_plugin_action(PluginAction::SetOption {
             plugin: "p".into(),
             option: option.into(),
             value,
@@ -444,7 +584,7 @@ fn stored_values_that_no_longer_fit_are_dropped_on_ready() {
 fn actions_go_only_to_a_ready_plugin() {
     let (mut app, mut commands) = option_app();
     let run = |app: &mut App, action: &str| {
-        app.apply_plugin_action(Action::RunPluginAction {
+        app.apply_plugin_action(PluginAction::RunAction {
             plugin: "p".into(),
             action: action.into(),
         });
@@ -496,7 +636,7 @@ fn an_action_is_working_until_its_status_or_30s() {
     let now = Instant::now();
     assert!(!app.plugins["p"].action_working("scan", now));
     let run = |app: &mut App| {
-        app.apply_plugin_action(Action::RunPluginAction {
+        app.apply_plugin_action(PluginAction::RunAction {
             plugin: "p".into(),
             action: "scan".into(),
         });
@@ -546,7 +686,7 @@ fn reset_section_restores_defaults_and_keeps_secrets() {
     app.plugin_option_errors
         .insert(("p".into(), "bright".into()), "Enter a number.".into());
     drain(&mut commands);
-    app.apply_plugin_action(Action::ResetPluginSection {
+    app.apply_plugin_action(PluginAction::ResetSection {
         plugin: "p".into(),
         section: Some("Colors".into()),
     });
@@ -630,7 +770,7 @@ fn setup_pending_is_not_started_at_launch() {
         }
     );
     // Opening its setup page starts it; leaving Settings stops it again.
-    app.apply_plugin_action(Action::OpenPlugin("new".into()));
+    app.apply_plugin_action(PluginAction::Open("new".into()));
     assert_eq!(app.plugins_view, PluginsView::Adding("new".into()));
     assert_eq!(app.settings_page, Some(SettingsPage::Plugins));
     assert!(
@@ -685,7 +825,7 @@ impl App {
 fn finish_setup_approves_ticked_refuses_unticked() {
     let mut app = pending_app();
     assert_eq!(app.plugins["p"].pending_needs, ["accounts", "presence"]);
-    app.apply_plugin_action(Action::FinishPluginSetup {
+    app.apply_plugin_action(PluginAction::FinishSetup {
         id: "p".into(),
         allow: vec!["presence".into()],
     });
@@ -695,8 +835,8 @@ fn finish_setup_approves_ticked_refuses_unticked() {
     assert_eq!(entry.denied_needs, ["accounts"]);
     assert!(app.plugins["p"].pending_needs.is_empty());
     assert_eq!(app.plugins_view, PluginsView::Plugin("p".into()));
-    assert!(!App::plugin_need_effective(entry, "accounts"));
-    assert!(App::plugin_need_effective(entry, "presence"));
+    assert!(!App::plugin_need_effective(entry, Need::Accounts));
+    assert!(App::plugin_need_effective(entry, Need::Presence));
 }
 
 #[test]
@@ -704,7 +844,7 @@ fn finish_setup_with_nothing_ticked_sends_no_accounts() {
     let mut app = pending_app();
     let (service, mut commands) = Backend::recording();
     app.service = service;
-    app.apply_plugin_action(Action::FinishPluginSetup {
+    app.apply_plugin_action(PluginAction::FinishSetup {
         id: "p".into(),
         allow: Vec::new(),
     });
@@ -733,7 +873,7 @@ fn finish_setup_waits_for_required_options() {
         }],
         Vec::new(),
     );
-    app.apply_plugin_action(Action::FinishPluginSetup {
+    app.apply_plugin_action(PluginAction::FinishSetup {
         id: "p".into(),
         allow: Vec::new(),
     });
@@ -747,13 +887,13 @@ fn finish_setup_waits_for_required_options() {
 #[test]
 fn cancel_setup_removes() {
     let mut app = pending_app();
-    app.apply_plugin_action(Action::CancelPluginSetup("p".into()));
+    app.apply_plugin_action(PluginAction::CancelSetup("p".into()));
     assert!(app.settings.plugins.is_empty());
     assert!(!app.plugins.contains_key("p"));
     assert_eq!(app.plugins_view, PluginsView::List);
     // A finished plugin is not removed by a stray cancel.
     let (mut app, _commands) = option_app();
-    app.apply_plugin_action(Action::CancelPluginSetup("p".into()));
+    app.apply_plugin_action(PluginAction::CancelSetup("p".into()));
     assert_eq!(app.settings.plugins.len(), 1);
 }
 
@@ -764,20 +904,20 @@ fn leaving_settings_resets_the_view_and_reordering() {
         id: "q".into(),
         ..PluginEntry::default()
     });
-    app.apply_plugin_action(Action::OpenPlugin("p".into()));
+    app.apply_plugin_action(PluginAction::Open("p".into()));
     assert_eq!(app.plugins_view, PluginsView::Plugin("p".into()));
-    app.apply_plugin_action(Action::BackToPlugins);
-    app.apply_plugin_action(Action::StartReorder);
+    app.apply_plugin_action(PluginAction::BackToPlugins);
+    app.apply_plugin_action(PluginAction::StartReorder);
     assert!(app.reordering);
-    app.apply_plugin_action(Action::EndReorder);
+    app.apply_plugin_action(PluginAction::EndReorder);
     assert!(!app.reordering);
-    app.apply_plugin_action(Action::StartReorder);
+    app.apply_plugin_action(PluginAction::StartReorder);
     app.settings_page = None;
     app.plugins_view_follows_settings();
     assert!(!app.reordering);
     // Reordering needs two plugins.
     app.settings.plugins.pop();
-    app.apply_plugin_action(Action::StartReorder);
+    app.apply_plugin_action(PluginAction::StartReorder);
     assert!(!app.reordering);
 }
 
@@ -847,13 +987,13 @@ fn move_plugin_switches_owners() {
             user_code: "C".into(),
         });
     // Moving to the same place changes nothing.
-    app.apply_plugin_action(Action::MovePlugin {
+    app.apply_plugin_action(PluginAction::Move {
         id: "a".into(),
         to: 0,
     });
     assert!(drain(&mut service).is_empty() && drain(&mut account).is_empty());
     assert_eq!(app.plugins["a"].sign_in.len(), 1);
-    app.apply_plugin_action(Action::MovePlugin {
+    app.apply_plugin_action(PluginAction::Move {
         id: "b".into(),
         to: 0,
     });
@@ -886,7 +1026,7 @@ fn move_plugin_switches_owners() {
         Command::PushPlugin(Some(route)) if format!("{route:?}").contains("b.trycloudflare.com")
     )));
     // An index past the end moves it last.
-    app.apply_plugin_action(Action::MovePlugin {
+    app.apply_plugin_action(PluginAction::Move {
         id: "b".into(),
         to: 99,
     });
@@ -922,15 +1062,15 @@ fn summary_ignores_push_while_a_relay_is_set() {
 #[test]
 fn move_plugin_ignores_unknown_ids_and_same_index() {
     let (mut app, mut service, _account) = two_providers();
-    app.apply_plugin_action(Action::MovePlugin {
+    app.apply_plugin_action(PluginAction::Move {
         id: "nope".into(),
         to: 0,
     });
-    app.apply_plugin_action(Action::MovePlugin {
+    app.apply_plugin_action(PluginAction::Move {
         id: "b".into(),
         to: 1,
     });
-    app.apply_plugin_action(Action::MovePlugin {
+    app.apply_plugin_action(PluginAction::Move {
         id: "b".into(),
         to: 99,
     });
@@ -1033,7 +1173,7 @@ fn retry_stops_the_old_run_and_ignores_finished_plugins() {
     let first = app.plugin_generations["p"];
     let before = app.plugin_started_at["p"];
     while commands.try_recv().is_ok() {}
-    app.apply_plugin_action(Action::RetryPluginStart("p".into()));
+    app.apply_plugin_action(PluginAction::RetryStart("p".into()));
     let sent: Vec<Command> = std::iter::from_fn(|| commands.try_recv().ok()).collect();
     let stop = sent
         .iter()
@@ -1055,8 +1195,8 @@ fn retry_stops_the_old_run_and_ignores_finished_plugins() {
     assert!(app.plugin_started_at["p"] >= before, "the wait restarts");
     // Not in an add flow, or not in the list: nothing happens.
     app.settings.plugins[0].setup_pending = false;
-    app.apply_plugin_action(Action::RetryPluginStart("p".into()));
-    app.apply_plugin_action(Action::RetryPluginStart("nope".into()));
+    app.apply_plugin_action(PluginAction::RetryStart("p".into()));
+    app.apply_plugin_action(PluginAction::RetryStart("nope".into()));
     assert!(commands.try_recv().is_err());
     assert_eq!(app.plugin_generations["p"], second);
 }
@@ -1216,7 +1356,7 @@ fn a_stored_choice_survives_a_restart_until_options_update() {
     deliver_plugin_event(&mut app, update(&["b"]));
     assert_eq!(app.settings.plugins[0].options["bulb"], json!("old-bulb"));
     // Choosing it by hand still needs it to be offered.
-    app.apply_plugin_action(Action::SetPluginOption {
+    app.apply_plugin_action(PluginAction::SetOption {
         plugin: "p".into(),
         option: "bulb".into(),
         value: json!("zzz"),
@@ -1242,7 +1382,7 @@ fn secrets_are_checked_and_trimmed_before_saving() {
     );
     drain(&mut commands);
     let set = |app: &mut App, option: &str, value: &str| {
-        app.apply_plugin_action(Action::SetPluginSecret {
+        app.apply_plugin_action(PluginAction::SetSecret {
             plugin: "p".into(),
             option: option.into(),
             value: Some(value.to_owned()),
@@ -1308,10 +1448,10 @@ fn the_plugin_sign_in_panel_shows_until_signed_in_or_stopped() {
     assert!(app.plugins["ca"].sign_in.is_empty());
     app.handle(plugin_event(&app, "ca", sign_in_event(None, "AB12")), &ctx);
     app.apply(
-        Action::HidePluginSignIn {
+        Action::Plugin(PluginAction::HideSignIn {
             plugin: "ca".into(),
             account: None,
-        },
+        }),
         &ctx,
     );
     assert!(app.plugins["ca"].sign_in.is_empty());
@@ -1351,7 +1491,10 @@ fn enabling_and_disabling_a_plugin_starts_and_stops_it() {
     });
     app.sync_plugins();
     assert!(commands.try_recv().is_err(), "off: nothing starts");
-    app.apply(Action::SetPluginEnabled("ca".into(), true), &ctx);
+    app.apply(
+        Action::Plugin(PluginAction::SetEnabled("ca".into(), true)),
+        &ctx,
+    );
     let me = crate::calling::PluginAccount {
         id: "u-me.t1".into(),
         username: "me@contoso.com".into(),
@@ -1371,7 +1514,10 @@ fn enabling_and_disabling_a_plugin_starts_and_stops_it() {
         commands.try_recv(),
         Ok(Command::StartPlugin { path, .. }) if path == std::path::Path::new("other.exe")
     ));
-    app.apply(Action::SetPluginEnabled("ca".into(), false), &ctx);
+    app.apply(
+        Action::Plugin(PluginAction::SetEnabled("ca".into(), false)),
+        &ctx,
+    );
     assert!(matches!(
         commands.try_recv(),
         Ok(Command::StopPlugin { id }) if id == "ca"
@@ -1388,10 +1534,10 @@ fn only_the_first_sign_in_code_raises_the_window() {
     assert!(app.wants_show);
     app.wants_show = false;
     app.apply(
-        Action::HidePluginSignIn {
+        Action::Plugin(PluginAction::HideSignIn {
             plugin: "ca".into(),
             account: None,
-        },
+        }),
         &ctx,
     );
     app.handle(
@@ -1738,10 +1884,10 @@ fn sign_in_cards_key_on_plugin_and_account() {
     assert_eq!(app.plugins["b"].sign_in[0].user_code, "B2");
     assert_eq!(app.plugins["b"].sign_in[0].plugin, "b");
     app.apply(
-        Action::HidePluginSignIn {
+        Action::Plugin(PluginAction::HideSignIn {
             plugin: "a".into(),
             account: Some("u-me.demo".into()),
-        },
+        }),
         &ctx,
     );
     assert!(app.plugins["a"].sign_in.is_empty());
@@ -1756,7 +1902,7 @@ fn removing_a_plugin_deletes_its_secrets_and_stops_it() {
     app.settings.plugins[0].secrets = vec!["token".into(), "key".into()];
     app.sync_plugins();
     sent(&mut commands);
-    app.apply(Action::RemovePlugin("light".into()), &ctx);
+    app.apply(Action::Plugin(PluginAction::Remove("light".into())), &ctx);
     let after = sent(&mut commands);
     assert!(after.iter().any(|c| matches!(
         c,
@@ -1841,11 +1987,11 @@ fn options_are_sent_after_ready_and_on_change() {
     assert_eq!(first["flash"], serde_json::json!(true));
     assert_eq!(secrets, vec!["key".to_owned()]);
     app.apply(
-        Action::SetPluginOption {
+        Action::Plugin(PluginAction::SetOption {
             plugin: "light".into(),
             option: "flash".into(),
             value: serde_json::json!(false),
-        },
+        }),
         &ctx,
     );
     let (changed, _) = values(&mut commands).expect("options after a change");
@@ -2198,7 +2344,10 @@ fn approved_needs_flow_and_denied_ones_dont() {
     app.sync_plugins();
     ready(&mut app);
     sent(&mut commands);
-    app.apply(Action::ApprovePluginNeeds("light".into()), &ctx);
+    app.apply(
+        Action::Plugin(PluginAction::ApproveNeeds("light".into())),
+        &ctx,
+    );
     let after = sent(&mut commands);
     assert!(accounts_sent_to(&after, "light"));
     assert!(presence_sent_to(&after, "light"));
@@ -2223,7 +2372,10 @@ fn approved_needs_flow_and_denied_ones_dont() {
     app.sync_plugins();
     ready(&mut app);
     sent(&mut commands);
-    app.apply(Action::DenyPluginNeeds("light".into()), &ctx);
+    app.apply(
+        Action::Plugin(PluginAction::DenyNeeds("light".into())),
+        &ctx,
+    );
     assert_eq!(
         app.settings.plugins[0].denied_needs,
         ["accounts", "presence"]
@@ -2274,7 +2426,10 @@ fn a_changed_file_waits_and_trust_resets_needs() {
     app.sync_plugins();
     assert!(sent(&mut commands).is_empty(), "nor restarted by a sync");
 
-    app.apply(Action::TrustPluginFile("light".into()), &ctx);
+    app.apply(
+        Action::Plugin(PluginAction::TrustFile("light".into())),
+        &ctx,
+    );
     let entry = &app.settings.plugins[0];
     assert_eq!(entry.sha256.as_deref(), Some("new"));
     assert!(entry.approved_needs.is_empty() && entry.denied_needs.is_empty());
@@ -2296,7 +2451,7 @@ fn a_changed_file_waits_and_trust_resets_needs() {
         ),
         &ctx,
     );
-    app.apply(Action::KeepPluginOff("light".into()), &ctx);
+    app.apply(Action::Plugin(PluginAction::KeepOff("light".into())), &ctx);
     assert!(!app.settings.plugins[0].enabled);
     assert!(app.plugins["light"].file_changed.is_none());
     assert_eq!(app.settings.plugins[0].sha256.as_deref(), Some("new"));
@@ -2356,11 +2511,11 @@ fn a_late_secret_answer_for_an_old_instance_is_ignored() {
     assert_eq!(app.settings.plugins[0].secrets, ["key"]);
     // Saves carry the entry's instance.
     app.apply(
-        Action::SetPluginSecret {
+        Action::Plugin(PluginAction::SetSecret {
             plugin: "light".into(),
             option: "key".into(),
             value: Some("v".into()),
-        },
+        }),
         &ctx,
     );
     assert!(sent(&mut commands).iter().any(|c| matches!(
@@ -2408,7 +2563,7 @@ fn removing_deletes_every_described_secret() {
         &ctx,
     );
     sent(&mut commands);
-    app.apply(Action::RemovePlugin("light".into()), &ctx);
+    app.apply(Action::Plugin(PluginAction::Remove("light".into())), &ctx);
     let deleted: Vec<String> = sent(&mut commands)
         .into_iter()
         .filter_map(|c| match c {

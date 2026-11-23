@@ -9,7 +9,8 @@ use crate::backend::AuthStatus;
 use crate::calling::CallsOpenIn;
 use crate::calling::browser::BrowserKind;
 use crate::model::{
-    Access, Action, AutoReplies, ExternalAudience, Millis, OutOfOfficeForm, SettingsPage,
+    Access, Action, AutoReplies, ExternalAudience, Millis, OutOfOfficeForm, PluginAction,
+    SettingsPage,
 };
 use crate::settings::ThemeChoice;
 use crate::theme::{self, Icon, Palette};
@@ -901,7 +902,7 @@ fn call_alerts(app: &App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
     match app.call_alerts_owner() {
         Some(id) => {
             if widgets::secondary_button(ui, &palette, "Open").clicked() {
-                actions.push(Action::OpenPlugin(id));
+                actions.push(Action::Plugin(PluginAction::Open(id)));
             }
         }
         None => {
@@ -1031,7 +1032,7 @@ fn push_plugin(
         if let Some(id) = &open
             && widgets::secondary_button(ui, &palette, "Open").clicked()
         {
-            actions.push(Action::OpenPlugin(id.clone()));
+            actions.push(Action::Plugin(PluginAction::Open(id.clone())));
         }
     };
     if view.relay_set {

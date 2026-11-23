@@ -4,7 +4,7 @@
 use egui::{CornerRadius, Sense, Stroke, StrokeKind, vec2};
 
 use crate::app::{App, SetupStage};
-use crate::model::Action;
+use crate::model::{Action, SetupAction};
 use crate::theme::{self, Icon};
 use crate::ui::widgets;
 
@@ -80,7 +80,7 @@ pub fn drop_zone(app: &mut App, ui: &mut egui::Ui) {
         && ui.memory(|m| m.focused().is_none())
         && ui.input(|i| i.key_pressed(egui::Key::Enter))
     {
-        app.actions.push(Action::ChooseSetupFile);
+        app.actions.push(Action::Setup(SetupAction::ChooseFile));
     }
     let text = match hover {
         Hover::None => "Drop your setup file here",
@@ -108,7 +108,7 @@ pub fn drop_zone(app: &mut App, ui: &mut egui::Ui) {
         );
         inner.add_space(8.0);
         if widgets::secondary_button(&mut inner, &palette, "Choose file").clicked() {
-            app.actions.push(Action::ChooseSetupFile);
+            app.actions.push(Action::Setup(SetupAction::ChooseFile));
         }
     }
     if let Some(message) = failed {
@@ -206,7 +206,7 @@ pub fn passphrase(app: &mut App, ui: &mut egui::Ui) {
     });
     ui.data_mut(|d| d.insert_temp(shown_id, shown));
     if !opening && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-        app.actions.push(Action::CancelSetup);
+        app.actions.push(Action::Setup(SetupAction::Cancel));
     }
     if let Some(error) = app.setup.error.clone() {
         ui.add_space(6.0);
@@ -240,15 +240,15 @@ pub fn passphrase(app: &mut App, ui: &mut egui::Ui) {
                 submit = true;
             }
             if widgets::secondary_button(ui, &palette, "Choose another file").clicked() {
-                app.actions.push(Action::ChooseSetupFile);
+                app.actions.push(Action::Setup(SetupAction::ChooseFile));
             }
             if widgets::secondary_button(ui, &palette, "Cancel").clicked() {
-                app.actions.push(Action::CancelSetup);
+                app.actions.push(Action::Setup(SetupAction::Cancel));
             }
         });
     }
     if submit && !app.setup.passphrase.is_empty() {
-        app.actions.push(Action::OpenSetupFile);
+        app.actions.push(Action::Setup(SetupAction::OpenFile));
     }
 }
 
@@ -344,14 +344,14 @@ pub fn review(app: &mut App, ui: &mut egui::Ui, warn_resign: bool, first_run: bo
             "Use these settings"
         };
         if widgets::primary_button(ui, &palette, apply).clicked() {
-            app.actions.push(Action::ApplySetup);
+            app.actions.push(Action::Setup(SetupAction::Apply));
         }
         if widgets::secondary_button(ui, &palette, "Cancel").clicked() {
-            app.actions.push(Action::CancelSetup);
+            app.actions.push(Action::Setup(SetupAction::Cancel));
         }
     });
     if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-        app.actions.push(Action::CancelSetup);
+        app.actions.push(Action::Setup(SetupAction::Cancel));
     }
 }
 

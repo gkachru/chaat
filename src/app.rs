@@ -484,11 +484,11 @@ impl Account {
             return &profile.id;
         }
         match &self.auth {
-            AuthStatus::SignedIn { account, .. } => account.split('.').next().unwrap_or_default(),
+            AuthStatus::SignedIn { account, .. } => crate::auth::session::user_id(account),
             _ => self
                 .id
                 .as_deref()
-                .and_then(|id| id.split('.').next())
+                .map(crate::auth::session::user_id)
                 .unwrap_or_default(),
         }
     }
@@ -2850,15 +2850,7 @@ impl App {
             }
             Action::DockWindow(false) => self.undock(ctx),
             Action::FindMeetingChat => self.find_meeting_chat(),
-            action @ (Action::ChooseSetupFile
-            | Action::DroppedSetupFile(_)
-            | Action::OpenSetupFile
-            | Action::ApplySetup
-            | Action::CancelSetup
-            | Action::ShowSetupManual(_)) => self.setup_action(action),
-            action @ (Action::OpenExportForm(_)
-            | Action::ExportSetup
-            | Action::DismissSetupPassphrase) => self.export_action(action),
+            Action::Setup(action) => self.apply_setup_action(action),
             Action::JoinOnPhone => self.join_on_phone(),
             Action::PrepareTeamsWeb => self.prepare_teams_web(),
             Action::SetCallSettings(calls) => self.set_call_settings(calls),
@@ -3041,33 +3033,8 @@ impl App {
             }
             Action::DismissToast(id) => self.toasts.retain(|t| t.id != id),
             Action::DismissRing(id) => self.rings.retain(|r| r.id != id),
-            action @ (Action::AddPlugin
-            | Action::RemovePlugin(_)
-            | Action::SetPluginEnabled(..)
-            | Action::ApprovePluginNeeds(_)
-            | Action::DenyPluginNeeds(_)
-            | Action::TrustPluginFile(_)
-            | Action::KeepPluginOff(_)
-            | Action::SetPluginOption { .. }
-            | Action::RunPluginAction { .. }
-            | Action::ResetPluginSection { .. }
-            | Action::OpenPlugin(_)
-            | Action::BackToPlugins
-            | Action::StartReorder
-            | Action::EndReorder
-            | Action::MovePlugin { .. }
-            | Action::FinishPluginSetup { .. }
-            | Action::CancelPluginSetup(_)
-            | Action::RetryPluginStart(_)
-            | Action::SetPluginSecret { .. }
-            | Action::PluginSignIn { .. }
-            | Action::HidePluginSignIn { .. }) => self.apply_plugin_action(action),
-            action @ (Action::SetAgentAccess { .. }
-            | Action::LetAgentsRead { .. }
-            | Action::AgentSend { .. }
-            | Action::AgentEdit { .. }
-            | Action::AgentDiscard { .. }
-            | Action::AgentAcceptReaction { .. }) => self.apply_agent_action(action, ctx),
+            Action::Plugin(action) => self.apply_plugin_action(action),
+            Action::Agent(action) => self.apply_agent_action(action, ctx),
             Action::RingPlaceCall(id) => self.ring_place_call(&id, ctx),
             Action::RingOpenChat(id) => self.ring_open_chat(&id, ctx),
             Action::Quit => {

@@ -4,7 +4,6 @@ use std::path::PathBuf;
 
 use super::App;
 use crate::backend::Command;
-use crate::model::Action;
 use crate::setup_file::SetupPayload;
 
 /// The export form's state.
@@ -19,45 +18,43 @@ pub struct ExportForm {
     pub busy: bool,
     pub error: Option<String>,
 }
-
 impl App {
-    /// Runs one export form action.
-    pub fn export_action(&mut self, action: Action) {
-        match action {
-            Action::OpenExportForm(open) => {
-                self.export = if open {
-                    ExportForm {
-                        open: true,
-                        org_label: self.settings.org_label.clone().unwrap_or_default(),
-                        ..Default::default()
-                    }
-                } else {
-                    ExportForm::default()
-                };
+    /// Opens or closes the export form.
+    pub(super) fn open_export_form(&mut self, open: bool) {
+        self.export = if open {
+            ExportForm {
+                open: true,
+                org_label: self.settings.org_label.clone().unwrap_or_default(),
+                ..Default::default()
             }
-            Action::ExportSetup => {
-                if self.export.busy {
-                    return;
-                }
-                let Some(import_by) = self.validate_export() else {
-                    return;
-                };
-                let Some(path) = rfd::FileDialog::new()
-                    .set_title("Create a setup file")
-                    .set_file_name("Chaat setup.chaatsetup")
-                    .add_filter("Chaat setup file", &["chaatsetup"])
-                    .save_file()
-                else {
-                    return;
-                };
-                self.send_export(path, import_by);
-            }
-            Action::DismissSetupPassphrase => {
-                self.export.passphrase = None;
-                self.export.open = false;
-            }
-            _ => {}
+        } else {
+            ExportForm::default()
+        };
+    }
+
+    /// Checks the form, asks where to save, and starts the export.
+    pub(super) fn export_setup(&mut self) {
+        if self.export.busy {
+            return;
         }
+        let Some(import_by) = self.validate_export() else {
+            return;
+        };
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Create a setup file")
+            .set_file_name("Chaat setup.chaatsetup")
+            .add_filter("Chaat setup file", &["chaatsetup"])
+            .save_file()
+        else {
+            return;
+        };
+        self.send_export(path, import_by);
+    }
+
+    /// Hides the passphrase shown after an export.
+    pub(super) fn dismiss_export_passphrase(&mut self) {
+        self.export.passphrase = None;
+        self.export.open = false;
     }
 
     /// Checks the form and returns the import-by date, when any. Sets
@@ -130,6 +127,7 @@ impl App {
 mod tests {
     use super::*;
     use crate::backend::{Backend, Event, Waker};
+    use crate::model::SetupAction;
     use crate::paths::AppDirs;
     use crate::settings::Settings;
 
@@ -145,7 +143,7 @@ mod tests {
         );
         let (service, commands) = Backend::recording();
         app.service = service;
-        app.export_action(Action::OpenExportForm(true));
+        app.apply_setup_action(SetupAction::OpenExportForm(true));
         (app, commands)
     }
 
@@ -215,7 +213,7 @@ mod tests {
         app.on_setup_event(Event::SetupExported(Ok("a-b-c-d-e-f".into())));
         assert!(!app.export.busy);
         assert_eq!(app.export.passphrase.as_deref(), Some("a-b-c-d-e-f"));
-        app.export_action(Action::DismissSetupPassphrase);
+        app.apply_setup_action(SetupAction::DismissPassphrase);
         assert!(app.export.passphrase.is_none());
         app.export.busy = true;
         app.on_setup_event(Event::SetupExported(Err("nope".into())));

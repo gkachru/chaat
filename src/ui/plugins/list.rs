@@ -7,7 +7,7 @@ use super::super::widgets::{self, PointerControls as _};
 use super::super::widgets::{group, note};
 use super::page::{forget_confirm, request_enabled, turn_off_ask};
 use crate::app::{App, PluginSummary, SummaryLevel};
-use crate::model::Action;
+use crate::model::{Action, PluginAction};
 use crate::plugin::registry;
 use crate::theme::{self, Icon, Palette};
 use egui::{Align, Frame, Layout, Margin, Sense, Stroke, UiBuilder, vec2};
@@ -28,7 +28,7 @@ pub(super) fn list_view(app: &App, ui: &mut egui::Ui, actions: &mut Vec<Action>)
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if reordering {
                 if widgets::primary_button(ui, &palette, "Done").clicked() {
-                    actions.push(Action::EndReorder);
+                    actions.push(Action::Plugin(PluginAction::EndReorder));
                 }
                 return;
             }
@@ -38,12 +38,12 @@ pub(super) fn list_view(app: &App, ui: &mut egui::Ui, actions: &mut Vec<Action>)
                 "Add plugin\u{2026}"
             };
             if widgets::secondary_button(ui, &palette, label).clicked() {
-                actions.push(Action::AddPlugin);
+                actions.push(Action::Plugin(PluginAction::Add));
             }
             if app.settings.plugins.len() >= 2
                 && widgets::secondary_button(ui, &palette, "Reorder").clicked()
             {
-                actions.push(Action::StartReorder);
+                actions.push(Action::Plugin(PluginAction::StartReorder));
             }
         });
     });
@@ -74,7 +74,7 @@ pub(super) fn list_view(app: &App, ui: &mut egui::Ui, actions: &mut Vec<Action>)
         ui.add_space(10.0);
         ui.vertical_centered(|ui| {
             if widgets::secondary_button(ui, &palette, "Add plugin\u{2026}").clicked() {
-                actions.push(Action::AddPlugin);
+                actions.push(Action::Plugin(PluginAction::Add));
             }
         });
         return;
@@ -206,7 +206,7 @@ fn row(app: &App, ui: &mut egui::Ui, id: &str, summary: &PluginSummary, actions:
     widgets::hover_wash(ui, &palette, &row, 0);
     let row = row.on_hover_cursor(egui::CursorIcon::PointingHand);
     if row.clicked() {
-        actions.push(Action::OpenPlugin(id.to_owned()));
+        actions.push(Action::Plugin(PluginAction::Open(id.to_owned())));
     }
 }
 
@@ -289,16 +289,16 @@ fn reorder_card(app: &App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
                             }
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                 if index < last && move_button(ui, &palette, "\u{2193}") {
-                                    actions.push(Action::MovePlugin {
+                                    actions.push(Action::Plugin(PluginAction::Move {
                                         id: id.clone(),
                                         to: index + 1,
-                                    });
+                                    }));
                                 }
                                 if index > 0 && move_button(ui, &palette, "\u{2191}") {
-                                    actions.push(Action::MovePlugin {
+                                    actions.push(Action::Plugin(PluginAction::Move {
                                         id: id.clone(),
                                         to: index - 1,
-                                    });
+                                    }));
                                 }
                                 ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                                     ui.vertical(|ui| {
@@ -350,10 +350,10 @@ fn reorder_card(app: &App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
     if let (Some(from), Some(to)) = (dropped, target)
         && from != to
     {
-        actions.push(Action::MovePlugin {
+        actions.push(Action::Plugin(PluginAction::Move {
             id: ids[from].clone(),
             to,
-        });
+        }));
     }
 }
 
