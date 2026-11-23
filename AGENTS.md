@@ -49,9 +49,14 @@ Microsoft Graph. These rules are for coding agents and contributors. Follow
   raising the window), nothing happens until the person clicks.
 - **Never poll Graph.** Microsoft's Teams API rules allow fetching when the
   person looks and at most one unattended refresh a day. Polling violates
-  the Microsoft APIs Terms of Use. Every fetch goes through
-  `sync::Freshness::claim` with a `Trigger` caused by the person. Do not add
-  timers that fetch. Real-time work goes through Graph change notifications
+  the Microsoft APIs Terms of Use. Every refresh of a cached list (chats,
+  channels, messages, older pages) goes through `sync::Freshness::claim`
+  with a `Trigger` caused by the person. On-demand lookups for what the
+  person is looking at or typing (names, photos, presence of an open chat,
+  inline images, people and message search, meeting lookups) and the
+  person's own writes skip `claim`, but each must be deduplicated (an
+  asked-set, a reuse window or a cache) and searches wait for typing to
+  pause. Do not add timers that fetch data. Real-time work goes through Graph change notifications
   (`src/realtime.rs`, the `relay/` crate, `docs/realtime.md`), which trigger
   ordinary fetches with `Trigger::Push`. A push plugin's forwarded bodies take
   the same path and trigger the same `Trigger::Push` fetches. Subscriptions

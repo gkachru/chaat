@@ -221,13 +221,21 @@ async fn chats_mentions_files_and_status() {
         matches!(e, AccountEvent::Auth(AuthStatus::SignedIn { .. })).then_some(())
     });
 
-    // Find Barbara and start a chat.
+    // Find Barbara and start a chat. "bar" is typed over before the pause,
+    // so only "barb" reaches Graph.
+    backend.send(AccountCommand::SearchPeople("bar".into()));
     backend.send(AccountCommand::SearchPeople("barb".into()));
-    let people = wait_for(&backend, 5, |e| match e {
-        AccountEvent::People { people, .. } => Some(people),
+    let (query, people) = wait_for(&backend, 5, |e| match e {
+        AccountEvent::People { query, people } => Some((query, people)),
         _ => None,
     });
+    assert_eq!(query, "barb");
     assert_eq!(people[0].display_name, "Barbara Liskov");
+    assert_eq!(
+        requests_to(&server, "/v1.0/users").await.len(),
+        1,
+        "the typed-over search never reached Graph"
+    );
     backend.send(AccountCommand::CreateChat {
         others: vec![people[0].user_id.clone()],
         topic: None,

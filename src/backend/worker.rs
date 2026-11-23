@@ -45,6 +45,20 @@ const CACHED_MESSAGES: usize = 200;
 const PHOTO_MAX_AGE: i64 = 7 * 24 * 60 * 60 * 1000;
 /// Presence of one person is not asked for again within this.
 const PRESENCE_REUSE: Duration = Duration::from_secs(60);
+/// How long typing must pause before a search goes to Graph. The local
+/// cache answers at once.
+const TYPING_PAUSE: Duration = Duration::from_millis(400);
+
+/// Whether search number `mine` is still the latest after the typing pause.
+async fn still_latest(latest: &std::sync::atomic::AtomicU64, mine: u64) -> bool {
+    tokio::time::sleep(TYPING_PAUSE).await;
+    latest.load(std::sync::atomic::Ordering::SeqCst) == mine
+}
+
+/// Numbers a new search: the latest one from now on.
+fn next_search(latest: &std::sync::atomic::AtomicU64) -> u64 {
+    latest.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
+}
 
 /// Sends events and wakes the window for each.
 #[derive(Clone)]
@@ -270,6 +284,10 @@ struct Worker {
     contacts: watch::Sender<Vec<String>>,
     photos_asked: HashMap<String, Instant>,
     names_asked: HashMap<String, Instant>,
+    /// The latest message search and people search, by number: a search
+    /// typed over by a newer one before `TYPING_PAUSE` never reaches Graph.
+    searches: Arc<std::sync::atomic::AtomicU64>,
+    people_searches: Arc<std::sync::atomic::AtomicU64>,
     /// Channel paging links, by conversation.
     older_links: Arc<Mutex<HashMap<ConversationId, String>>>,
     /// Whether the last fetch reached Microsoft (see `Event::Reachable`).
@@ -359,6 +377,8 @@ pub(super) async fn run(
         contacts: watch::channel(Vec::new()).0,
         photos_asked: HashMap::new(),
         names_asked: HashMap::new(),
+        searches: Arc::default(),
+        people_searches: Arc::default(),
         older_links: Arc::default(),
         reachable: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         downloads: Arc::new(Semaphore::new(4)),

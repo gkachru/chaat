@@ -82,8 +82,11 @@ That is a fetch the person causes, never a poll.
 
 Microsoft's [Teams polling requirements][polling] allow repeated fetches
 when a person visits or refreshes a view, but restrict unattended polling
-for changes to once a day. Chaat adds no polling timers; every fetch goes
-through `sync::Freshness::claim`. Refresh messages by date range where supported.
+for changes to once a day. Chaat adds no polling timers; every refresh of a
+cached list goes through `sync::Freshness::claim`. Lookups for what the person
+is looking at or typing (names, photos, presence of an open chat, inline
+images, searches) are deduplicated instead, and searches wait for typing to
+pause. Refresh messages by date range where supported.
 
 [Chat notifications][notifications] support delegated subscriptions for
 `/users/{id}/chats/getAllMessages` and individual chats. Chaat uses a

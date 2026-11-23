@@ -5,7 +5,12 @@ impl Worker {
         let Some(account) = &self.account else { return };
         let graph = Arc::clone(&account.graph);
         let out = self.out.clone();
+        let latest = Arc::clone(&self.people_searches);
+        let mine = next_search(&latest);
         tokio::spawn(async move {
+            if !still_latest(&latest, mine).await {
+                return;
+            }
             match graph.search_people(&query).await {
                 Ok(people) => out.send(AccountEvent::People { query, people }),
                 Err(error) => log::info!("people search unavailable: {error}"),

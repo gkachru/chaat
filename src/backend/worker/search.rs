@@ -47,6 +47,8 @@ impl Worker {
         let store = Arc::clone(&account.store);
         let graph = Arc::clone(&account.graph);
         let out = self.out.clone();
+        let latest = Arc::clone(&self.searches);
+        let mine = next_search(&latest);
         tokio::spawn(async move {
             let local = {
                 let store = store.lock().unwrap_or_else(|p| p.into_inner());
@@ -57,7 +59,7 @@ impl Worker {
                 hits: local,
                 remote: false,
             });
-            if query.trim().chars().count() < 3 {
+            if query.trim().chars().count() < 3 || !still_latest(&latest, mine).await {
                 return;
             }
             match graph.search_messages(&query).await {
