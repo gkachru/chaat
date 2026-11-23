@@ -70,3 +70,30 @@ impl Worker {
         });
     }
 }
+
+fn download_update(
+    out: &Outbox,
+    updater: &fastframe_update::Updater,
+    release: &fastframe_update::Release,
+) -> anyhow::Result<()> {
+    out.send(ServiceEvent::Update(crate::updates::Event::Status(
+        crate::updates::Status::Downloading {
+            received: 0,
+            total: 0,
+        },
+    )));
+    let mut last_percent = 0;
+    let prepared = updater.download(release, |received, total| {
+        let percent = received.saturating_mul(100).checked_div(total).unwrap_or(0);
+        if percent > last_percent || received == total {
+            last_percent = percent;
+            out.send(ServiceEvent::Update(crate::updates::Event::Status(
+                crate::updates::Status::Downloading { received, total },
+            )));
+        }
+    })?;
+    out.send(ServiceEvent::Update(crate::updates::Event::Status(
+        crate::updates::Status::Ready(Box::new(prepared)),
+    )));
+    Ok(())
+}

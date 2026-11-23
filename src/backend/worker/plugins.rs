@@ -127,3 +127,92 @@ impl Worker {
         self.stopping_ids.clear();
     }
 }
+
+/// The credential store key of a plugin's secret option.
+pub(super) fn plugin_secret_key(plugin: &str, option: &str) -> String {
+    format!("plugin-option:{plugin}:{option}")
+}
+
+/// One plugin's credential store queue: its jobs run one at a time, in the
+/// order given, each on the blocking pool. A job that blocks (a locked or
+/// prompting credential store) holds only this plugin's queue.
+pub(super) struct SecretQueue {
+    jobs: mpsc::UnboundedSender<Box<dyn FnOnce() + Send>>,
+    /// Jobs queued or running.
+    pending: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+/// Counts a job as done when dropped: after it ran, panicked or was dropped
+/// unrun.
+struct JobDone(Arc<std::sync::atomic::AtomicUsize>);
+
+impl Drop for JobDone {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl SecretQueue {
+    /// Starts the task that runs the jobs. It ends when the queue is dropped
+    /// and its jobs have run.
+    pub(super) fn start() -> Self {
+        let (jobs, mut rx) = mpsc::unbounded_channel::<Box<dyn FnOnce() + Send>>();
+        tokio::spawn(async move {
+            while let Some(job) = rx.recv().await {
+                let _ = tokio::task::spawn_blocking(job).await;
+            }
+        });
+        Self {
+            jobs,
+            pending: Arc::default(),
+        }
+    }
+
+    pub(super) fn run(&self, job: impl FnOnce() + Send + 'static) {
+        self.pending
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let done = JobDone(Arc::clone(&self.pending));
+        let _ = self.jobs.send(Box::new(move || {
+            let _done = done;
+            job();
+        }));
+    }
+
+    pub(super) fn idle(&self) -> bool {
+        self.pending.load(std::sync::atomic::Ordering::SeqCst) == 0
+    }
+}
+
+/// A plugin start held back until the previous run of the same id has
+/// stopped, so two processes of one plugin never overlap.
+pub(super) struct PluginStart {
+    pub(super) path: std::path::PathBuf,
+    pub(super) hello: crate::plugin::protocol::HostMessage,
+    pub(super) expected_sha256: Option<String>,
+    pub(super) generation: u64,
+}
+
+/// Changes what a restart hello holds, for each part given.
+pub(super) fn update_hello(
+    hello: &mut crate::plugin::protocol::HostMessage,
+    accounts: Option<Vec<crate::plugin::protocol::PluginAccount>>,
+    forget: Option<Vec<String>>,
+) {
+    if let crate::plugin::protocol::HostMessage::Hello {
+        accounts: current_accounts,
+        forget: current_forget,
+        ..
+    } = hello
+    {
+        if let Some(accounts) = accounts {
+            *current_accounts = accounts;
+        }
+        if let Some(forget) = forget {
+            *current_forget = forget;
+        }
+    }
+}
+
+/// How long shutdown waits for plugins to stop. Each stop is bounded on its
+/// own (`Plugin::stop`); this only guards the whole.
+const PLUGIN_STOP_WAIT: Duration = Duration::from_secs(10);

@@ -377,3 +377,166 @@ impl Worker {
         });
     }
 }
+
+/// Drops a confirmed message from the outbox.
+pub(super) async fn forget_outbox(store: &Arc<Mutex<Store>>, local_id: &str) {
+    let store = Arc::clone(store);
+    let local_id = local_id.to_owned();
+    let _ = tokio::task::spawn_blocking(move || {
+        let store = store.lock().unwrap_or_else(|p| p.into_inner());
+        let _ = store.delete_outbox(&local_id);
+    })
+    .await;
+}
+
+pub(super) async fn save(
+    store: &Arc<Mutex<Store>>,
+    conversation: &ConversationId,
+    messages: &[Message],
+) {
+    if messages.is_empty() {
+        return;
+    }
+    let store = Arc::clone(store);
+    let conversation = conversation.clone();
+    let messages = messages.to_vec();
+    let _ = tokio::task::spawn_blocking(move || {
+        let mut store = store.lock().unwrap_or_else(|p| p.into_inner());
+        if let Err(error) = store.save_messages(&conversation, &messages) {
+            log::warn!("could not cache messages: {error}");
+        }
+    })
+    .await;
+}
+
+pub(super) fn remember_link(
+    links: &Arc<Mutex<HashMap<ConversationId, String>>>,
+    conversation: &ConversationId,
+    link: Option<String>,
+) {
+    let mut links = links.lock().unwrap_or_else(|p| p.into_inner());
+    match link {
+        Some(link) => {
+            links.insert(conversation.clone(), link);
+        }
+        None => {
+            links.remove(conversation);
+        }
+    }
+}
+
+/// Uploads one file, shares it with the conversation, and returns the
+/// reference for the message. Sharing problems are reported but do not stop
+/// the send: the people may already have access.
+async fn share_file(
+    graph: &Graph,
+    conversation: &ConversationId,
+    path: &std::path::Path,
+    recipients: &[String],
+    out: &Outbox,
+) -> Result<SharedFile, GraphError> {
+    let item = graph.upload_file(path).await?;
+    let shared = match conversation {
+        ConversationId::Chat(_) => graph.share_with(&item.id, recipients).await,
+        ConversationId::Channel { .. } => graph.organization_link(&item.id).await,
+    };
+    if let Err(error) = shared {
+        log::warn!("sharing an upload failed: {error}");
+        out.send(AccountEvent::Error(format!(
+            "{} was uploaded, but sharing it failed; some people may not be able to open it ({error})",
+            item.name
+        )));
+    }
+    let (Some(id), Some(url)) = (item.attachment_id(), item.content_url().map(str::to_owned))
+    else {
+        return Err(GraphError::Decode);
+    };
+    Ok(SharedFile {
+        id,
+        name: item.name,
+        url,
+    })
+}
+
+/// Draft saves waiting for the disk. Typing queues a save per frame; they
+/// collapse to the latest one per conversation, and one blocking task writes
+/// them, so the command loop never waits on SQLite.
+type PendingDraft = (Arc<Mutex<Store>>, Option<crate::outbox::StoredDraft>);
+
+#[derive(Default)]
+pub(super) struct DraftQueue {
+    pending: Mutex<HashMap<ConversationId, PendingDraft>>,
+    running: std::sync::atomic::AtomicBool,
+}
+
+impl DraftQueue {
+    pub(super) fn push(
+        self: &Arc<Self>,
+        store: &Arc<Mutex<Store>>,
+        conversation: ConversationId,
+        draft: Option<crate::outbox::StoredDraft>,
+    ) {
+        self.pending
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(conversation, (Arc::clone(store), draft));
+        if !self.running.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            let queue = Arc::clone(self);
+            tokio::task::spawn_blocking(move || queue.flush());
+        }
+    }
+
+    fn flush(&self) {
+        loop {
+            let batch = {
+                let mut pending = self.pending.lock().unwrap_or_else(|p| p.into_inner());
+                if pending.is_empty() {
+                    // Cleared under the lock, so a push cannot slip between.
+                    self.running
+                        .store(false, std::sync::atomic::Ordering::SeqCst);
+                    return;
+                }
+                std::mem::take(&mut *pending)
+            };
+            for (conversation, (store, draft)) in batch {
+                let store = store.lock().unwrap_or_else(|p| p.into_inner());
+                if let Err(error) = store.save_draft(&conversation, draft.as_ref()) {
+                    log::warn!("could not save a draft: {error}");
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod draft_queue_tests {
+    use super::*;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn latest_draft_per_conversation_wins() {
+        let store = Arc::new(Mutex::new(Store::in_memory().unwrap()));
+        let queue = Arc::new(DraftQueue::default());
+        let chat = ConversationId::Chat("19:a".into());
+        for n in 0..200 {
+            queue.push(
+                &store,
+                chat.clone(),
+                Some(crate::outbox::StoredDraft {
+                    text: format!("t{n}"),
+                    ..Default::default()
+                }),
+            );
+        }
+        while queue.running.load(std::sync::atomic::Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let drafts = store.lock().unwrap().drafts().unwrap();
+        assert_eq!(drafts.len(), 1);
+        assert_eq!(drafts[0].1.text, "t199");
+        queue.push(&store, chat, None);
+        while queue.running.load(std::sync::atomic::Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(store.lock().unwrap().drafts().unwrap().is_empty());
+    }
+}

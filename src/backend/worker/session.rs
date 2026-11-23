@@ -274,3 +274,144 @@ impl Worker {
         self.out.send(AccountEvent::Auth(AuthStatus::SignedOut));
     }
 }
+
+fn channel_access(session: &Session) -> Access {
+    if session.has_scope(CHANNEL_READ_SCOPE) {
+        Access::Granted
+    } else {
+        Access::NeedsConsent
+    }
+}
+
+async fn emit_cache(store: &Arc<Mutex<Store>>, out: &Outbox) {
+    let store = Arc::clone(store);
+    let cached = tokio::task::spawn_blocking(move || {
+        let store = store.lock().unwrap_or_else(|p| p.into_inner());
+        (
+            store.chats().unwrap_or_default(),
+            store.teams().unwrap_or_default(),
+            store.channels().unwrap_or_default(),
+            store.meetings().unwrap_or_default(),
+        )
+    })
+    .await;
+    let Ok((chats, teams, channels, meetings)) = cached else {
+        return;
+    };
+    out.send(AccountEvent::Chats {
+        chats,
+        cached: true,
+    });
+    out.send(AccountEvent::Teams {
+        teams,
+        cached: true,
+    });
+    out.send(AccountEvent::Channels {
+        team: None,
+        channels,
+    });
+    out.send(AccountEvent::Meetings {
+        meetings,
+        cached: true,
+    });
+}
+
+/// The drafts and unconfirmed messages saved before the last exit.
+async fn emit_restored(store: &Arc<Mutex<Store>>, out: &Outbox) {
+    let store = Arc::clone(store);
+    let saved = tokio::task::spawn_blocking(move || {
+        let store = store.lock().unwrap_or_else(|p| p.into_inner());
+        (
+            store.drafts().unwrap_or_default(),
+            store.outbox().unwrap_or_default(),
+        )
+    })
+    .await;
+    if let Ok((drafts, outbox)) = saved {
+        out.send(AccountEvent::Restored { drafts, outbox });
+    }
+}
+
+/// What the person reads when a sign-in could not be kept for next time.
+fn unsaved_sign_in_text(locked: bool) -> &'static str {
+    if locked {
+        "Chaat could not save this sign-in because the system keyring is locked. Unlock it and sign in again, or Chaat will ask you to sign in next time."
+    } else {
+        "Chaat could not save this sign-in to the system credential store, so it will ask you to sign in again next time."
+    }
+}
+
+/// What a browser sign-in asks Microsoft for.
+struct Ask<'a> {
+    extra: &'a [String],
+    /// The account signing in again, if any.
+    hint: Option<&'a str>,
+    /// New scopes are requested, so show the consent screen.
+    consent: bool,
+}
+
+async fn browser_sign_in(
+    http: &reqwest::Client,
+    config: &AuthConfig,
+    ask: Ask<'_>,
+    out: &Outbox,
+    cancelled: watch::Receiver<bool>,
+    // `None`: don't open a browser (tests); `Some(None)`: the default one.
+    open_browser: Option<Option<crate::calling::browser::BrowserProfile>>,
+) -> Result<token::TokenResponse, String> {
+    let loopback = Loopback::bind().await.map_err(|e| e.to_string())?;
+    let flow = auth::begin_browser(config, loopback.port(), ask.extra, ask.hint, ask.consent);
+    out.send(AccountEvent::Auth(AuthStatus::WaitingForBrowser {
+        url: flow.url.clone(),
+    }));
+    if let Some(browser) = open_browser {
+        // The call browser, so Teams on the web later finds this Microsoft
+        // session; the default browser otherwise or if that fails.
+        let launched = browser.and_then(|b| {
+            crate::calling::browser::page(&b.browser, &flow.url, b.profile.as_deref())
+                .map(|launch| crate::calling::browser::spawn(&launch))
+        });
+        if !matches!(launched, Some(Ok(())))
+            && let Err(error) = open::that_detached(&flow.url)
+        {
+            log::warn!("could not open the browser: {error}");
+        }
+    }
+    let code = loopback
+        .wait_for_code(&flow.state, cancelled)
+        .await
+        .map_err(|e| e.to_string())?;
+    out.send(AccountEvent::Auth(AuthStatus::Finishing));
+    token::exchange_code(
+        http,
+        config,
+        &code,
+        &flow.verifier,
+        &flow.redirect_uri,
+        &flow.scopes,
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+async fn device_code_sign_in(
+    http: &reqwest::Client,
+    config: &AuthConfig,
+    extra: &[String],
+    out: &Outbox,
+    cancelled: watch::Receiver<bool>,
+) -> Result<token::TokenResponse, String> {
+    let scopes = auth::scope_string(extra);
+    let code = token::start_device_code(http, config, &scopes)
+        .await
+        .map_err(|e| e.to_string())?;
+    out.send(AccountEvent::Auth(AuthStatus::DeviceCode {
+        code: code.user_code.clone(),
+        url: code.verification_uri.clone(),
+    }));
+    let response = token::poll_device_code(http, config, &code, cancelled)
+        .await
+        .map_err(|e| e.to_string())?;
+    out.send(AccountEvent::Auth(AuthStatus::Finishing));
+    Ok(response)
+}

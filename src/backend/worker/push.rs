@@ -75,3 +75,9 @@ impl Worker {
         }
     }
 }
+
+/// How long stopping push may wait for its subscriptions to be deleted.
+const PUSH_CLEANUP: Duration = Duration::from_secs(3);
+
+/// Bodies a push plugin may have waiting for the push loop; more are dropped.
+const PUSH_BODY_QUEUE: usize = 64;

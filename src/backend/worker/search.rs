@@ -73,3 +73,21 @@ impl Worker {
         });
     }
 }
+
+/// What a conversation's find bar shows from Microsoft Search: only hits in
+/// that conversation, and none already found locally.
+fn conversation_hits(
+    conversation: &ConversationId,
+    local: &[SearchHit],
+    remote: Vec<SearchHit>,
+) -> Vec<SearchHit> {
+    let mut hits = local.to_vec();
+    for hit in remote {
+        if &hit.conversation == conversation
+            && !hits.iter().any(|known| known.message_id == hit.message_id)
+        {
+            hits.push(hit);
+        }
+    }
+    hits
+}
