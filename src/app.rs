@@ -47,6 +47,7 @@ mod setup;
 mod setup_events;
 mod setup_export;
 mod status;
+mod unified;
 pub use calls::Docked;
 pub use history::HistoryLayout;
 pub use pins::message_link;
@@ -273,6 +274,8 @@ pub struct Switcher {
     pub selected: usize,
     pub hits: Vec<SearchHit>,
     pub remote_hits: Vec<SearchHit>,
+    /// Hits per account index while Unified Chats is shown.
+    pub unified_hits: Vec<(usize, SearchHit)>,
     pub searched: String,
 }
 
@@ -651,6 +654,10 @@ pub struct App {
     pub update_receipt: Option<fastframe_update::Receipt>,
     pub dirs: AppDirs,
     pub settings: Settings,
+    /// Unified Chats is showing (the logo tile) instead of one account.
+    pub unified: bool,
+    /// Filters of the Unified chat list.
+    pub unified_filter: crate::model::UnifiedFilter,
     settings_dirty: bool,
     pub waker: Waker,
     pub demo: bool,
@@ -856,6 +863,8 @@ impl App {
             status_expiry: Default::default(),
             form_out_of_office: Default::default(),
             dirs,
+            unified: settings.unified,
+            unified_filter: Default::default(),
             settings,
             settings_dirty: false,
             desktop: if demo {
@@ -1061,8 +1070,10 @@ impl App {
 
     pub fn toast(&mut self, kind: ToastKind, text: impl Into<String>) {
         let mut text = text.into();
+        let mut account = None;
         if self.hidden && self.accounts.len() > 1 {
-            text = format!("{}: {text}", self.label());
+            text = format!("{}: {text}", self.account_look(self.active).name);
+            account = Some(self.active);
         }
         if self.toasts.iter().any(|t| t.text == text) {
             return;
@@ -1073,6 +1084,7 @@ impl App {
             kind,
             text,
             action: None,
+            account,
         });
         if self.toasts.len() > 4 {
             self.toasts.remove(0);
@@ -1111,14 +1123,19 @@ impl App {
 
     /// Asks for whatever the current view shows.
     fn fetch_view(&self, trigger: Trigger) {
+        self.fetch_section(trigger);
+        if let Some(open) = &self.open {
+            self.fetch(Resource::Messages(open.clone()), trigger);
+        }
+    }
+
+    /// Asks for the list of the current section only.
+    fn fetch_section(&self, trigger: Trigger) {
         match self.section {
             Section::Chats => self.fetch(Resource::Chats, trigger),
             Section::Teams => self.fetch(Resource::Teams, trigger),
             Section::Calendar => self.fetch(Resource::Calendar, trigger),
             Section::Calls => {}
-        }
-        if let Some(open) = &self.open {
-            self.fetch(Resource::Messages(open.clone()), trigger);
         }
     }
 
@@ -1463,7 +1480,19 @@ impl App {
             }
             Action::DownloadUpdate => self.apply_download_update(),
             Action::InstallUpdate => self.apply_install_update(),
-            Action::Navigate(section) => self.apply_navigate(section),
+            Action::Navigate(section) => {
+                self.apply_navigate(section);
+                if self.unified_view() {
+                    self.fan_out_view(Trigger::Opened);
+                }
+            }
+            Action::ShowUnified => self.apply_show_unified(),
+            Action::ShowAccount(index) => self.apply_show_account(index),
+            Action::SelectMeeting(id) => self.selected_meeting = Some(id),
+            Action::OpenSharedChat(index, id) => self.apply_open_shared_chat(index, id, ctx),
+            Action::SetUnifiedOnly(only) => self.apply_set_unified_only(only),
+            Action::ForAccount(index, action) => self.apply_for_account(index, *action, ctx),
+            Action::SetAccountLook(index, look) => self.apply_set_account_look(index, look),
             Action::OpenConversation(conversation) => self.open_conversation(conversation),
             Action::OpenMessage {
                 conversation,
@@ -1540,7 +1569,7 @@ impl App {
             Action::SaveAppRegistration { client_id, tenant } => {
                 self.apply_save_app_registration(client_id, tenant)
             }
-            Action::SetAvailability(availability) => self.apply_set_availability(availability),
+            Action::SetAvailability(availability) => self.apply_set_availability_all(availability),
             Action::OpenStatusMessage => self.apply_open_status_message(),
             Action::SetStatusMessage(text) => self.apply_set_status_message(text),
             Action::SetStatusExpiry(expiry) => self.status_expiry = expiry,
@@ -1634,7 +1663,12 @@ impl App {
             Action::RetryRelay => self.apply_retry_relay(),
             Action::TogglePerfOverlay => self.apply_toggle_perf_overlay(),
             Action::OpenLogFolder => self.apply_open_log_folder(),
-            Action::Refresh => self.apply_refresh(),
+            Action::Refresh => {
+                self.apply_refresh();
+                if self.unified_view() {
+                    self.fan_out_view(Trigger::Refresh);
+                }
+            }
             Action::DismissToast(id) => self.toasts.retain(|t| t.id != id),
             Action::DismissRing(id) => self.rings.retain(|r| r.id != id),
             Action::Plugin(action) => self.apply_plugin_action(action),
@@ -1747,4 +1781,4 @@ fn fnv(text: &str) -> u64 {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

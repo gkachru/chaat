@@ -155,6 +155,7 @@ pub(super) fn composer(app: &mut App, ui: &mut egui::Ui, conversation: &Conversa
         }))
         .show(ui, |ui| {
             crate::ui::agents::proposal_card(ui, app, conversation, &mut actions);
+            sending_as(app, ui, conversation, &mut actions);
             composer_top = Some(ui.cursor().min);
             Frame::new()
                 .fill(palette.surface)
@@ -759,6 +760,45 @@ pub(super) fn composer(app: &mut App, ui: &mut egui::Ui, conversation: &Conversa
         app.drafts.remove(conversation);
     }
     app.actions.extend(actions);
+}
+
+/// "Sending as <name>" above the input, for a chat that more than one signed-in
+/// account holds. Picking another account switches to it and reopens the chat.
+/// Never for channels or chats only one account has.
+fn sending_as(
+    app: &App,
+    ui: &mut egui::Ui,
+    conversation: &ConversationId,
+    actions: &mut Vec<Action>,
+) {
+    let ConversationId::Chat(chat_id) = conversation else {
+        return;
+    };
+    let holders = app.chat_accounts(chat_id);
+    if holders.len() < 2 {
+        return;
+    }
+    let palette = app.palette;
+    let label = format!("Sending as {}", app.account_look(app.active).name);
+    ui.horizontal(|ui| {
+        ui.menu_button(
+            egui::RichText::new(label)
+                .font(theme::regular(12.0))
+                .color(palette.secondary),
+            |ui| {
+                ui.set_width(200.0);
+                for &j in holders.iter().filter(|&&j| j != app.active) {
+                    let name = app.account_look(j).name;
+                    if widgets::menu_item(ui, &palette, Icon::Chat, &name) {
+                        actions.push(Action::SwitchAccount(j));
+                        actions.push(Action::OpenConversation(conversation.clone()));
+                        ui.close();
+                    }
+                }
+            },
+        );
+    });
+    ui.add_space(2.0);
 }
 
 fn draft_context(

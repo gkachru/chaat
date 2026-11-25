@@ -100,6 +100,28 @@ impl App {
         hits: Vec<SearchHit>,
         remote: bool,
     ) {
+        if self.unified_view() {
+            // Answers of every account, tagged with the one that is active
+            // while the event is applied. A stale query is dropped.
+            if query != self.switcher.searched {
+                return;
+            }
+            let index = self.active;
+            if !remote {
+                self.switcher.unified_hits.retain(|(i, _)| *i != index);
+            }
+            for hit in hits {
+                let known = self.switcher.unified_hits.iter().any(|(i, h)| {
+                    *i == index
+                        && h.conversation == hit.conversation
+                        && h.message_id == hit.message_id
+                });
+                if !known {
+                    self.switcher.unified_hits.push((index, hit));
+                }
+            }
+            return;
+        }
         if !self.hidden && query == self.switcher.searched {
             if remote {
                 self.switcher.remote_hits = hits;

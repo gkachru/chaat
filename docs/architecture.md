@@ -76,6 +76,8 @@ account already open is retired.
 | `backend/agents.rs` | Answers agent reads from the SQLite cache on the blocking pool (8 at once, 60 000-byte answers); never calls Graph |
 | `realtime.rs` | Push updates: relay WebSocket, Graph subscription lifecycle, notification parsing |
 | `relay/` (crate `chaat-relay`, binary `chaat-relay`) | The self-hostable relay: validation handshake, forwarding of Graph notifications, optional client access key |
+| `account_look.rs` | Automatic account names (sign-in domain), the icon and color choices, and resolving an account's look from settings |
+| `app/unified.rs` | The Unified view: merges each account's cached chats, channels and calendar entries, and routes actions to the right account |
 | `theme.rs` | Palettes (fastframe-theme compatible), visuals, type scale, Lucide icon table |
 | `platform.rs` | App icon rasterization, tray item, single-instance slot |
 | `notify.rs` | Desktop notifications |

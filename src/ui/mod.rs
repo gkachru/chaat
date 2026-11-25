@@ -88,6 +88,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         &fastframe_titlebar::Labels::default(),
     );
     fastframe_titlebar::resize(ui);
+    send_title(app, &ctx);
     drop_files(app, &ctx);
     overlays::show(app, &ctx);
     if app.shows_workspace() && !app.demo {
@@ -102,12 +103,75 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     widgets::request_photos(app, &ctx);
 }
 
+/// The window title: the app name, with the unread chats of every account.
+pub fn window_title(total_unread: usize) -> String {
+    if total_unread == 0 {
+        "Chaat".into()
+    } else {
+        format!("({total_unread}) Chaat")
+    }
+}
+
+/// Sends the title only when it changed since the last frame.
+fn send_title(app: &App, ctx: &egui::Context) {
+    let title = window_title(app.total_unread());
+    let id = egui::Id::new("chaat-window-title");
+    let last: Option<String> = ctx.data(|d| d.get_temp(id));
+    if last.as_deref() != Some(title.as_str()) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+        ctx.data_mut(|d| d.insert_temp(id, title));
+    }
+}
+
+/// One line per account that must sign in again, in Unified Chats.
+fn expired_banners(app: &mut App, ui: &mut egui::Ui) {
+    if !app.unified_view() {
+        return;
+    }
+    let palette = app.palette;
+    for index in 0..app.accounts.len() {
+        if !matches!(
+            app.accounts[index].auth,
+            crate::backend::AuthStatus::Expired { .. }
+        ) {
+            continue;
+        }
+        let name = app.account_look(index).name;
+        let clicked = Frame::new()
+            .fill(palette.surface)
+            .inner_margin(Margin::symmetric(12, 6))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    theme::icon(ui, Icon::Alert, 14.0, palette.warning);
+                    widgets::link_button(
+                        ui,
+                        &palette,
+                        &format!("Sign in again: {name}"),
+                        theme::medium(13.0),
+                    )
+                    .clicked()
+                })
+                .inner
+            })
+            .inner;
+        if clicked {
+            app.actions.push(if app.settings.unified_only {
+                Action::SwitchAccount(index)
+            } else {
+                Action::ShowAccount(index)
+            });
+            app.actions.push(Action::SignIn);
+        }
+    }
+}
+
 /// Above the cached workspace while its account needs to sign in again: why,
 /// and the way back.
 fn session_banner(app: &mut App, ui: &mut egui::Ui) {
     use crate::backend::AuthStatus;
     let username = app.username();
     let (text, buttons): (String, &[&str]) = match (&app.auth, app.reauth.is_some()) {
+        (AuthStatus::Expired { .. }, _) if app.unified_view() => return,
         (AuthStatus::Expired { reason, .. }, _) => (
             if username.is_empty() {
                 reason.clone()
@@ -265,8 +329,13 @@ fn sidebar(app: &mut App, ui: &mut egui::Ui) {
                 |ui| {
                     ui.horizontal_centered(|ui| {
                         ui.add_space(inset + 4.0);
+                        let title = if app.unified_view() {
+                            "All accounts"
+                        } else {
+                            app.section.label()
+                        };
                         ui.label(
-                            egui::RichText::new(app.section.label())
+                            egui::RichText::new(title)
                                 .font(theme::bold(18.0))
                                 .color(palette.text),
                         );
@@ -308,7 +377,7 @@ fn sidebar(app: &mut App, ui: &mut egui::Ui) {
                     });
                 },
             );
-            // The header above took its height through `scope_builder`.
+            expired_banners(app, ui);
             match app.section {
                 Section::Chats => chat_list::show(app, ui),
                 Section::Teams => teams::show(app, ui),
@@ -435,6 +504,14 @@ fn toasts(app: &mut App, ctx: &egui::Context) {
                                 ToastKind::Info => (Icon::Info, palette.secondary),
                             };
                             theme::icon(ui, icon, 16.0, tint);
+                            if let Some(index) = toast.account
+                                && index < app.accounts.len()
+                            {
+                                let look = app.account_look(index);
+                                let (rect, _) =
+                                    ui.allocate_exact_size(vec2(16.0, 16.0), egui::Sense::hover());
+                                widgets::paint_account_mark(ui, &look, rect);
+                            }
                             ui.add(
                                 egui::Label::new(
                                     egui::RichText::new(&toast.text).color(palette.text),
@@ -799,5 +876,16 @@ fn sign_in_text(call_alerts: bool, username: Option<&str>) -> String {
     match username.filter(|name| !name.is_empty()) {
         Some(name) => format!("{intro} Open the page, enter this code, and sign in as {name}:"),
         None => format!("{intro} Open the page and enter this code:"),
+    }
+}
+
+#[cfg(test)]
+mod title_tests {
+    use super::window_title;
+
+    #[test]
+    fn window_title_counts_unread() {
+        assert_eq!(window_title(0), "Chaat");
+        assert_eq!(window_title(5), "(5) Chaat");
     }
 }

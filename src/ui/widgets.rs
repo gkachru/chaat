@@ -36,12 +36,43 @@ pub fn avatar(
     size: f32,
     presence: bool,
 ) -> Response {
+    draw_avatar(ui, app, None, user, name, size, presence)
+}
+
+/// [`avatar`] for any signed-in account: photos and presence come from
+/// `app.accounts[account]`, and missing photos are requested for that account
+/// by [`request_account_photos`].
+pub fn avatar_in(
+    ui: &mut Ui,
+    app: &App,
+    account: usize,
+    user: Option<&str>,
+    name: &str,
+    size: f32,
+    presence: bool,
+) -> Response {
+    draw_avatar(ui, app, Some(account), user, name, size, presence)
+}
+
+fn draw_avatar(
+    ui: &mut Ui,
+    app: &App,
+    account: Option<usize>,
+    user: Option<&str>,
+    name: &str,
+    size: f32,
+    presence: bool,
+) -> Response {
+    let (photos, presences) = match account.and_then(|j| app.accounts.get(j)) {
+        Some(a) => (&a.photos, &a.presence),
+        None => (&app.photos, &app.presence),
+    };
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
     if !ui.is_rect_visible(rect) {
         return response;
     }
     let palette = &app.palette;
-    let photo = user.and_then(|u| match app.photos.get(u) {
+    let photo = user.and_then(|u| match photos.get(u) {
         Some(Image::Ready(uri)) => Some(uri.clone()),
         _ => None,
     });
@@ -74,20 +105,24 @@ pub fn avatar(
             uri,
             egui::load::SizeHint::Width((size * ui.ctx().pixels_per_point()).ceil() as u32),
         ),
-        None => user.is_some_and(|user| !app.photos.contains_key(user)),
+        None => user.is_some_and(|user| !photos.contains_key(user)),
     };
     if let Some(user) = user
         && !app.demo
         && missing_photo
     {
+        let key = match account {
+            Some(j) => egui::Id::new(("chaat-photo-wants", j)),
+            None => egui::Id::new("chaat-photo-wants"),
+        };
         ui.ctx().data_mut(|data| {
-            data.get_temp_mut_or_default::<Vec<String>>(egui::Id::new("chaat-photo-wants"))
+            data.get_temp_mut_or_default::<Vec<String>>(key)
                 .push(user.to_owned())
         });
     }
     if presence
         && let Some(user) = user
-        && let Some(state) = app.presence.get(user)
+        && let Some(state) = presences.get(user)
     {
         let dot = (size * 0.30).max(9.0);
         let center = rect.right_bottom() - vec2(dot * 0.42, dot * 0.42);
@@ -419,6 +454,73 @@ pub fn line(ui: &mut Ui, text: &str, font: egui::FontId, color: Color32) -> Resp
     ui.add(egui::Label::new(job).selectable(false))
 }
 
+/// The small mark of an account: a 14 px rounded square in its color, with
+/// its icon or its initials.
+pub fn paint_account_mark(ui: &Ui, look: &crate::account_look::Look, rect: egui::Rect) {
+    ui.painter()
+        .rect_filled(rect, CornerRadius::same(4), look.color);
+    paint_account_glyph(ui, look, rect, 10.0, 11.0);
+}
+
+fn paint_account_glyph(
+    ui: &Ui,
+    look: &crate::account_look::Look,
+    rect: egui::Rect,
+    icon_size: f32,
+    font_size: f32,
+) {
+    match look.icon.as_deref().and_then(Icon::for_account) {
+        Some(icon) => icon.image(Color32::WHITE, icon_size).paint_at(
+            ui,
+            egui::Rect::from_center_size(rect.center(), Vec2::splat(icon_size)),
+        ),
+        None => {
+            ui.painter().text(
+                rect.center(),
+                Align2::CENTER_CENTER,
+                &look.initials,
+                theme::semibold(font_size),
+                Color32::WHITE,
+            );
+        }
+    }
+}
+
+/// One account in the rail: a rounded square in the account's color with its
+/// icon or initials, an accent ring when selected and an unread badge.
+pub fn account_tile(
+    ui: &mut Ui,
+    palette: &Palette,
+    look: &crate::account_look::Look,
+    size: f32,
+    selected: bool,
+    badge_count: usize,
+) -> Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
+    if !ui.is_rect_visible(rect) {
+        return response;
+    }
+    let fill = if response.hovered() {
+        look.color.lerp_to_gamma(Color32::WHITE, 0.12)
+    } else {
+        look.color
+    };
+    if selected {
+        ui.painter().rect_stroke(
+            rect.expand(1.0),
+            CornerRadius::same(11),
+            Stroke::new(2.0, palette.accent),
+            egui::StrokeKind::Outside,
+        );
+    }
+    ui.painter().rect_filled(rect, CornerRadius::same(10), fill);
+    paint_account_glyph(ui, look, rect, 18.0, 13.0);
+    if badge_count > 0 {
+        badge(ui, palette, rect.right_top() + vec2(-2.0, 4.0), badge_count);
+    }
+    response.on_hover_text(&look.name)
+}
+
 /// A quiet message in an empty pane.
 pub fn empty_state(ui: &mut Ui, palette: &Palette, icon: Icon, title: &str, text: &str) {
     ui.vertical_centered(|ui| {
@@ -462,6 +564,32 @@ pub fn request_photos(app: &mut App, ctx: &egui::Context) {
     });
     if !wants.is_empty() {
         app.actions.push(Action::LoadPhotos(wants));
+    }
+}
+
+/// Asks each account for the photos [`avatar_in`] found missing. A photo is
+/// asked for once per account (an asked-set in egui's temp data), never per
+/// frame.
+pub fn request_account_photos(app: &mut App, ctx: &egui::Context) {
+    for j in 0..app.accounts.len() {
+        let wants_key = egui::Id::new(("chaat-photo-wants", j));
+        let asked_key = egui::Id::new(("chaat-photo-asked", j));
+        let wants: Vec<String> = ctx.data_mut(|data| {
+            let wants = std::mem::take(data.get_temp_mut_or_default::<Vec<String>>(wants_key));
+            let asked =
+                data.get_temp_mut_or_default::<std::collections::HashSet<String>>(asked_key);
+            let mut fresh: Vec<String> = Vec::new();
+            for id in wants {
+                if asked.insert(id.clone()) {
+                    fresh.push(id);
+                }
+            }
+            fresh
+        });
+        if !wants.is_empty() {
+            app.actions
+                .push(Action::ForAccount(j, Box::new(Action::LoadPhotos(wants))));
+        }
     }
 }
 
@@ -707,4 +835,209 @@ pub fn field_label(ui: &mut Ui, palette: &Palette, text: &str) {
             .font(theme::regular(13.0))
             .color(palette.secondary),
     );
+}
+
+/// "Start as" picker for dialogs that act as one account: the label, the
+/// account's mark and name, and a menu of every account. Draws nothing
+/// outside Unified. Returns the account picked when it is not the active one.
+pub fn account_picker(ui: &mut Ui, app: &App, label: &str) -> Option<usize> {
+    if !app.unified_view() {
+        return None;
+    }
+    let palette = &app.palette;
+    let mut picked = None;
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new(label)
+                .font(theme::medium(12.0))
+                .color(palette.secondary),
+        );
+        let active = app.account_look(app.active);
+        let (rect, _) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::hover());
+        paint_account_mark(ui, &active, rect);
+        ui.menu_button(
+            egui::RichText::new(&active.name)
+                .font(theme::medium(13.0))
+                .color(palette.text),
+            |ui| {
+                for index in 0..app.accounts.len() {
+                    let look = app.account_look(index);
+                    ui.horizontal(|ui| {
+                        let (rect, _) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::hover());
+                        paint_account_mark(ui, &look, rect);
+                        if ui
+                            .selectable_label(index == app.active, &look.name)
+                            .clicked()
+                        {
+                            if index != app.active {
+                                picked = Some(index);
+                            }
+                            ui.close();
+                        }
+                    });
+                }
+            },
+        );
+    });
+    picked
+}
+
+#[cfg(test)]
+mod account_tile_tests {
+    use super::*;
+    use crate::account_look::Look;
+
+    fn texts(look: &Look, badge_count: usize) -> Vec<String> {
+        let ctx = egui::Context::default();
+        theme::install_fonts(&ctx, true);
+        let palette = Palette::dark();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                vec2(200.0, 200.0),
+            )),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| {
+            account_tile(ui, &palette, look, 40.0, true, badge_count);
+        });
+        out.textures_delta.clear();
+        fn walk(s: &egui::Shape, acc: &mut Vec<String>) {
+            match s {
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, acc)),
+                egui::Shape::Text(t) => acc.push(t.galley.job.text.clone()),
+                _ => {}
+            }
+        }
+        let mut acc = Vec::new();
+        out.shapes.iter().for_each(|c| walk(&c.shape, &mut acc));
+        acc
+    }
+
+    fn look(initials: &str, icon: Option<&str>) -> Look {
+        Look {
+            name: "Contoso".into(),
+            initials: initials.into(),
+            icon: icon.map(str::to_owned),
+            color: Color32::from_rgb(0x3f, 0x8f, 0xd2),
+        }
+    }
+
+    #[test]
+    fn account_tile_draws_initials_without_icon() {
+        assert_eq!(texts(&look("C", None), 0), ["C"]);
+    }
+
+    #[test]
+    fn account_tile_draws_non_ascii_initials() {
+        assert_eq!(texts(&look("Ä", None), 0), ["Ä"]);
+    }
+
+    #[test]
+    fn account_tile_draws_icon_instead_of_initials() {
+        // Without image loaders the icon paints egui's "⚠" placeholder, never the initials.
+        assert!(!texts(&look("C", Some("star")), 0).contains(&"C".to_owned()));
+    }
+
+    #[test]
+    fn account_tile_badge_caps() {
+        assert_eq!(texts(&look("C", None), 120), ["C", "99+"]);
+        assert_eq!(texts(&look("C", None), 7), ["C", "7"]);
+    }
+}
+
+#[cfg(test)]
+mod account_picker_tests {
+    use super::*;
+    use crate::backend::Waker;
+    use crate::paths::AppDirs;
+    use crate::settings::Settings;
+
+    fn demo_app() -> (App, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::new(
+            AppDirs::under(dir.path()),
+            Settings::default(),
+            Waker::default(),
+            true,
+        );
+        (app, dir)
+    }
+
+    fn draws(app: &App) -> bool {
+        let ctx = egui::Context::default();
+        theme::install_fonts(&ctx, true);
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                vec2(400.0, 200.0),
+            )),
+            ..Default::default()
+        };
+        let mut picked = Some(9);
+        let mut out = ctx.run_ui(input, |ui| {
+            picked = account_picker(ui, app, "Start as");
+        });
+        out.textures_delta.clear();
+        assert_eq!(picked, None);
+        !out.shapes.is_empty()
+    }
+
+    #[test]
+    fn account_picker_hidden_outside_unified() {
+        let (mut app, _d) = demo_app();
+        app.unified = false;
+        assert!(!draws(&app));
+        app.unified = true;
+        assert!(draws(&app));
+        app.accounts.truncate(1);
+        assert!(!draws(&app));
+    }
+}
+
+#[cfg(test)]
+mod account_photo_tests {
+    use super::*;
+    use crate::backend::Waker;
+    use crate::paths::AppDirs;
+    use crate::settings::Settings;
+
+    #[test]
+    fn missing_photo_of_account_one_is_asked_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = App::new(
+            AppDirs::under(dir.path()),
+            Settings::default(),
+            Waker::default(),
+            false,
+        );
+        app.accounts.push(crate::app::Account::new(
+            crate::backend::Backend::detached().0,
+        ));
+        let ctx = egui::Context::default();
+        theme::install_fonts(&ctx, true);
+        for _ in 0..2 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    vec2(200.0, 200.0),
+                )),
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                avatar_in(ui, &app, 1, Some("u1"), "Ada", 38.0, false);
+            });
+            output.textures_delta.clear();
+            request_account_photos(&mut app, &ctx);
+        }
+        let asked: Vec<_> = app
+            .actions
+            .iter()
+            .filter(|a| {
+                matches!(a, Action::ForAccount(1, inner)
+                    if matches!(**inner, Action::LoadPhotos(_)))
+            })
+            .collect();
+        assert_eq!(asked.len(), 1);
+    }
 }

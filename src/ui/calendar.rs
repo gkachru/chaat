@@ -1,6 +1,8 @@
 //! The next two weeks of meetings: an agenda in the sidebar, the selected
 //! meeting on the right with its Join button.
 
+use std::collections::HashMap;
+
 use egui::{CornerRadius, Frame, Margin, Sense, Stroke, vec2};
 
 use super::widgets;
@@ -8,15 +10,80 @@ use crate::app::App;
 use crate::model::{Action, Meeting};
 use crate::theme::{self, Icon};
 
+/// One agenda entry: a meeting and the accounts that have it.
+struct Entry {
+    meeting: Meeting,
+    /// `(account index, that account's meeting id)`, in account order.
+    copies: Vec<(usize, String)>,
+}
+
+/// The same meeting: equal join links, or equal subject, start and end
+/// (mailbox ids differ across accounts, and invites can arrive twice).
+#[cfg(test)]
+fn same_meeting(a: &Meeting, b: &Meeting) -> bool {
+    if let (Some(x), Some(y)) = (&a.join_url, &b.join_url)
+        && x == y
+    {
+        return true;
+    }
+    a.subject == b.subject && a.start == b.start && a.end == b.end
+}
+
+/// Upcoming meetings, merged over every account in Unified (one entry per
+/// meeting, even when several accounts were invited) and ordered by start.
+fn entries(app: &App, now: i64) -> Vec<Entry> {
+    let indexes: Vec<usize> = if app.unified_view() {
+        (0..app.accounts.len()).collect()
+    } else {
+        vec![app.active]
+    };
+    let mut out: Vec<Entry> = Vec::new();
+    // First entry per join link and per (subject, start, end): the same
+    // result as scanning `out` with `same_meeting`, without the quadratic cost.
+    let mut by_url: HashMap<&str, usize> = HashMap::new();
+    let mut by_key: HashMap<(&str, i64, i64), usize> = HashMap::new();
+    for j in indexes {
+        for m in app.accounts[j]
+            .meetings
+            .iter()
+            .filter(|m| m.end > now && !m.cancelled)
+        {
+            let hit = [
+                m.join_url.as_deref().and_then(|u| by_url.get(u)),
+                by_key.get(&(m.subject.as_str(), m.start, m.end)),
+            ]
+            .into_iter()
+            .flatten()
+            .min()
+            .copied();
+            match hit {
+                Some(i) => out[i].copies.push((j, m.id.clone())),
+                None => {
+                    let i = out.len();
+                    if let Some(u) = m.join_url.as_deref() {
+                        by_url.entry(u).or_insert(i);
+                    }
+                    by_key
+                        .entry((m.subject.as_str(), m.start, m.end))
+                        .or_insert(i);
+                    out.push(Entry {
+                        meeting: m.clone(),
+                        copies: vec![(j, m.id.clone())],
+                    });
+                }
+            }
+        }
+    }
+    out.sort_by_key(|e| e.meeting.start);
+    out
+}
+
 pub fn list(app: &mut App, ui: &mut egui::Ui) {
     let palette = app.palette;
     let now = crate::time::now();
-    let upcoming: Vec<Meeting> = app
-        .meetings
-        .iter()
-        .filter(|m| m.end > now && !m.cancelled)
-        .cloned()
-        .collect();
+    let unified = app.unified_view();
+    let active = app.active;
+    let upcoming = entries(app, now);
     if upcoming.is_empty() {
         let (title, text) = if app.loading.contains(&crate::sync::Resource::Calendar) {
             ("Loading your calendar…", "")
@@ -27,12 +94,14 @@ pub fn list(app: &mut App, ui: &mut egui::Ui) {
         return;
     }
     let mut actions = Vec::new();
+    let mut select = None;
     egui::ScrollArea::vertical()
         .id_salt("agenda")
         .auto_shrink([false, false])
         .show(ui, |ui| {
             let mut day = None;
-            for meeting in &upcoming {
+            for entry in &upcoming {
+                let meeting = &entry.meeting;
                 let key = crate::time::day_key(meeting.start);
                 if day != Some(key) {
                     day = Some(key);
@@ -47,21 +116,62 @@ pub fn list(app: &mut App, ui: &mut egui::Ui) {
                     });
                     ui.add_space(4.0);
                 }
-                let selected = app.selected_meeting.as_deref() == Some(meeting.id.as_str());
-                let response = row(ui, app, meeting, selected, now);
+                // The copy to act on: the active account's own when it has the
+                // meeting (no switch needed), else the first copy.
+                let (j, id) = entry
+                    .copies
+                    .iter()
+                    .find(|(j, _)| *j == active)
+                    .or(entry.copies.first())
+                    .cloned()
+                    .unwrap_or((active, meeting.id.clone()));
+                let selected = j == active && app.selected_meeting.as_deref() == Some(id.as_str());
+                let marks: Vec<usize> = if unified {
+                    let mut v: Vec<usize> = entry.copies.iter().map(|(j, _)| *j).collect();
+                    v.dedup();
+                    v
+                } else {
+                    Vec::new()
+                };
+                let response = row(ui, app, meeting, &marks, selected, now);
                 if response.clicked() {
-                    app.selected_meeting = Some(meeting.id.clone());
+                    if unified {
+                        if j != active {
+                            actions.push(Action::SwitchAccount(j));
+                        }
+                        actions.push(Action::SelectMeeting(id.clone()));
+                    } else {
+                        select = Some(id.clone());
+                    }
                 }
                 if response.double_clicked()
                     && let Some(url) = &meeting.join_url
                 {
+                    if j != active {
+                        actions.push(Action::SwitchAccount(j));
+                    }
                     actions.push(Action::JoinMeeting(url.clone()));
                 }
             }
             ui.add_space(12.0);
         });
+    if let Some(id) = select {
+        app.selected_meeting = Some(id);
+    }
     if app.selected_meeting.is_none() {
-        app.selected_meeting = upcoming.first().map(|m| m.id.clone());
+        // Unified: pick through an action, from the active account's own
+        // meetings so that no account switch is needed.
+        let first = upcoming
+            .iter()
+            .find_map(|e| e.copies.iter().find(|(j, _)| *j == active))
+            .map(|(_, id)| id.clone());
+        if let Some(id) = first {
+            if unified {
+                actions.push(Action::SelectMeeting(id));
+            } else {
+                app.selected_meeting = Some(id);
+            }
+        }
     }
     app.actions.extend(actions);
 }
@@ -70,6 +180,7 @@ fn row(
     ui: &mut egui::Ui,
     app: &App,
     meeting: &Meeting,
+    marks: &[usize],
     selected: bool,
     now: i64,
 ) -> egui::Response {
@@ -90,12 +201,25 @@ fn row(
             },
         );
         let left = bar.right() + 10.0;
+        // Account marks on the right, one per account that has the meeting.
+        let marks_width = marks.len() as f32 * 20.0;
+        let mut x = inner.right() - 8.0 - marks_width;
+        for &j in marks {
+            let look = app.account_look(j);
+            let rect = egui::Rect::from_min_size(
+                egui::pos2(x, inner.top() + 9.0),
+                egui::Vec2::splat(16.0),
+            );
+            widgets::paint_account_mark(ui, &look, rect);
+            x += 20.0;
+        }
+        let text_right = inner.right() - marks_width;
         let title = super::widgets::elided(
             ui,
             &meeting.subject,
             theme::semibold(13.0),
             palette.text,
-            inner.right() - left - 10.0,
+            text_right - left - 10.0,
         );
         ui.painter()
             .galley(egui::pos2(left, inner.top() + 8.0), title, palette.text);
@@ -211,4 +335,65 @@ pub fn detail(app: &mut App, ui: &mut egui::Ui) {
                 .color(palette.dim),
         );
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn meeting(subject: &str, start: i64, end: i64, url: Option<&str>) -> Meeting {
+        Meeting {
+            subject: subject.into(),
+            start,
+            end,
+            join_url: url.map(str::to_owned),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn equal_join_urls_match() {
+        let a = meeting("A", 1, 2, Some("u"));
+        let b = meeting("B", 5, 6, Some("u"));
+        assert!(same_meeting(&a, &b));
+    }
+
+    #[test]
+    fn same_subject_start_end_match_despite_urls() {
+        let a = meeting("A", 1, 2, Some("u1"));
+        let b = meeting("A", 1, 2, Some("u2"));
+        assert!(same_meeting(&a, &b));
+    }
+
+    #[test]
+    fn different_end_is_not_same() {
+        let a = meeting("A", 1, 2, None);
+        let b = meeting("A", 1, 3, None);
+        assert!(!same_meeting(&a, &b));
+    }
+
+    #[test]
+    fn entries_group_like_same_meeting() {
+        let (mut app, _d) = crate::app::tests::demo_app();
+        let far = i64::MAX / 2;
+        let mk = |id: &str, subject: &str, start: i64, url: Option<&str>| Meeting {
+            id: id.into(),
+            ..meeting(subject, start, start + 10, url)
+        };
+        app.accounts[0].meetings = vec![
+            mk("a1", "A", far, Some("u")),
+            mk("b1", "B", far + 100, None),
+        ];
+        app.accounts[1].meetings = vec![
+            mk("a2", "Other", far + 500, Some("u")),
+            mk("b2", "B", far + 100, None),
+            mk("c2", "C", far + 200, None),
+        ];
+        app.unified = true;
+        let out = entries(&app, 0);
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0].copies.len(), 2);
+        assert_eq!(out[1].copies.len(), 2);
+        assert_eq!(out[2].copies.len(), 1);
+    }
 }

@@ -93,7 +93,12 @@ impl App {
     fn notify_title(&self, account: &Account, conversation: &ConversationId) -> (String, String) {
         let plain = account.title_of(conversation);
         let shown = if self.accounts.len() > 1 {
-            format!("{plain} · {}", account.username())
+            let index = self
+                .accounts
+                .iter()
+                .position(|a| a.id.is_some() && a.id == account.id)
+                .unwrap_or(self.active);
+            format!("{plain} · {}", self.account_look(index).name)
         } else {
             plain.clone()
         };
@@ -500,6 +505,33 @@ mod tests {
     use crate::notify::Clicked;
     use crate::paths::AppDirs;
     use crate::settings::Settings;
+
+    #[test]
+    fn notify_title_uses_account_name() {
+        let (app, _d) = demo();
+        let (plain, shown) =
+            app.notify_title(&app.accounts[1], &ConversationId::Chat(SECOND_CHAT.into()));
+        assert_eq!(shown, format!("{plain} · Fabrikam"));
+    }
+
+    #[test]
+    fn notify_title_single_account_unchanged() {
+        let (mut app, _d) = demo();
+        app.accounts.truncate(1);
+        let (plain, shown) = app.notify_title(&app.accounts[0], &ConversationId::Chat(ADA.into()));
+        assert_eq!(plain, shown);
+    }
+
+    #[test]
+    fn toast_from_hidden_account_names_it() {
+        let (mut app, _d) = demo();
+        app.in_account(1, |a| a.toast(crate::app::ToastKind::Info, "Hello"));
+        let t = app.toasts.last().unwrap();
+        assert_eq!(t.text, "Fabrikam: Hello");
+        assert_eq!(t.account, Some(1));
+        app.toast(crate::app::ToastKind::Info, "Mine");
+        assert_eq!(app.toasts.last().unwrap().account, None);
+    }
 
     const LAUNCH: &str = "19:demo-launch@thread.v2";
     const ADA: &str = "19:demo-ada@unq.gbl.spaces";

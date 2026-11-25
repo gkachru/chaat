@@ -25,6 +25,7 @@ impl App {
             kind: ToastKind::Info,
             text: "Chat hidden".into(),
             action: Some(ToastAction::UndoHide(chat)),
+            account: None,
         });
         self.toast_accounts.insert(id, self.id.clone());
         if self.toasts.len() > 4 {

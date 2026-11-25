@@ -148,6 +148,8 @@ struct Target {
     conversation: ConversationId,
     channel: bool,
     score: i32,
+    /// Index of the account the target belongs to.
+    account: usize,
 }
 
 fn score(text: &str, query: &str) -> Option<i32> {
@@ -171,8 +173,27 @@ fn score(text: &str, query: &str) -> Option<i32> {
 
 fn targets(app: &App, query: &str) -> Vec<Target> {
     let query = query.trim().to_lowercase();
-    let me = app.me();
     let mut targets = Vec::new();
+    let accounts: Vec<usize> = if app.unified_view() {
+        (0..app.accounts.len()).collect()
+    } else {
+        vec![app.active]
+    };
+    for account in accounts {
+        collect_targets(&app.accounts[account], account, &query, &mut targets);
+    }
+    targets.sort_by_key(|t| std::cmp::Reverse(t.score));
+    targets.truncate(if query.is_empty() { 8 } else { 12 });
+    targets
+}
+
+fn collect_targets(
+    app: &crate::app::Account,
+    account: usize,
+    query: &str,
+    targets: &mut Vec<Target>,
+) {
+    let me = app.me();
     for (rank, chat) in app.chats.iter().enumerate() {
         let title = chat.title(me);
         let member_names = chat
@@ -181,7 +202,7 @@ fn targets(app: &App, query: &str) -> Vec<Target> {
             .map(|m| m.display_name.as_str())
             .collect::<Vec<_>>()
             .join(" ");
-        let best = score(&title, &query).or_else(|| score(&member_names, &query).map(|s| s / 2));
+        let best = score(&title, query).or_else(|| score(&member_names, query).map(|s| s / 2));
         if let Some(score) = best {
             targets.push(Target {
                 detail: chat
@@ -193,13 +214,14 @@ fn targets(app: &App, query: &str) -> Vec<Target> {
                 conversation: ConversationId::Chat(chat.id.clone()),
                 channel: false,
                 score: score - rank.min(50) as i32,
+                account,
             });
         }
     }
     for team in &app.teams {
         for channel in app.channels.get(&team.id).into_iter().flatten() {
             let label = format!("{} › {}", team.name, channel.name);
-            if let Some(score) = score(&label, &query).or_else(|| score(&channel.name, &query)) {
+            if let Some(score) = score(&label, query).or_else(|| score(&channel.name, query)) {
                 targets.push(Target {
                     label,
                     detail: channel.description.clone().unwrap_or_default(),
@@ -209,13 +231,40 @@ fn targets(app: &App, query: &str) -> Vec<Target> {
                     },
                     channel: true,
                     score: score - 60,
+                    account,
                 });
             }
         }
     }
-    targets.sort_by_key(|t| std::cmp::Reverse(t.score));
-    targets.truncate(if query.is_empty() { 8 } else { 12 });
-    targets
+}
+
+/// Message hits with the account each belongs to: this account's local and
+/// remote hits, then the other accounts' (`unified_hits`), without repeats.
+fn merged_hits(app: &App) -> Vec<(usize, SearchHit)> {
+    let mut hits: Vec<(usize, SearchHit)> = Vec::new();
+    let own = app
+        .switcher
+        .hits
+        .iter()
+        .chain(&app.switcher.remote_hits)
+        .map(|h| (app.active, h.clone()));
+    for (account, hit) in own.chain(app.switcher.unified_hits.iter().cloned()) {
+        if !hits
+            .iter()
+            .any(|(a, h)| *a == account && h.message_id == hit.message_id)
+        {
+            hits.push((account, hit));
+        }
+    }
+    hits
+}
+
+/// Open an item of `account`: switch to it first when it is not active.
+fn open_in(actions: &mut Vec<Action>, active: usize, account: usize, action: Action) {
+    if account != active {
+        actions.push(Action::SwitchAccount(account));
+    }
+    actions.push(action);
 }
 
 fn switcher(app: &mut App, ctx: &egui::Context) {
@@ -223,12 +272,15 @@ fn switcher(app: &mut App, ctx: &egui::Context) {
     let mut actions = Vec::new();
     let mut query = app.switcher.query.clone();
     let found = targets(app, &query);
-    let mut hits: Vec<SearchHit> = app.switcher.hits.clone();
-    for hit in &app.switcher.remote_hits {
-        if !hits.iter().any(|h| h.message_id == hit.message_id) {
-            hits.push(hit.clone());
-        }
-    }
+    let hits = merged_hits(app);
+    let active = app.active;
+    let looks: Vec<crate::account_look::Look> = if app.unified_view() {
+        (0..app.accounts.len())
+            .map(|i| app.account_look(i))
+            .collect()
+    } else {
+        Vec::new()
+    };
     let total = found.len() + hits.len();
     let mut selected = app.switcher.selected.min(total.saturating_sub(1));
     let mut chosen = false;
@@ -296,9 +348,15 @@ fn switcher(app: &mut App, ctx: &egui::Context) {
                                     Icon::Chat
                                 },
                                 index == selected,
+                                looks.get(target.account),
                             );
                             if response.clicked() || (chosen && index == selected) {
-                                actions.push(Action::OpenConversation(target.conversation.clone()));
+                                open_in(
+                                    &mut actions,
+                                    active,
+                                    target.account,
+                                    Action::OpenConversation(target.conversation.clone()),
+                                );
                                 actions.push(Action::CloseOverlay);
                             }
                             if response.hovered()
@@ -320,9 +378,9 @@ fn switcher(app: &mut App, ctx: &egui::Context) {
                                     ui.label(egui::RichText::new(text).color(palette.dim));
                                 });
                             }
-                            for (offset, hit) in hits.iter().enumerate() {
+                            for (offset, (account, hit)) in hits.iter().enumerate() {
                                 let index = found.len() + offset;
-                                let title = app.title_of(&hit.conversation);
+                                let title = app.accounts[*account].title_of(&hit.conversation);
                                 let detail = format!(
                                     "{} · {} · {}",
                                     hit.author,
@@ -336,12 +394,18 @@ fn switcher(app: &mut App, ctx: &egui::Context) {
                                     &detail,
                                     Icon::Search,
                                     index == selected,
+                                    looks.get(*account),
                                 );
                                 if response.clicked() || (chosen && index == selected) {
-                                    actions.push(Action::OpenMessage {
-                                        conversation: hit.conversation.clone(),
-                                        message: hit.message_id.clone(),
-                                    });
+                                    open_in(
+                                        &mut actions,
+                                        active,
+                                        *account,
+                                        Action::OpenMessage {
+                                            conversation: hit.conversation.clone(),
+                                            message: hit.message_id.clone(),
+                                        },
+                                    );
                                 }
                                 if response.hovered()
                                     && ui.input(|i| i.pointer.delta() != egui::Vec2::ZERO)
@@ -368,6 +432,7 @@ fn switcher(app: &mut App, ctx: &egui::Context) {
         } else {
             app.switcher.hits.clear();
             app.switcher.remote_hits.clear();
+            app.switcher.unified_hits.clear();
         }
     }
     app.switcher.selected = selected;
@@ -393,6 +458,7 @@ fn result_row(
     detail: &str,
     icon: Icon,
     selected: bool,
+    mark: Option<&crate::account_look::Look>,
 ) -> egui::Response {
     let palette = &app.palette;
     let width = ui.available_width();
@@ -427,13 +493,17 @@ fn result_row(
         ),
     );
     let left = rect.left() + 40.0;
-    let title = super::widgets::elided(
-        ui,
-        label,
-        theme::medium(14.0),
-        palette.text,
-        rect.right() - left - 12.0,
-    );
+    let mut right = rect.right() - 12.0;
+    if let Some(look) = mark {
+        let size = 20.0;
+        let mark_rect = egui::Rect::from_center_size(
+            egui::pos2(rect.right() - 12.0 - size / 2.0, rect.center().y),
+            egui::Vec2::splat(size),
+        );
+        widgets::paint_account_mark(ui, look, mark_rect);
+        right = mark_rect.left() - 8.0;
+    }
+    let title = super::widgets::elided(ui, label, theme::medium(14.0), palette.text, right - left);
     ui.painter()
         .galley(egui::pos2(left, rect.top() + 5.0), title, palette.text);
     let detail = super::widgets::elided(
@@ -441,7 +511,7 @@ fn result_row(
         detail,
         theme::regular(12.0),
         palette.secondary,
-        rect.right() - left - 12.0,
+        right - left,
     );
     ui.painter().galley(
         egui::pos2(left, rect.top() + 24.0),
@@ -474,6 +544,9 @@ fn new_chat(app: &mut App, ctx: &egui::Context) {
                 });
             });
             ui.add_space(10.0);
+            if let Some(account) = widgets::account_picker(ui, app, "Start as") {
+                actions.push(Action::SwitchAccount(account));
+            }
             if people_picker(ui, app, &mut query, &mut picked, &mut selected, &[]) {
                 start = true;
             }

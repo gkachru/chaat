@@ -4,14 +4,14 @@
 /// The app icon in colour, for the rail's first item.
 pub const APP_ICON: &str = "bytes://chaat-icon.svg";
 
-use egui::{CornerRadius, Frame, Sense, vec2};
+pub(crate) mod editor;
+mod menu;
 
-use crate::model::Availability;
+use egui::{CornerRadius, Frame, Sense, vec2};
 
 use super::widgets;
 use crate::app::App;
 use crate::model::{Action, Section};
-use crate::notify::schedule::PauseFor;
 use crate::theme::{self, Icon};
 
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
@@ -38,8 +38,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 // A clear gap between items, so a hovered item never looks
                 // joined to the highlighted one.
                 ui.spacing_mut().item_spacing.y = 12.0;
+                accounts(app, ui);
+                ui.separator();
                 for section in Section::ALL {
                     let badge = match section {
+                        Section::Chats if app.unified_view() => app.total_unread(),
                         Section::Chats => app.unread_chats(),
                         _ => 0,
                     };
@@ -66,18 +69,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 )
                 .on_hover_text(format!("{name}\nAccounts and status"))
                 .on_hover_cursor(egui::CursorIcon::PointingHand);
-                // Another account has unread chats.
-                if app.other_unread() > 0 {
-                    ui.painter().circle_filled(
-                        avatar.rect.right_top() + vec2(-3.0, 3.0),
-                        4.5,
-                        palette.accent,
-                    );
-                }
                 if std::mem::take(&mut app.open_account_menu) {
                     egui::Popup::open_id(ui.ctx(), egui::Popup::default_response_id(&avatar));
                 }
-                account_menu(app, &avatar);
+                menu::account_menu(app, &avatar);
                 ui.add_space(6.0);
                 let open = app.settings_page.is_some();
                 let settings = settings_button(ui, &palette, open);
@@ -103,6 +98,128 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         });
 }
 
+/// The logo (all accounts), one tile per account and the add button. Tiles
+/// scroll when the window is too short; right-click opens the look editor.
+fn accounts(app: &mut App, ui: &mut egui::Ui) {
+    let palette = app.palette;
+    // Room kept for the sections and the bottom buttons.
+    let reserved = 140.0 + Section::ALL.len() as f32 * 56.0 + 56.0 + 24.0;
+    let max_height = (ui.available_height() - reserved).max(48.0);
+    let single = app.accounts.len() <= 1 || app.settings.unified_only;
+    let logo_active = (single || app.unified) && app.settings_page.is_none();
+    let (rect, logo) = ui.allocate_exact_size(vec2(48.0, 44.0), Sense::click());
+    if ui.is_rect_visible(rect) {
+        if logo_active {
+            glass_tile(ui.painter(), &palette, rect, true);
+        } else if logo.hovered() {
+            glass_tile(ui.painter(), &palette, rect, false);
+        }
+        egui::Image::new(APP_ICON)
+            .fit_to_exact_size(egui::Vec2::splat(26.0))
+            .paint_at(
+                ui,
+                egui::Rect::from_center_size(rect.center(), egui::Vec2::splat(26.0)),
+            );
+    }
+    let logo = logo
+        .on_hover_text("All accounts")
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    widgets::on_click(&logo, &mut app.actions, Action::ShowUnified);
+    let mut actions = Vec::new();
+    egui::ScrollArea::vertical()
+        .id_salt("rail-accounts")
+        .max_height(max_height)
+        .auto_shrink([true, true])
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 8.0;
+            // The selection ring reaches 3 px outside a tile; keep it inside the clip.
+            ui.add_space(4.0);
+            let tiles = if single { 0 } else { app.accounts.len() };
+            for index in 0..tiles {
+                let look = app.account_look(index);
+                let account = &app.accounts[index];
+                let saved = account
+                    .id
+                    .as_ref()
+                    .and_then(|id| app.settings.account_looks.get(id))
+                    .cloned()
+                    .unwrap_or_default();
+                let selected = !app.unified && index == app.active;
+                let expired = matches!(account.auth, crate::backend::AuthStatus::Expired { .. });
+                let tile = widgets::account_tile(
+                    ui,
+                    &palette,
+                    &look,
+                    40.0,
+                    selected,
+                    account.unread_chats(),
+                )
+                .on_hover_text(if expired {
+                    "Sign in again".to_owned()
+                } else {
+                    format!(
+                        "{}
+{}",
+                        look.name,
+                        account.username()
+                    )
+                })
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
+                if expired {
+                    ui.painter().circle(
+                        tile.rect.right_top() + vec2(-3.0, 3.0),
+                        5.0,
+                        palette.warning,
+                        egui::Stroke::new(1.5, palette.panel),
+                    );
+                }
+                if tile.clicked() {
+                    actions.push(Action::ShowAccount(index));
+                }
+                egui::Popup::context_menu(&tile).show(|ui| {
+                    if let Some(new) = editor::look_editor(ui, &palette, &look, &saved) {
+                        actions.push(Action::SetAccountLook(index, new));
+                    }
+                });
+            }
+            // Unified only: accounts are added from Settings › Account.
+            if !app.settings.unified_only {
+                let add = add_tile(ui, &palette)
+                    .on_hover_text("Add account")
+                    .on_hover_cursor(egui::CursorIcon::PointingHand);
+                if add.clicked() {
+                    actions.push(Action::AddAccount);
+                }
+            }
+            ui.add_space(4.0);
+        });
+    app.actions.extend(actions);
+}
+
+/// The `+` tile: a dashed-looking outline with a plus.
+fn add_tile(ui: &mut egui::Ui, palette: &theme::Palette) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(vec2(40.0, 40.0), Sense::click());
+    if ui.is_rect_visible(rect) {
+        let fill = if response.hovered() {
+            palette.surface_hover
+        } else {
+            egui::Color32::TRANSPARENT
+        };
+        ui.painter().rect(
+            rect,
+            CornerRadius::same(10),
+            fill,
+            egui::Stroke::new(1.0, palette.dim),
+            egui::StrokeKind::Inside,
+        );
+        Icon::Plus.image(palette.secondary, 16.0).paint_at(
+            ui,
+            egui::Rect::from_center_size(rect.center(), egui::Vec2::splat(16.0)),
+        );
+    }
+    response
+}
+
 fn item(ui: &mut egui::Ui, app: &App, section: Section, badge: usize) -> egui::Response {
     let palette = &app.palette;
     // Icon only: the name shows in the tooltip.
@@ -120,22 +237,13 @@ fn item(ui: &mut egui::Ui, app: &App, section: Section, badge: usize) -> egui::R
             palette.secondary
         };
         let icon_rect = egui::Rect::from_center_size(rect.center(), egui::Vec2::splat(21.0));
-        // Chats sits first and wears the app's own logo.
-        match section {
-            Section::Chats => {
-                egui::Image::new(APP_ICON)
-                    .fit_to_exact_size(egui::Vec2::splat(26.0))
-                    .paint_at(ui, icon_rect.expand(2.5));
-            }
-            other => {
-                let icon = match other {
-                    Section::Teams => Icon::Teams,
-                    Section::Calendar => Icon::Calendar,
-                    _ => Icon::Phone,
-                };
-                icon.image(tint, 21.0).paint_at(ui, icon_rect);
-            }
-        }
+        let icon = match section {
+            Section::Chats => Icon::Chat,
+            Section::Teams => Icon::Teams,
+            Section::Calendar => Icon::Calendar,
+            _ => Icon::Phone,
+        };
+        icon.image(tint, 21.0).paint_at(ui, icon_rect);
         if badge > 0 {
             widgets::badge(ui, palette, icon_rect.right_top() + vec2(3.0, 1.0), badge);
         }
@@ -243,268 +351,5 @@ fn glass_tile(painter: &egui::Painter, palette: &theme::Palette, rect: egui::Rec
         CornerRadius::same(RADIUS),
         egui::Stroke::new(1.0, edge),
         egui::StrokeKind::Inside,
-    );
-}
-
-/// The avatar's menu: accounts, availability and status message. Settings
-/// has its own button in the rail.
-fn account_menu(app: &mut App, avatar: &egui::Response) {
-    let palette = app.palette;
-    let mut actions = Vec::new();
-    egui::Popup::menu(avatar)
-        .align(egui::RectAlign::RIGHT_END)
-        .gap(8.0)
-        .width(280.0)
-        .show(|ui| {
-            ui.spacing_mut().item_spacing.y = 2.0;
-            // Accounts.
-            for (index, account) in app.accounts.iter().enumerate() {
-                let active = index == app.active;
-                let (rect, response) = ui.allocate_exact_size(vec2(268.0, 46.0), Sense::click());
-                if response.hovered() {
-                    ui.painter()
-                        .rect_filled(rect, CornerRadius::same(8), palette.surface_hover);
-                }
-                let mut child = ui.new_child(
-                    egui::UiBuilder::new()
-                        .max_rect(rect.shrink2(vec2(8.0, 0.0)))
-                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
-                );
-                let label = account.label();
-                let me = account.me().to_owned();
-                // Avatars draw from the shown account's photos; others use
-                // initials.
-                widgets::avatar(
-                    &mut child,
-                    app,
-                    if active {
-                        Some(me.as_str()).filter(|m| !m.is_empty())
-                    } else {
-                        None
-                    },
-                    &label,
-                    30.0,
-                    active,
-                );
-                child.add_space(8.0);
-                child.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = 0.0;
-                    ui.label(
-                        egui::RichText::new(&label)
-                            .font(theme::semibold(13.0))
-                            .color(palette.text),
-                    );
-                    let detail = match &account.auth {
-                        crate::backend::AuthStatus::SignedIn { username, .. } => username.clone(),
-                        crate::backend::AuthStatus::Expired { .. } => "Sign in again".into(),
-                        _ => "Signing in…".into(),
-                    };
-                    ui.label(
-                        egui::RichText::new(detail)
-                            .font(theme::regular(11.0))
-                            .color(palette.dim),
-                    );
-                });
-                child.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if active {
-                        theme::icon(ui, Icon::Check, 16.0, palette.accent);
-                    } else if account.unread_chats() > 0 {
-                        ui.label(
-                            egui::RichText::new(account.unread_chats().to_string())
-                                .font(theme::bold(11.0))
-                                .color(palette.accent),
-                        );
-                    }
-                });
-                let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
-                if response.clicked() {
-                    if !active {
-                        actions.push(Action::SwitchAccount(index));
-                    } else if matches!(account.auth, crate::backend::AuthStatus::Expired { .. }) {
-                        actions.push(Action::SignIn);
-                    }
-                    ui.close();
-                }
-            }
-            let add = menu_row(ui, &palette, "Add account", palette.text, |ui, at| {
-                paint_icon(ui, Icon::Plus, at, palette.text);
-            });
-            if add.clicked() {
-                actions.push(Action::AddAccount);
-                ui.close();
-            }
-            ui.separator();
-            // Availability.
-            let current = app.my_presence.as_ref().map(|p| p.availability);
-            for (availability, label) in [
-                (Some(Availability::Available), "Available"),
-                (Some(Availability::Busy), "Busy"),
-                (Some(Availability::DoNotDisturb), "Do not disturb"),
-                (Some(Availability::BeRightBack), "Be right back"),
-                (Some(Availability::Away), "Appear away"),
-                (Some(Availability::Offline), "Appear offline"),
-                (None, "Reset status"),
-            ] {
-                let response =
-                    menu_row(
-                        ui,
-                        &palette,
-                        label,
-                        palette.text,
-                        |ui, at| match availability {
-                            Some(availability) => {
-                                ui.painter()
-                                    .circle_filled(at, 5.0, palette.presence(availability));
-                            }
-                            None => paint_icon(ui, Icon::Refresh, at, palette.dim),
-                        },
-                    );
-                let rect = response.rect;
-                if availability.is_some() && availability == current {
-                    Icon::Check.image(palette.accent, 14.0).paint_at(
-                        ui,
-                        egui::Rect::from_center_size(
-                            egui::pos2(rect.right() - 14.0, rect.center().y),
-                            egui::Vec2::splat(14.0),
-                        ),
-                    );
-                }
-                if response.clicked() {
-                    actions.push(Action::SetAvailability(availability));
-                    ui.close();
-                }
-            }
-            let message = app
-                .my_presence
-                .as_ref()
-                .and_then(|p| p.status_message.clone())
-                .unwrap_or_else(|| "Set a status message".into());
-            let status = menu_row(
-                ui,
-                &palette,
-                &crate::html::truncate(&message, 34),
-                palette.secondary,
-                |ui, at| paint_icon(ui, Icon::Pencil, at, palette.secondary),
-            );
-            if status.clicked() {
-                actions.push(Action::OpenStatusMessage);
-                ui.close();
-            }
-            let away = app
-                .out_of_office
-                .as_ref()
-                .is_some_and(|o| o.active(crate::time::now()));
-            let out_of_office = menu_row(
-                ui,
-                &palette,
-                if away {
-                    "Out of office: on"
-                } else {
-                    "Out of office…"
-                },
-                if away {
-                    palette.text
-                } else {
-                    palette.secondary
-                },
-                |ui, at| {
-                    paint_icon(
-                        ui,
-                        Icon::Calendar,
-                        at,
-                        if away {
-                            palette.accent
-                        } else {
-                            palette.secondary
-                        },
-                    )
-                },
-            );
-            if out_of_office.clicked() {
-                actions.push(Action::OpenOutOfOffice);
-                ui.close();
-            }
-            let paused_until = app.settings.notify.paused_until;
-            let now = crate::time::now();
-            if crate::notify::schedule::is_paused(paused_until, now) {
-                let until = paused_until.map(crate::time::clock).unwrap_or_default();
-                menu_row(
-                    ui,
-                    &palette,
-                    &format!("Notifications paused until {until}"),
-                    palette.secondary,
-                    |ui, at| paint_icon(ui, Icon::BellOff, at, palette.accent),
-                );
-                let resume = menu_row(
-                    ui,
-                    &palette,
-                    "Resume notifications",
-                    palette.text,
-                    |ui, at| paint_icon(ui, Icon::Bell, at, palette.secondary),
-                );
-                if resume.clicked() {
-                    actions.push(Action::PauseNotifications(None));
-                    ui.close();
-                }
-            } else {
-                for (label, choice, icon) in [
-                    (
-                        "Pause notifications for 1 hour",
-                        PauseFor::OneHour,
-                        Icon::BellOff,
-                    ),
-                    (
-                        "Pause notifications for 2 hours",
-                        PauseFor::TwoHours,
-                        Icon::BellOff,
-                    ),
-                    (
-                        "Pause notifications until tomorrow",
-                        PauseFor::UntilTomorrow,
-                        Icon::BellOff,
-                    ),
-                ] {
-                    let row = menu_row(ui, &palette, label, palette.secondary, |ui, at| {
-                        paint_icon(ui, icon, at, palette.secondary)
-                    });
-                    if row.clicked() {
-                        actions.push(Action::PauseNotifications(Some(choice)));
-                        ui.close();
-                    }
-                }
-            }
-        });
-    app.actions.extend(actions);
-}
-
-/// One clickable line of the account menu: highlighted under the pointer,
-/// with a mark drawn by `leading` at the left and the label after it.
-fn menu_row(
-    ui: &mut egui::Ui,
-    palette: &theme::Palette,
-    label: &str,
-    color: egui::Color32,
-    leading: impl FnOnce(&egui::Ui, egui::Pos2),
-) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(vec2(268.0, 28.0), Sense::click());
-    if response.hovered() {
-        ui.painter()
-            .rect_filled(rect, CornerRadius::same(6), palette.surface_hover);
-    }
-    leading(ui, egui::pos2(rect.left() + 16.0, rect.center().y));
-    ui.painter().text(
-        egui::pos2(rect.left() + 32.0, rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        label,
-        theme::regular(13.0),
-        color,
-    );
-    response.on_hover_cursor(egui::CursorIcon::PointingHand)
-}
-
-fn paint_icon(ui: &egui::Ui, icon: Icon, at: egui::Pos2, color: egui::Color32) {
-    icon.image(color, 12.0).paint_at(
-        ui,
-        egui::Rect::from_center_size(at, egui::Vec2::splat(12.0)),
     );
 }

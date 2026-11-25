@@ -1371,6 +1371,7 @@ fn kind_chips_filter_the_chat_list_and_stack_with_unread() {
     for width in [720.0, 1280.0] {
         for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
             let mut h = themed(&theme, width);
+            h.act(Action::ShowAccount(0));
             let me = h.app.me().to_owned();
             let titles = |kind: ChatKind| -> Vec<String> {
                 h.app
@@ -1688,6 +1689,7 @@ fn expanding_a_thread_asks_for_its_replies() {
 #[test]
 fn switcher_finds_people_and_messages() {
     let mut h = Harness::new();
+    h.act(Action::ShowAccount(0));
     h.act(Action::OpenSwitcher);
     assert_eq!(h.app.overlay, Some(Overlay::Switcher));
     h.act(Action::SearchMessages("relay".into()));
@@ -6779,6 +6781,7 @@ fn hidden_filter_lists_and_unhides() {
     for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
         for width in CHAT_ACTION_WIDTHS {
             let mut h = themed(&theme, width);
+            h.act(Action::ShowAccount(0));
             assert!(
                 leftmost_text(&h, "Offsite planning").is_none(),
                 "hidden chats stay out of the list ({theme:?}, {width})"
@@ -6937,6 +6940,7 @@ fn the_filter_chips_keep_the_sidebar_at_its_set_width() {
     for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
         for width in CHAT_ACTION_WIDTHS {
             let mut h = themed(&theme, width);
+            h.act(Action::ShowAccount(0));
             h.frames(3);
             assert_eq!(h.app.settings.sidebar_width, 300.0, "({theme:?}, {width})");
             let mut rows = Vec::new();
@@ -7638,4 +7642,610 @@ fn messages_need_has_consent_words() {
     plugins_page_frame(&mut h, vec![]);
     plugins_page_frame(&mut h, vec![]);
     assert!(painted_texts(&h).iter().any(|t| t == "Asks for messages"));
+}
+
+// ---- Account rail and Unified Chats ----
+
+/// The center of a painted text equal to `wanted` that sits inside the rail.
+fn rail_text(h: &Harness, wanted: &str) -> Option<egui::Pos2> {
+    find_text(h, wanted)
+        .into_iter()
+        .filter(|t| t.pos.x < chaat::theme::RAIL_WIDTH)
+        .map(|text| text.pos + text.galley.rect.center().to_vec2())
+        .next()
+}
+
+fn account_chat_title(h: &Harness, account: usize) -> String {
+    let acct = &h.app.accounts[account];
+    acct.chats[0].title(acct.me())
+}
+
+/// The demo accounts' tile text ("Co", "Fa"): `account_look::initials`.
+fn tile_initials(account: usize) -> String {
+    chaat::account_look::initials(["Contoso", "Fabrikam"][account])
+}
+
+/// The 40 px `+` tile: a transparent rounded square in the rail.
+fn has_add_tile(h: &Harness) -> bool {
+    painted_shapes(h).iter().any(|shape| match shape {
+        egui::epaint::Shape::Rect(r) => {
+            r.fill == egui::Color32::TRANSPARENT
+                && (r.rect.width() - 40.0).abs() < 0.5
+                && (r.rect.height() - 40.0).abs() < 0.5
+                && r.rect.right() < chaat::theme::RAIL_WIDTH
+        }
+        _ => false,
+    })
+}
+
+#[test]
+fn rail_shows_tiles_and_sections() {
+    let mut h = Harness::new();
+    h.frames(3);
+    assert!(h.app.unified_view());
+    for account in 0..2 {
+        let initials = tile_initials(account);
+        assert!(rail_text(&h, &initials).is_some(), "tile {initials}");
+    }
+    assert!(has_add_tile(&h), "the + tile is drawn");
+    assert!(
+        painted_texts(&h).contains(&"All accounts".to_owned()),
+        "the Unified sidebar header"
+    );
+}
+
+#[test]
+fn selected_tile_ring_is_not_clipped() {
+    let mut h = Harness::new();
+    h.frames(3);
+    h.act(Action::ShowAccount(0));
+    h.frames(3);
+    let mut rings = 0;
+    for clipped in &h.shapes {
+        let mut stack = vec![&clipped.shape];
+        while let Some(shape) = stack.pop() {
+            match shape {
+                egui::epaint::Shape::Vec(inner) => stack.extend(inner),
+                egui::epaint::Shape::Rect(r)
+                    if r.stroke.width == 2.0
+                        && r.stroke_kind == egui::StrokeKind::Outside
+                        && r.rect.right() < chaat::theme::RAIL_WIDTH =>
+                {
+                    rings += 1;
+                    let visual = shape.visual_bounding_rect();
+                    assert!(
+                        clipped.clip_rect.contains_rect(visual),
+                        "ring {visual:?} is cut by clip {:?}",
+                        clipped.clip_rect
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+    assert!(rings > 0, "the selection ring is painted");
+}
+
+#[test]
+fn logo_and_tiles_switch_scope() {
+    let mut h = Harness::new();
+    h.frames(3);
+    assert!(h.app.unified);
+    // A tile click shows that account alone.
+    let initials = tile_initials(1);
+    let tile = rail_text(&h, &initials).expect("tile 1");
+    h.click(tile);
+    assert!(!h.app.unified);
+    assert_eq!(h.app.active, 1);
+    // The logo (first item of the rail) goes back to all accounts.
+    h.click(egui::pos2(chaat::theme::RAIL_WIDTH / 2.0, 30.0));
+    assert!(h.app.unified, "the logo shows all accounts");
+    h.act(Action::ShowAccount(0));
+    assert!(!h.app.unified);
+    h.act(Action::ShowUnified);
+    assert!(h.app.unified);
+}
+
+#[test]
+fn unified_chats_list_both_accounts() {
+    let mut h = Harness::new();
+    h.frames(3);
+    let contoso = account_chat_title(&h, 0);
+    let fabrikam = account_chat_title(&h, 1);
+    let texts = painted_texts(&h);
+    assert!(texts.contains(&contoso), "{contoso} painted");
+    assert!(texts.contains(&fabrikam), "{fabrikam} painted");
+}
+
+#[test]
+fn open_other_account_chat_stays_unified() {
+    let mut h = Harness::new();
+    h.frames(3);
+    let title = account_chat_title(&h, 1);
+    let id = h.app.accounts[1].chats[0].id.clone();
+    let at = leftmost_text(&h, &title).expect("row painted");
+    h.click(at);
+    assert!(h.app.unified, "opening keeps the unified view");
+    assert_eq!(h.app.active, 1);
+    assert_eq!(h.app.open, Some(ConversationId::Chat(id)));
+}
+
+#[test]
+fn tile_right_click_opens_editor() {
+    let mut h = Harness::new();
+    h.frames(3);
+    let initials = tile_initials(1);
+    let tile = rail_text(&h, &initials).expect("tile 1");
+    right_click(&mut h, tile);
+    let texts = painted_texts(&h);
+    assert!(texts.contains(&"Name".to_owned()), "editor Name label");
+    assert!(texts.contains(&"Color".to_owned()), "editor Color label");
+}
+
+#[test]
+fn menu_has_no_account_rows() {
+    let mut h = Harness::new();
+    h.frames(3);
+    h.app.open_account_menu = true;
+    h.frames(3);
+    let texts = painted_texts(&h);
+    assert!(texts.contains(&"Available".to_owned()), "the menu is open");
+    assert!(!texts.iter().any(|t| t.contains("Add account")));
+    let other = h.app.accounts[1].username().to_owned();
+    let hits: Vec<&String> = texts.iter().filter(|t| t.as_str() == other).collect();
+    assert!(hits.is_empty(), "second account listed: {hits:?}");
+}
+
+#[test]
+fn unified_rail_draws_in_both_themes_and_widths() {
+    for width in [480.0, 720.0, 1280.0] {
+        for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+            let mut h = themed(&theme, width);
+            assert!(h.app.unified_view());
+            assert!(h.frames(2) > 50, "draws ({theme:?}, {width})");
+            for section in [Section::Teams, Section::Calendar, Section::Calls] {
+                h.act(Action::Navigate(section));
+                assert!(h.frames(2) > 50, "{section:?} ({theme:?}, {width})");
+            }
+            h.act(Action::Navigate(Section::Chats));
+            assert!(has_add_tile(&h), "+ tile ({theme:?}, {width})");
+        }
+    }
+}
+
+#[test]
+fn single_account_shows_no_tiles() {
+    let mut h = Harness::new();
+    h.frames(2);
+    let initials: Vec<String> = (0..2).map(tile_initials).collect();
+    h.app.accounts.truncate(1);
+    h.app.active = 0;
+    h.frames(3);
+    assert!(!h.app.unified_view());
+    for initials in &initials {
+        assert!(rail_text(&h, initials).is_none(), "no tile {initials}");
+    }
+    assert!(!painted_texts(&h).contains(&"All accounts".to_owned()));
+    assert!(has_add_tile(&h), "the + tile stays");
+}
+
+// ---- Unified sections, settings, availability, shared chats ----
+
+/// Painted texts in the sidebar column (right of the rail, left of the
+/// content), whole-text equal to `wanted`.
+fn sidebar_texts(h: &Harness, wanted: &str) -> usize {
+    let right = chaat::theme::RAIL_WIDTH + h.app.settings.sidebar_width;
+    find_text(h, wanted)
+        .into_iter()
+        .filter(|t| t.pos.x > chaat::theme::RAIL_WIDTH && t.pos.x < right)
+        .count()
+}
+
+fn painted_count(h: &Harness, wanted: &str) -> usize {
+    find_text(h, wanted).len()
+}
+
+#[test]
+fn unified_only_hides_tiles() {
+    let mut h = Harness::new();
+    h.frames(3);
+    assert!(rail_text(&h, &tile_initials(1)).is_some(), "tiles at first");
+    h.act(Action::SetUnifiedOnly(true));
+    assert!(h.app.unified_view());
+    for account in 0..2 {
+        assert!(
+            rail_text(&h, &tile_initials(account)).is_none(),
+            "no tile {account}"
+        );
+    }
+    assert!(!has_add_tile(&h), "no + tile");
+    assert!(
+        painted_texts(&h).contains(&"All accounts".to_owned()),
+        "still unified"
+    );
+}
+
+#[test]
+fn unified_only_settings_still_add_account() {
+    let mut h = Harness::new();
+    h.app.demo = false;
+    h.act(Action::SetUnifiedOnly(true));
+    h.act(Action::OpenSettings);
+    h.frames(2);
+    assert!(
+        painted_texts(&h).contains(&"Add account".to_owned()),
+        "Settings offers Add account"
+    );
+}
+
+#[test]
+fn availability_applies_to_all_accounts() {
+    let mut h = Harness::new();
+    h.frames(3);
+    assert!(h.app.unified_view());
+    h.act(Action::SetAvailability(Some(Availability::Busy)));
+    for account in 0..2 {
+        let now = h.app.accounts[account]
+            .my_presence
+            .as_ref()
+            .map(|p| p.availability);
+        assert_eq!(now, Some(Availability::Busy), "account {account}");
+    }
+}
+
+#[test]
+fn settings_account_page_edits_each_account() {
+    let mut h = Harness::new();
+    h.act(Action::OpenSettings);
+    assert!(
+        painted_texts(&h)
+            .iter()
+            .any(|t| t.eq_ignore_ascii_case("Accounts"))
+    );
+    assert!(painted_texts(&h).contains(&"Contoso".to_owned()));
+    assert!(painted_texts(&h).contains(&"Fabrikam".to_owned()));
+    assert_eq!(painted_count(&h, "Customize"), 2, "one editor per account");
+    h.act(Action::SetAccountLook(
+        1,
+        chaat::settings::AccountLook {
+            name: Some("Advisory".into()),
+            ..Default::default()
+        },
+    ));
+    let texts = painted_texts(&h);
+    assert!(texts.contains(&"Advisory".to_owned()), "renamed");
+    assert!(!texts.contains(&"Fabrikam".to_owned()));
+}
+
+#[test]
+fn unified_teams_group_by_account() {
+    let mut h = Harness::new();
+    h.app.accounts[1].teams = vec![chaat::model::Team {
+        id: "t-fab".into(),
+        name: "Fabrikam Ops".into(),
+        description: None,
+        web_url: None,
+    }];
+    h.act(Action::Navigate(Section::Teams));
+    let texts = painted_texts(&h);
+    assert!(texts.contains(&"Fabrikam Ops".to_owned()), "second team");
+    assert!(texts.contains(&"Fabrikam".to_owned()), "account header");
+    // The first account's header and its "Contoso" team.
+    assert!(painted_count(&h, "Contoso") >= 2, "header and team");
+}
+
+#[test]
+fn unified_calendar_merges_accounts() {
+    let mut h = Harness::new();
+    let now = chaat::time::now();
+    let shared = h.app.accounts[0]
+        .meetings
+        .iter()
+        .find(|m| m.end > now && !m.cancelled)
+        .expect("an upcoming demo meeting")
+        .clone();
+    let mut copy = shared.clone();
+    copy.id = "other-mailbox-id".into();
+    let unique = chaat::model::Meeting {
+        id: "fab-1".into(),
+        subject: "Fabrikam board prep".into(),
+        start: now + 60 * 60_000,
+        end: now + 90 * 60_000,
+        ..Default::default()
+    };
+    h.app.accounts[1].meetings = vec![copy, unique];
+    h.act(Action::Navigate(Section::Calendar));
+    assert_eq!(
+        sidebar_texts(&h, &shared.subject),
+        1,
+        "the shared meeting shows once"
+    );
+    assert_eq!(sidebar_texts(&h, "Fabrikam board prep"), 1);
+}
+
+#[test]
+fn unified_calls_list_people_from_both() {
+    let mut h = Harness::new();
+    let one = |h: &Harness, account: usize| {
+        let acct = &h.app.accounts[account];
+        let me = acct.me();
+        acct.chats
+            .iter()
+            .filter(|c| c.kind == chaat::model::ChatKind::OneOnOne)
+            .find_map(|c| c.peer(me).map(|m| m.display_name.clone()))
+            .expect("a one-on-one peer")
+    };
+    let (a, b) = (one(&h, 0), one(&h, 1));
+    h.act(Action::Navigate(Section::Calls));
+    let texts = painted_texts(&h);
+    assert!(texts.contains(&a), "{a} listed");
+    assert!(texts.contains(&b), "{b} listed");
+}
+
+/// Copies account 1's first chat into account 0, so both hold it.
+fn share_first_chat(h: &mut Harness) -> (String, String) {
+    let copy = h.app.accounts[1].chats[0].clone();
+    let id = copy.id.clone();
+    let me = h.app.accounts[1].me().to_owned();
+    let title = copy.title(&me);
+    h.app.accounts[0].chats.push(copy);
+    (id, title)
+}
+
+#[test]
+fn shared_chat_shows_once() {
+    let mut h = Harness::new();
+    h.frames(3);
+    let (id, title) = {
+        let acct = &h.app.accounts[1];
+        (acct.chats[0].id.clone(), acct.chats[0].title(acct.me()))
+    };
+    assert_eq!(sidebar_texts(&h, &title), 1);
+    share_first_chat(&mut h);
+    h.frames(3);
+    assert_eq!(h.app.chat_accounts(&id), vec![0, 1]);
+    let copy = h.app.accounts[0].chats.last().unwrap();
+    let as_first = copy.title(h.app.accounts[0].me());
+    let rows = sidebar_texts(&h, &title)
+        + if as_first == title {
+            0
+        } else {
+            sidebar_texts(&h, &as_first)
+        };
+    assert_eq!(rows, 1, "merged into one row");
+}
+
+#[test]
+fn sending_as_switches_account() {
+    let mut h = Harness::new();
+    h.frames(3);
+    let (id, _) = share_first_chat(&mut h);
+    h.act(Action::OpenSharedChat(1, id.clone()));
+    assert_eq!(h.app.active, 1);
+    assert!(h.app.unified);
+    h.frames(3);
+    let label = "Sending as Fabrikam".to_owned();
+    let at = leftmost_text(&h, &label).expect("the sending-as control");
+    h.click(at);
+    let item = find_text(&h, "Contoso")
+        .last()
+        .map(|t| t.pos + t.galley.rect.center().to_vec2())
+        .expect("the other account in the menu");
+    h.click(item);
+    assert_eq!(h.app.active, 0, "now sending as the first account");
+    assert_eq!(h.app.open, Some(ConversationId::Chat(id)));
+    assert!(h.app.unified, "still unified");
+}
+
+#[test]
+fn switcher_lists_both_accounts() {
+    let mut h = Harness::new();
+    h.frames(3);
+    h.act(Action::OpenSwitcher);
+    h.app.switcher.query = "mae".into();
+    h.frames(3);
+    assert!(
+        painted_texts(&h).contains(&"Mae Jemison".to_owned()),
+        "the second account's chat"
+    );
+    h.app.switcher.query = "grace".into();
+    h.frames(3);
+    assert!(
+        painted_texts(&h).iter().any(|t| t.contains("Grace")),
+        "the first account's chat"
+    );
+}
+
+#[test]
+fn unified_sections_draw_in_both_themes_and_widths() {
+    for width in [480.0, 720.0, 1280.0] {
+        for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+            let mut h = themed(&theme, width);
+            h.app.accounts[1].teams = vec![chaat::model::Team {
+                id: "t-fab".into(),
+                name: "Fabrikam Ops".into(),
+                description: None,
+                web_url: None,
+            }];
+            for section in [Section::Teams, Section::Calendar, Section::Calls] {
+                h.act(Action::Navigate(section));
+                assert!(h.frames(2) > 50, "{section:?} ({theme:?}, {width})");
+            }
+            h.act(Action::OpenSettings);
+            assert!(h.frames(2) > 50, "settings ({theme:?}, {width})");
+            h.act(Action::CloseSettings);
+            h.act(Action::OpenSwitcher);
+            assert!(h.frames(2) > 50, "switcher ({theme:?}, {width})");
+        }
+    }
+}
+
+/// Clicks the account-picker button (shown as the active account's name),
+/// then the menu entry for `name`.
+fn pick_account(h: &mut Harness, from: &str, name: &str) {
+    let button = leftmost_text(h, from).unwrap_or_else(|| panic!("picker shows {from}"));
+    h.click(button);
+    let entry = find_text(h, name)
+        .into_iter()
+        .map(|t| t.pos + t.galley.rect.center().to_vec2())
+        .max_by(|a, b| a.y.total_cmp(&b.y))
+        .unwrap_or_else(|| panic!("the menu lists {name}"));
+    h.click(entry);
+}
+
+#[test]
+fn new_chat_start_as_switches_account() {
+    let mut h = Harness::new();
+    h.frames(3);
+    assert!(h.app.unified_view());
+    h.act(Action::OpenNewChat);
+    assert!(has_text(&h, "Start as"), "the picker shows in Unified");
+    assert_eq!(h.app.active, 0);
+    pick_account(&mut h, "Contoso", "Fabrikam");
+    assert_eq!(h.app.active, 1, "the picked account is active");
+    // Outside Unified there is no picker.
+    h.act(Action::CloseOverlay);
+    h.act(Action::ShowAccount(0));
+    h.act(Action::OpenNewChat);
+    assert!(!has_text(&h, "Start as"));
+}
+
+#[test]
+fn join_by_link_join_as() {
+    let mut h = Harness::new();
+    h.act(Action::Navigate(Section::Calls));
+    h.frames(3);
+    assert!(has_text(&h, "Join as"), "the picker shows in Unified");
+    assert_eq!(h.app.active, 0);
+    pick_account(&mut h, "Contoso", "Fabrikam");
+    assert_eq!(h.app.active, 1, "the picked account is active");
+    h.act(Action::ShowAccount(1));
+    assert!(!has_text(&h, "Join as"));
+}
+
+#[test]
+fn expired_account_shows_warning_and_banner() {
+    let mut h = Harness::new();
+    h.frames(3);
+    assert!(!has_text(&h, "Sign in again: Fabrikam"));
+    h.app.accounts[1].auth = AuthStatus::Expired {
+        username: "alex@fabrikam.com".into(),
+        reason: "Sign in again to get new messages.".into(),
+    };
+    h.frames(3);
+    let warning = h.app.palette.warning;
+    let dot = painted_shapes(&h).iter().any(|shape| match shape {
+        egui::epaint::Shape::Circle(c) => {
+            c.fill == warning && c.center.x < chaat::theme::RAIL_WIDTH
+        }
+        _ => false,
+    });
+    assert!(dot, "the tile shows a warning dot");
+    let banner =
+        leftmost_text(&h, "Sign in again: Fabrikam").expect("the banner names the account");
+    h.click(banner);
+    assert!(!h.app.unified, "the click shows that account");
+    assert_eq!(h.app.active, 1);
+}
+
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn window_title_shows_total_unread() {
+    assert_eq!(chaat::ui::window_title(0), "Chaat");
+    assert_eq!(chaat::ui::window_title(3), "(3) Chaat");
+    let mut h = Harness::new();
+    let expected = chaat::ui::window_title(h.app.accounts.iter().map(|a| a.unread_chats()).sum());
+    let mut titles = Vec::new();
+    for _ in 0..4 {
+        h.frames(1);
+        for command in &h.viewport_commands {
+            if let egui::ViewportCommand::Title(title) = command {
+                titles.push(title.clone());
+            }
+        }
+    }
+    assert_eq!(titles, [expected], "sent once, on the first frame only");
+}
+
+#[test]
+fn toast_shows_account_mark() {
+    let mut h = Harness::new();
+    h.frames(3);
+    let marks = |h: &Harness| painted_texts(h).iter().filter(|t| *t == "Fa").count();
+    let before = marks(&h);
+    h.app.toasts.push(chaat::model::Toast {
+        id: 900,
+        kind: chaat::model::ToastKind::Info,
+        text: "Fabrikam: Sent".into(),
+        action: None,
+        account: Some(1),
+    });
+    h.frames(3);
+    assert!(has_text(&h, "Fabrikam: Sent"));
+    assert_eq!(marks(&h), before + 1, "the toast paints the account mark");
+}
+
+#[test]
+fn shortcut_cycles_scopes() {
+    let mods = egui::Modifiers::COMMAND | egui::Modifiers::SHIFT;
+    let mut h = Harness::new();
+    h.frames(3);
+    assert!(h.app.unified_view());
+    let mut seen = Vec::new();
+    for _ in 0..3 {
+        h.frame_with(vec![key_event(egui::Key::A, mods)]);
+        h.frames(2);
+        seen.push((h.app.unified_view(), h.app.active));
+    }
+    assert_eq!(seen[0], (false, 0), "Unified -> account 0");
+    assert_eq!(seen[1], (false, 1), "account 0 -> account 1");
+    assert!(seen[2].0, "account 1 -> Unified");
+
+    h.app.settings.unified_only = true;
+    h.frames(2);
+    let before = (h.app.unified_view(), h.app.active);
+    h.frame_with(vec![key_event(egui::Key::A, mods)]);
+    h.frames(2);
+    assert_eq!((h.app.unified_view(), h.app.active), before);
+}
+
+#[test]
+fn other_account_rows_ask_photos_once() {
+    let mut h = Harness::new();
+    h.frames(3);
+    assert!(h.app.unified_view());
+    // Avatars never ask for photos in the demo; leave it, as other tests do.
+    h.app.demo = false;
+    // Draw frames without applying, so the asked actions stay visible.
+    let mut asked: Vec<String> = Vec::new();
+    for _ in 0..4 {
+        h.time += 1.0 / 60.0;
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, h.size)),
+            time: Some(h.time),
+            ..Default::default()
+        };
+        let app = &mut h.app;
+        let _ = h.ctx.run_ui(input, |ui| {
+            let ctx = ui.ctx().clone();
+            app.background(&ctx);
+            chaat::ui::show(app, ui);
+        });
+        for action in std::mem::take(&mut h.app.actions) {
+            if let Action::ForAccount(1, inner) = action
+                && let Action::LoadPhotos(users) = *inner
+            {
+                asked.extend(users);
+            }
+        }
+    }
+    let mut unique = asked.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(
+        asked.len(),
+        unique.len(),
+        "a photo is asked once: {asked:?}"
+    );
+    assert!(!asked.is_empty(), "account 1 rows ask for missing photos");
 }

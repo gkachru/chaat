@@ -8,6 +8,7 @@
 /// name and keyring service.
 pub const APP_ID: &str = "app.chaat.Chaat";
 
+pub mod account_look;
 pub mod agents;
 pub mod app;
 pub mod auth;

@@ -947,10 +947,34 @@ pub enum AgentAction {
     AcceptReaction { proposal: String },
 }
 
+/// Filters of the Unified chat list.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct UnifiedFilter {
+    pub text: String,
+    pub unread_only: bool,
+    pub groups_only: bool,
+    pub meetings_only: bool,
+    pub hidden_only: bool,
+}
+
 /// What a view asks the app to do. Views push these; `App::apply` runs them
 /// after the frame, so no view mutates state it is drawing from.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
+    /// Show Unified Chats (the logo tile).
+    ShowUnified,
+    /// Show one account by index, leaving Unified.
+    ShowAccount(usize),
+    /// Select a meeting in the Calendar list of the active account.
+    SelectMeeting(String),
+    /// Open a chat in account `0` and mark it read in every account that has it.
+    OpenSharedChat(usize, String),
+    /// Keep Unified Chats on and the account switch off (Settings).
+    SetUnifiedOnly(bool),
+    /// Run an action for the account at this index, then restore the active one.
+    ForAccount(usize, Box<Action>),
+    /// Save the rail look of the account at this index.
+    SetAccountLook(usize, crate::settings::AccountLook),
     CheckUpdate,
     DownloadUpdate,
     InstallUpdate,
@@ -1201,6 +1225,8 @@ pub struct Toast {
     pub kind: ToastKind,
     pub text: String,
     pub action: Option<ToastAction>,
+    /// The account the toast is about (index), when there are several.
+    pub account: Option<usize>,
 }
 
 /// A pinned message of a chat.

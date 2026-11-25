@@ -11,15 +11,40 @@ use crate::theme::{self, Icon};
 /// People from one-on-one chats, most recent first.
 pub fn list(app: &mut App, ui: &mut egui::Ui) {
     let palette = app.palette;
-    let me = app.me().to_owned();
-    let people: Vec<(String, String, String)> = app
-        .chats
-        .iter()
-        .filter(|c| c.kind == ChatKind::OneOnOne)
-        .filter_map(|c| c.peer(&me))
-        .filter_map(|m| Some((m.user_id.clone(), m.display_name.clone(), m.email.clone()?)))
-        .take(40)
-        .collect();
+    let unified = app.unified_view();
+    let active = app.active;
+    let indexes: Vec<usize> = if unified {
+        (0..app.accounts.len()).collect()
+    } else {
+        vec![active]
+    };
+    // (account, user id, name, email), most recent chat first.
+    let mut people: Vec<(usize, String, String, String, i64)> = Vec::new();
+    for &j in &indexes {
+        let account = &app.accounts[j];
+        let me = account.me();
+        people.extend(
+            account
+                .chats
+                .iter()
+                .filter(|c| c.kind == ChatKind::OneOnOne)
+                .filter_map(|c| Some((c, c.peer(me)?)))
+                .filter_map(|(c, m)| {
+                    Some((
+                        j,
+                        m.user_id.clone(),
+                        m.display_name.clone(),
+                        m.email.clone()?,
+                        c.updated,
+                    ))
+                })
+                .take(40),
+        );
+    }
+    if unified {
+        people.sort_by_key(|p| std::cmp::Reverse(p.4));
+        people.truncate(40);
+    }
     ui.horizontal(|ui| {
         ui.add_space(18.0);
         widgets::section_label(ui, &palette, "Recent people");
@@ -37,7 +62,8 @@ pub fn list(app: &mut App, ui: &mut egui::Ui) {
         .id_salt("call-people")
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            for (user, name, email) in &people {
+            for (j, user, name, email, _) in &people {
+                let j = *j;
                 let (_, inner) = widgets::list_row(ui, &palette, 48.0, false, Sense::hover());
                 let mut child = ui.new_child(
                     egui::UiBuilder::new()
@@ -46,6 +72,11 @@ pub fn list(app: &mut App, ui: &mut egui::Ui) {
                 );
                 widgets::avatar(&mut child, app, Some(user), name, 32.0, true);
                 child.add_space(8.0);
+                if unified {
+                    let (rect, _) = child.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
+                    widgets::paint_account_mark(&child, &app.account_look(j), rect);
+                    child.add_space(6.0);
+                }
                 let label_width = (child.available_width() - 72.0).max(40.0);
                 child.add(egui::Label::new(super::widgets::elided(
                     &child,
@@ -56,23 +87,18 @@ pub fn list(app: &mut App, ui: &mut egui::Ui) {
                 )));
                 child.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let video = widgets::icon_button(ui, &palette, Icon::Video, "Video call");
-                    widgets::on_click(
-                        &video,
-                        &mut actions,
-                        Action::StartCall {
-                            users: vec![email.clone()],
-                            video: true,
-                        },
-                    );
                     let audio = widgets::icon_button(ui, &palette, Icon::Phone, "Audio call");
-                    widgets::on_click(
-                        &audio,
-                        &mut actions,
-                        Action::StartCall {
-                            users: vec![email.clone()],
-                            video: false,
-                        },
-                    );
+                    for (response, with_video) in [(video, true), (audio, false)] {
+                        if response.clicked() {
+                            if j != active {
+                                actions.push(Action::SwitchAccount(j));
+                            }
+                            actions.push(Action::StartCall {
+                                users: vec![email.clone()],
+                                video: with_video,
+                            });
+                        }
+                    }
                 });
             }
         });
@@ -105,6 +131,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     ui.set_width(ui.available_width());
                     ui.label(egui::RichText::new("Join a meeting").font(theme::semibold(15.0)).color(palette.text));
                     ui.add_space(6.0);
+                    if let Some(account) = widgets::account_picker(ui, app, "Join as") {
+                        app.actions.push(Action::SwitchAccount(account));
+                    }
                     // Narrow: the Join button goes under the field, which would
                     // otherwise be too short to show its hint.
                     let narrow = ui.available_width() < 320.0;

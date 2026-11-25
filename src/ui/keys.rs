@@ -69,6 +69,22 @@ fn settings_escape(app: &App) -> Option<Action> {
     }
 }
 
+/// The next scope for the account shortcut: Unified, then each account in
+/// order, then Unified again. None with fewer than two accounts.
+pub(crate) fn next_scope(unified: bool, active: usize, accounts: usize) -> Option<(bool, usize)> {
+    if accounts < 2 {
+        return None;
+    }
+    let active = active.min(accounts - 1);
+    Some(if unified {
+        (false, active)
+    } else if active + 1 < accounts {
+        (false, active + 1)
+    } else {
+        (true, active)
+    })
+}
+
 pub fn handle(app: &mut App, ctx: &egui::Context) {
     let mut actions = Vec::new();
     // Esc in a settings field leaves the field, not settings.
@@ -120,8 +136,12 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         if input.consume_key(command, Key::N) {
             actions.push(Action::OpenNewChat);
         }
-        if input.consume_key(command | Modifiers::SHIFT, Key::A) && app.accounts.len() > 1 {
-            actions.push(Action::SwitchAccount((app.active + 1) % app.accounts.len()));
+        if input.consume_key(command | Modifiers::SHIFT, Key::A) && !app.settings.unified_only {
+            match next_scope(app.unified, app.active, app.accounts.len()) {
+                Some((true, _)) => actions.push(Action::ShowUnified),
+                Some((false, i)) => actions.push(Action::ShowAccount(i)),
+                None => {}
+            }
         }
         if input.consume_key(command, Key::R) {
             actions.push(Action::Refresh);
@@ -165,4 +185,18 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     // egui's own zoom keys would fight the setting.
     ctx.options_mut(|options| options.zoom_with_keyboard = false);
     app.actions.extend(actions);
+}
+
+#[cfg(test)]
+mod next_scope_tests {
+    use super::next_scope;
+
+    #[test]
+    fn cycles_unified_then_accounts() {
+        assert_eq!(next_scope(true, 0, 2), Some((false, 0)));
+        assert_eq!(next_scope(false, 0, 2), Some((false, 1)));
+        assert_eq!(next_scope(false, 1, 2), Some((true, 1)));
+        assert_eq!(next_scope(true, 0, 1), None);
+        assert_eq!(next_scope(false, 0, 0), None);
+    }
 }

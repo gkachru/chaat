@@ -52,7 +52,7 @@ the rename, when the app still had a demo mode:
 | App updates | ✅ Daily checks and verified downloads from GitHub releases; restart when ready ([details](docs/updates.md)) |
 | Real-time updates | ✅ On open, focus and refresh. ✅ Push through a self-hostable `chaat-relay`, or through a push relay plugin with a `cloudflared` tunnel instead of a hosted relay, since Microsoft forbids polling ([why](docs/realtime.md)) |
 | Multiple accounts, setting your availability and status message | ✅ Implemented |
-| Out of office (automatic replies) | ✅ In Settings and the account menu, for accounts with an Exchange Online mailbox |
+| Out of office (automatic replies) | ✅ In Settings and an account's menu, for accounts with an Exchange Online mailbox |
 | Incoming-call alerts | ⚠️ Only with the optional, separately installed call-alerts plugin, which uses Teams' push service; Chaat shows who is calling with **Place call** and **Open chat** ([how](docs/calling.md#call-alerts-plugin)) |
 | Plugins | ⚠️ Optional external programs you add in Settings › Plugins, for incoming-call alerts and a presence display such as a status light. Chaat never ships one ([protocol](docs/plugins.md)) |
 | Agents | ⚠️ Optional plugin: an AI agent reads the cached chats you allow and proposes replies and reactions that are sent only when you click ([how](docs/plugins.md#agent-plugins)) |
@@ -129,7 +129,7 @@ development and can ask for approval again after each replacement. See
 ## Keyboard
 
 `⌘K` jump anywhere or search messages · `⌘N` new chat · `⌘1–4` sections ·
-`Alt ↑/↓` previous or next conversation · `⌘⇧A` next account · `Enter` send ·
+`Alt ↑/↓` previous or next conversation · `⌘⇧A` cycle Unified and accounts · `Enter` send ·
 `Shift Enter` new line · `@` mention · `↑` edit last message · `⌘R` refresh ·
 `⌘,` settings · `⌘/` all shortcuts. (`⌘` is Ctrl on
 Windows and Linux.)

@@ -321,7 +321,7 @@ fn account(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
             egui::RichText::new(if accounts == 1 {
                 "1 account in Chaat".to_owned()
             } else {
-                format!("{accounts} accounts in Chaat · switch from your picture or with ⌘⇧A")
+                format!("{accounts} accounts in Chaat · switch from the account rail")
             })
             .font(theme::regular(13.0))
             .color(palette.dim),
@@ -330,6 +330,7 @@ fn account(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
             actions.push(Action::AddAccount);
         }
     });
+    account_looks(app, ui, actions);
     if !app.demo {
         group(ui, &palette, "Permissions");
         let channel = match app.channel_access {
@@ -351,6 +352,43 @@ fn account(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
                 }
             ),
         );
+    }
+}
+
+/// One row per account: its rail tile, name and address, and the look editor
+/// under a "Customize" toggle.
+fn account_looks(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+    let palette = app.palette;
+    group(ui, &palette, "Accounts");
+    for index in 0..app.accounts.len() {
+        let look = app.account_look(index);
+        let username = app.accounts[index].username();
+        let saved = app.accounts[index]
+            .id
+            .as_ref()
+            .and_then(|id| app.settings.account_looks.get(id))
+            .cloned()
+            .unwrap_or_default();
+        ui.horizontal(|ui| {
+            widgets::account_tile(ui, &palette, &look, 32.0, false, 0);
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                ui.label(
+                    egui::RichText::new(&look.name)
+                        .font(theme::semibold(14.0))
+                        .color(palette.text),
+                );
+                ui.label(egui::RichText::new(username).color(palette.secondary));
+            });
+        });
+        egui::CollapsingHeader::new("Customize")
+            .id_salt(("account-customize", index))
+            .show(ui, |ui| {
+                if let Some(next) = super::rail::editor::look_editor(ui, &palette, &look, &saved) {
+                    actions.push(Action::SetAccountLook(index, next));
+                }
+            });
+        ui.add_space(6.0);
     }
 }
 
@@ -739,6 +777,20 @@ fn appearance(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
             widgets::on_click(&response, actions, Action::SetTheme(choice));
         }
     });
+
+    group(ui, &palette, "Accounts");
+    let mut unified_only = app.settings.unified_only;
+    if ui
+        .checkbox_hand(&mut unified_only, "Unified only")
+        .changed()
+    {
+        actions.push(Action::SetUnifiedOnly(unified_only));
+    }
+    note(
+        ui,
+        &palette,
+        "Show all accounts together and hide the account tiles",
+    );
 
     group(ui, &palette, "Palette");
     let current = match &app.settings.theme {

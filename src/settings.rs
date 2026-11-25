@@ -79,9 +79,27 @@ impl PluginEntry {
     }
 }
 
+/// How one account looks in the account rail (all optional; unset means
+/// automatic).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AccountLook {
+    pub name: Option<String>,
+    /// A Lucide icon name from `account_look::ICONS`.
+    pub icon: Option<String>,
+    /// A `#rrggbb` swatch from `account_look::SWATCHES`.
+    pub color: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    /// Per-account rail looks, keyed by `oid.tid`.
+    pub account_looks: BTreeMap<String, AccountLook>,
+    /// Show Unified Chats (the logo tile) instead of one account.
+    pub unified: bool,
+    /// Unified only: hide the account tiles and always show all accounts together.
+    pub unified_only: bool,
     /// The Entra ID application (client) ID Chaat signs in with. Each person or
     /// organisation registers their own; see docs/azure-app-registration.md.
     pub client_id: String,
@@ -190,6 +208,9 @@ pub struct WindowGeometry {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            account_looks: BTreeMap::new(),
+            unified: true,
+            unified_only: false,
             client_id: String::new(),
             tenant: "organizations".into(),
             theme: ThemeChoice::System,
@@ -346,6 +367,45 @@ pub fn is_guid(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn unified_only_defaults_false() {
+        let s: super::Settings = serde_json::from_str("{}").unwrap();
+        assert!(!s.unified_only);
+    }
+
+    #[test]
+    fn account_look_fields_default_from_empty_json() {
+        let s: super::Settings = serde_json::from_str("{}").unwrap();
+        assert!(s.account_looks.is_empty());
+        assert!(s.unified);
+    }
+
+    #[test]
+    fn account_looks_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let mut settings = super::Settings::default();
+        settings.account_looks.insert(
+            "o.t".into(),
+            super::AccountLook {
+                name: Some("Work".into()),
+                icon: Some("star".into()),
+                color: Some("#3f8fd2".into()),
+            },
+        );
+        settings.save(&path).unwrap();
+        let loaded: super::Settings =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(loaded.account_looks, settings.account_looks);
+    }
+
+    #[test]
+    fn unknown_look_fields_ignored() {
+        let s: super::Settings =
+            serde_json::from_str(r#"{"account_looks":{"o.t":{"name":"A","shape":"x"}}}"#).unwrap();
+        assert_eq!(s.account_looks["o.t"].name.as_deref(), Some("A"));
+    }
+
     #[test]
     fn old_settings_file_without_notify_gets_defaults() {
         let settings: super::Settings = serde_json::from_str(r#"{"notifications": true}"#).unwrap();

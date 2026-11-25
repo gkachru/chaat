@@ -2031,3 +2031,16 @@ fn opening_another_conversation_closes_find() {
     );
     assert!(app.find.is_none());
 }
+
+#[test]
+fn unified_starts_from_settings() {
+    let (app, _dir) = demo_app();
+    assert!(app.unified);
+    let dir = tempfile::tempdir().unwrap();
+    let settings = Settings {
+        unified: false,
+        ..Settings::default()
+    };
+    let app = App::new(AppDirs::under(dir.path()), settings, Waker::default(), true);
+    assert!(!app.unified);
+}

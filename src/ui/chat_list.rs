@@ -17,8 +17,19 @@ fn kind_label(groups: bool, meetings: bool) -> &'static str {
     }
 }
 
+/// An action for account `j`, wrapped when `j` is not the active account.
+fn for_account(active: usize, j: usize, action: Action) -> Action {
+    if j == active {
+        action
+    } else {
+        Action::ForAccount(j, Box::new(action))
+    }
+}
+
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let palette = app.palette;
+    let unified = app.unified_view();
+    let active = app.active;
     // Names Graph left out of system events in previews, asked for once.
     let unknown: Vec<String> = app
         .chats
@@ -31,79 +42,130 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     if !unknown.is_empty() {
         app.actions.push(Action::LookUpNames(unknown));
     }
+    // The filter in use: the unified one, or the active account's own. Held
+    // as copies and written back, so either source binds to the same widgets.
+    let (mut text, mut unread_only, mut groups_only, mut meetings_only, mut hidden_only) =
+        if unified {
+            let f = &app.unified_filter;
+            (
+                f.text.clone(),
+                f.unread_only,
+                f.groups_only,
+                f.meetings_only,
+                f.hidden_only,
+            )
+        } else {
+            (
+                app.chat_filter.clone(),
+                app.unread_only,
+                app.groups_only,
+                app.meetings_only,
+                app.hidden_only,
+            )
+        };
+    let any_hidden = if unified {
+        app.accounts
+            .iter()
+            .any(|a| a.chats.iter().any(|chat| chat.hidden))
+    } else {
+        app.chats.iter().any(|chat| chat.hidden)
+    };
     egui::Frame::new()
         .inner_margin(Margin::symmetric(12, 0))
         .show(ui, |ui| {
-            let field =
-                widgets::text_field(&mut app.chat_filter, "Filter chats", theme::regular(13.0));
+            let field = widgets::text_field(&mut text, "Filter chats", theme::regular(13.0));
             let response = ui.add(field);
             if response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                app.chat_filter.clear();
+                text.clear();
             }
             ui.add_space(8.0);
             // Wrapped, so the chips never widen the sidebar past its set
             // width (four chips do not fit in one row at the default 300).
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
-                if widgets::chip(ui, &palette, "Unread", app.unread_only)
+                if widgets::chip(ui, &palette, "Unread", unread_only)
                     .on_hover_text("Show only chats with unread messages")
                     .clicked()
                 {
-                    app.unread_only = !app.unread_only;
+                    unread_only = !unread_only;
                 }
-                if widgets::chip(ui, &palette, "Groups", app.groups_only)
+                if widgets::chip(ui, &palette, "Groups", groups_only)
                     .on_hover_text("Show group chats")
                     .clicked()
                 {
-                    app.groups_only = !app.groups_only;
+                    groups_only = !groups_only;
                 }
-                if widgets::chip(ui, &palette, "Meetings", app.meetings_only)
+                if widgets::chip(ui, &palette, "Meetings", meetings_only)
                     .on_hover_text("Show meeting chats")
                     .clicked()
                 {
-                    app.meetings_only = !app.meetings_only;
+                    meetings_only = !meetings_only;
                 }
                 // Rarely needed, so an icon after the kind chips, and only
                 // while there is something hidden (or the filter is on, so it
                 // can be turned off). All four then fit one row.
-                if (app.hidden_only || app.chats.iter().any(|chat| chat.hidden))
-                    && widgets::icon_chip(ui, &palette, Icon::EyeOff, app.hidden_only)
+                if (hidden_only || any_hidden)
+                    && widgets::icon_chip(ui, &palette, Icon::EyeOff, hidden_only)
                         .on_hover_text("Hidden chats")
                         .clicked()
                 {
-                    app.hidden_only = !app.hidden_only;
+                    hidden_only = !hidden_only;
                 }
             });
         });
+    if unified {
+        let f = &mut app.unified_filter;
+        f.text = text.clone();
+        f.unread_only = unread_only;
+        f.groups_only = groups_only;
+        f.meetings_only = meetings_only;
+        f.hidden_only = hidden_only;
+    } else {
+        app.chat_filter = text.clone();
+        app.unread_only = unread_only;
+        app.groups_only = groups_only;
+        app.meetings_only = meetings_only;
+        app.hidden_only = hidden_only;
+    }
     ui.add_space(8.0);
 
-    let me = app.me().to_owned();
-    let visible: Vec<usize> = app
-        .chats
-        .iter()
-        .enumerate()
-        .filter(|(_, chat)| crate::app::chat_filter::listed(app, chat, &me))
-        .map(|(index, _)| index)
-        .collect();
+    // (account, chat index into that account's chats, other accounts that
+    // hold the same chat; only Unified rows merge).
+    let visible: Vec<(usize, usize, Vec<usize>)> = if unified {
+        crate::app::chat_filter::unified_merged_rows(app)
+    } else {
+        let me = app.me().to_owned();
+        app.chats
+            .iter()
+            .enumerate()
+            .filter(|(_, chat)| crate::app::chat_filter::listed(app, chat, &me))
+            .map(|(index, _)| (active, index, Vec::new()))
+            .collect()
+    };
     if visible.is_empty() {
-        let by_kind = app.groups_only || app.meetings_only;
-        let kind = kind_label(app.groups_only, app.meetings_only);
+        let no_chats = if unified {
+            app.accounts.iter().all(|a| a.chats.is_empty())
+        } else {
+            app.chats.is_empty()
+        };
+        let by_kind = groups_only || meetings_only;
+        let kind = kind_label(groups_only, meetings_only);
         let kind_text;
-        let (title, text) = if !app.chats.is_empty() && !app.chat_filter.trim().is_empty() {
+        let (title, body) = if !no_chats && !text.trim().is_empty() {
             ("No matches", "No chat or person matches the filter.")
-        } else if !app.chats.is_empty() && app.hidden_only {
+        } else if !no_chats && hidden_only {
             ("No hidden chats", "Chats you hide show up here.")
-        } else if !app.chats.is_empty() && app.unread_only {
+        } else if !no_chats && unread_only {
             if by_kind {
                 kind_text = format!("No {kind} have unread messages.");
                 ("All caught up", kind_text.as_str())
             } else {
                 ("All caught up", "No chats have unread messages.")
             }
-        } else if !app.chats.is_empty() && by_kind {
+        } else if !no_chats && by_kind {
             kind_text = format!("You have no {kind} yet.");
             ("Nothing to show", kind_text.as_str())
-        } else if app.chats.is_empty() {
+        } else if no_chats {
             if app.loading.contains(&crate::sync::Resource::Chats) {
                 (
                     "Loading chats…",
@@ -115,31 +177,79 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         } else {
             ("No matches", "No chat or person matches the filter.")
         };
-        widgets::empty_state(ui, &palette, Icon::Chat, title, text);
+        widgets::empty_state(ui, &palette, Icon::Chat, title, body);
         return;
     }
     let now = crate::time::now();
+    let looks: Vec<crate::account_look::Look> = if unified {
+        (0..app.accounts.len())
+            .map(|i| app.account_look(i))
+            .collect()
+    } else {
+        Vec::new()
+    };
     let mut actions = Vec::new();
     egui::ScrollArea::vertical()
         .id_salt("chat-list")
         .auto_shrink([false, false])
         .show_rows(ui, theme::ROW_HEIGHT, visible.len(), |ui, range| {
             for index in range {
-                let chat = &app.chats[visible[index]];
-                let response = row(ui, app, chat, &me, now);
-                response.context_menu(|ui| menu(ui, app, chat, &me, &mut actions));
+                let (j, k, others) = &visible[index];
+                let (j, k) = (*j, *k);
+                let acct = &app.accounts[j];
+                let chat = &acct.chats[k];
+                let me = acct.me();
+                // A merged row is unread when any copy is.
+                let unread = chat.is_unread(me)
+                    || others.iter().any(|&o| {
+                        let other = &app.accounts[o];
+                        other
+                            .chats
+                            .iter()
+                            .any(|c| c.id == chat.id && c.is_unread(other.me()))
+                    });
+                // The primary's mark first, then the other copies'.
+                let marks: Vec<&crate::account_look::Look> = std::iter::once(j)
+                    .chain(others.iter().copied())
+                    .filter_map(|a| looks.get(a))
+                    .collect();
+                let response = row(ui, app, acct, chat, me, now, j, &marks, unread);
+                response.context_menu(|ui| {
+                    let mut local = Vec::new();
+                    menu(ui, app, chat, me, unread, &mut local);
+                    // Every copy gets the action, so read marks stay per account.
+                    for a in local {
+                        actions.push(for_account(active, j, a.clone()));
+                        actions.extend(others.iter().map(|&o| for_account(active, o, a.clone())));
+                    }
+                });
                 if response.clicked() {
-                    actions.push(Action::OpenConversation(ConversationId::Chat(
-                        chat.id.clone(),
-                    )));
+                    if others.is_empty() {
+                        if j != active {
+                            actions.push(Action::SwitchAccount(j));
+                        }
+                        actions.push(Action::OpenConversation(ConversationId::Chat(
+                            chat.id.clone(),
+                        )));
+                    } else {
+                        actions.push(Action::OpenSharedChat(j, chat.id.clone()));
+                    }
                 }
             }
         });
+    widgets::request_account_photos(app, ui.ctx());
     app.actions.extend(actions);
 }
 
 /// The right-click menu of a chat row.
-fn menu(ui: &mut egui::Ui, app: &App, chat: &Chat, me: &str, actions: &mut Vec<Action>) {
+fn menu(
+    ui: &mut egui::Ui,
+    app: &App,
+    chat: &Chat,
+    me: &str,
+    unread: bool,
+    actions: &mut Vec<Action>,
+) {
     // A fixed width: a context menu offers the whole window as room.
     ui.set_width(240.0);
     let palette = &app.palette;
@@ -155,7 +265,7 @@ fn menu(ui: &mut egui::Ui, app: &App, chat: &Chat, me: &str, actions: &mut Vec<A
             ui.close();
         }
     }
-    let (icon, label, action) = if chat.is_unread(me) {
+    let (icon, label, action) = if unread {
         (Icon::Check, "Mark as read", Action::MarkChatRead(id))
     } else {
         (Icon::Chat, "Mark as unread", Action::MarkChatUnread(id))
@@ -205,15 +315,27 @@ fn is_muted(app: &App, chat: &Chat) -> bool {
     app.settings.notify.muted_chats.contains(&chat.id)
 }
 
-fn row(ui: &mut egui::Ui, app: &App, chat: &Chat, me: &str, now: i64) -> egui::Response {
+#[allow(clippy::too_many_arguments)]
+fn row(
+    ui: &mut egui::Ui,
+    app: &App,
+    acct: &crate::app::Account,
+    chat: &Chat,
+    me: &str,
+    now: i64,
+    j: usize,
+    marks: &[&crate::account_look::Look],
+    unread: bool,
+) -> egui::Response {
     let palette = &app.palette;
-    let selected = app.open.as_ref() == Some(&ConversationId::Chat(chat.id.clone()));
+    // Only the active account has an open conversation.
+    let foreign = j != app.active;
+    let selected = !foreign && app.open.as_ref() == Some(&ConversationId::Chat(chat.id.clone()));
     let (response, inner) =
         widgets::list_row(ui, palette, theme::ROW_HEIGHT, selected, Sense::click());
     if !ui.is_rect_visible(response.rect) {
         return response;
     }
-    let unread = chat.is_unread(me);
     let title = chat.title(me);
     let avatar_rect =
         egui::Rect::from_min_size(inner.left_top() + vec2(8.0, 9.0), egui::Vec2::splat(38.0));
@@ -221,14 +343,15 @@ fn row(ui: &mut egui::Ui, app: &App, chat: &Chat, me: &str, now: i64) -> egui::R
     match chat.kind {
         ChatKind::OneOnOne => {
             let peer = chat.face(me);
-            widgets::avatar(
-                &mut child,
-                app,
-                peer.map(|p| p.user_id.as_str()),
-                peer.map_or(title.as_str(), |p| p.display_name.as_str()),
-                38.0,
-                true,
-            );
+            let user = peer.map(|p| p.user_id.as_str());
+            let name = peer.map_or(title.as_str(), |p| p.display_name.as_str());
+            // The active account's photos load as everywhere else; other
+            // accounts' load through `request_account_photos`.
+            if foreign {
+                widgets::avatar_in(&mut child, app, j, user, name, 38.0, true);
+            } else {
+                widgets::avatar(&mut child, app, user, name, 38.0, true);
+            }
         }
         ChatKind::Group => {
             widgets::avatar(&mut child, app, None, &title, 38.0, false);
@@ -244,6 +367,16 @@ fn row(ui: &mut egui::Ui, app: &App, chat: &Chat, me: &str, now: i64) -> egui::R
                 egui::Rect::from_center_size(avatar_rect.center(), egui::Vec2::splat(18.0)),
             );
         }
+    }
+
+    // Side by side along the avatar's bottom edge, the first at the corner.
+    let size = 14.0;
+    for (n, look) in marks.iter().enumerate() {
+        let mark_rect = egui::Rect::from_min_size(
+            avatar_rect.right_bottom() - vec2(size - 2.0 + n as f32 * (size - 2.0), size - 2.0),
+            egui::Vec2::splat(size),
+        );
+        widgets::paint_account_mark(ui, look, mark_rect);
     }
 
     let text_left = avatar_rect.right() + 10.0;
@@ -293,7 +426,7 @@ fn row(ui: &mut egui::Ui, app: &App, chat: &Chat, me: &str, now: i64) -> egui::R
             return p
                 .membership
                 .as_ref()
-                .map_or_else(|| p.text.clone(), |m| m.describe(|id| app.person_name(id)));
+                .map_or_else(|| p.text.clone(), |m| m.describe(|id| acct.person_name(id)));
         }
         let who = match (&p.author_id, &p.author) {
             (Some(id), _) if id == me => Some("You".to_owned()),
@@ -312,7 +445,11 @@ fn row(ui: &mut egui::Ui, app: &App, chat: &Chat, me: &str, now: i64) -> egui::R
         }
     });
     let muted = is_muted(app, chat);
-    let agents = super::agents::has_pending(app, &ConversationId::Chat(chat.id.clone()));
+    let conversation = ConversationId::Chat(chat.id.clone());
+    let agents = acct
+        .id
+        .as_deref()
+        .is_some_and(|account| app.agent_proposals.has_pending(account, &conversation));
     let preview_width = (inner.right()
         - text_left
         - if unread || muted { 28.0 } else { 10.0 }
@@ -320,9 +457,7 @@ fn row(ui: &mut egui::Ui, app: &App, chat: &Chat, me: &str, now: i64) -> egui::R
     .max(20.0);
     // An unsent draft stands in for the last message, except in the chat
     // that is open.
-    let draft = (app.open != Some(crate::model::ConversationId::Chat(chat.id.clone())))
-        .then(|| app.draft_preview(&chat.id))
-        .flatten();
+    let draft = (!selected).then(|| draft_preview(acct, &chat.id)).flatten();
     let preview_galley = match &draft {
         Some(text) => draft_galley(ui, text, palette, preview_width),
         None => elided_styled(
@@ -371,6 +506,13 @@ fn row(ui: &mut egui::Ui, app: &App, chat: &Chat, me: &str, now: i64) -> egui::R
             .on_hover_cursor(egui::CursorIcon::PointingHand);
     }
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// `App::draft_preview` for any account: the draft's text on one line.
+fn draft_preview(acct: &crate::app::Account, chat: &str) -> Option<String> {
+    let draft = acct.drafts.get(&ConversationId::Chat(chat.to_owned()))?;
+    let text = draft.text.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!text.is_empty()).then(|| text.chars().take(140).collect())
 }
 
 /// The preview line of a chat with an unsent draft: "Draft: " in the accent

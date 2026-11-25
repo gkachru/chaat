@@ -234,6 +234,28 @@ impl App {
         if query.trim().is_empty() {
             return;
         }
+        self.switcher.unified_hits.clear();
+        if self.unified_view() {
+            // One search per signed-in account; each answer fills its own
+            // entries in `unified_hits`.
+            for index in 0..self.accounts.len() {
+                if self.accounts[index].id.is_none() {
+                    continue;
+                }
+                let found = self.in_account(index, |app| {
+                    if app.demo {
+                        app.local_search(&query)
+                    } else {
+                        app.backend.send(AccountCommand::Search(query.clone()));
+                        Vec::new()
+                    }
+                });
+                self.switcher
+                    .unified_hits
+                    .extend(found.into_iter().map(|hit| (index, hit)));
+            }
+            return;
+        }
         if self.demo {
             self.switcher.hits = self.local_search(&query);
         } else {
@@ -338,5 +360,89 @@ impl App {
         hits.sort_by_key(|hit| std::cmp::Reverse(hit.at));
         hits.truncate(50);
         hits
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::tests::{demo_app, sent};
+    use crate::backend::Command;
+
+    #[test]
+    fn unified_search_asks_each_account() {
+        let (mut app, _d) = demo_app();
+        app.demo = false;
+        app.unified = true;
+        let (b0, mut r0) = Backend::recording();
+        let (b1, mut r1) = Backend::recording();
+        app.accounts[0].backend = b0;
+        app.accounts[1].backend = b1;
+        let ctx = egui::Context::default();
+        app.apply(Action::SearchMessages("lunch".into()), &ctx);
+        for rx in [&mut r0, &mut r1] {
+            let found = sent(rx);
+            assert_eq!(found.len(), 1);
+            assert!(matches!(
+                &found[0],
+                Command::Account(AccountCommand::Search(q)) if q == "lunch"
+            ));
+        }
+        assert_eq!(app.active, 0);
+        // Not unified: only the active account is asked.
+        app.unified = false;
+        app.apply(Action::SearchMessages("lunch".into()), &ctx);
+        assert_eq!(sent(&mut r0).len(), 1);
+        assert!(sent(&mut r1).is_empty());
+    }
+
+    #[test]
+    fn unified_demo_search_fills_hits_per_account() {
+        let (mut app, _d) = demo_app();
+        app.unified = true;
+        let ctx = egui::Context::default();
+        let word = app.accounts[1]
+            .conversations
+            .values()
+            .flat_map(|c| c.messages.iter())
+            .map(|m| m.body.to_plain())
+            .find(|t| !t.trim().is_empty())
+            .expect("a message in account 1");
+        let word = word.split_whitespace().next().unwrap().to_string();
+        app.apply(Action::SearchMessages(word), &ctx);
+        assert!(app.switcher.unified_hits.iter().any(|(i, _)| *i == 1));
+        assert_eq!(app.active, 0);
+    }
+
+    #[test]
+    fn unified_results_replace_one_account_and_drop_stale() {
+        let (mut app, _d) = demo_app();
+        app.unified = true;
+        let hit = |id: &str| SearchHit {
+            conversation: ConversationId::Chat("c".into()),
+            message_id: id.into(),
+            author: String::new(),
+            snippet: String::new(),
+            at: 0,
+        };
+        app.switcher.searched = "q".into();
+        app.switcher.unified_hits = vec![(0, hit("a")), (1, hit("b"))];
+        let event = |query: &str, id: &str| AccountEvent::SearchResults {
+            query: query.into(),
+            hits: vec![hit(id)],
+            remote: false,
+        };
+        let ctx = egui::Context::default();
+        app.in_account(1, |a| a.handle(event("old", "x"), &ctx));
+        assert_eq!(app.switcher.unified_hits.len(), 2);
+        app.in_account(1, |a| a.handle(event("q", "c"), &ctx));
+        let ids: Vec<(usize, &str)> = app
+            .switcher
+            .unified_hits
+            .iter()
+            .map(|(i, h)| (*i, h.message_id.as_str()))
+            .collect();
+        assert_eq!(ids, vec![(0, "a"), (1, "c")]);
+        assert_eq!(app.active, 0);
     }
 }

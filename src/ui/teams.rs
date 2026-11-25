@@ -9,7 +9,13 @@ use crate::theme::{self, Icon};
 
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let palette = app.palette;
-    if app.teams.is_empty() {
+    let unified = app.unified_view();
+    let indexes: Vec<usize> = if unified {
+        (0..app.accounts.len()).collect()
+    } else {
+        vec![app.active]
+    };
+    if indexes.iter().all(|&j| app.accounts[j].teams.is_empty()) {
         let (title, text) = if app.loading.contains(&crate::sync::Resource::Teams) {
             (
                 "Loading teams…",
@@ -21,52 +27,93 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         widgets::empty_state(ui, &palette, Icon::Teams, title, text);
         return;
     }
+    let active = app.active;
     let mut actions = Vec::new();
     egui::ScrollArea::vertical()
         .id_salt("teams")
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 1.0;
-            for team in &app.teams {
-                let expanded = app.expanded_teams.contains(&team.id);
-                let response = team_row(ui, app, &team.name, expanded);
-                if response.clicked() {
-                    actions.push(Action::ToggleTeam(team.id.clone()));
-                }
-                if !expanded {
+            for &j in &indexes {
+                let account = &app.accounts[j];
+                if account.teams.is_empty() {
                     continue;
                 }
-                match app.channels.get(&team.id) {
-                    Some(channels) if !channels.is_empty() => {
-                        for channel in channels {
-                            let id = ConversationId::Channel {
-                                team: team.id.clone(),
-                                channel: channel.id.clone(),
-                            };
-                            let selected = app.open.as_ref() == Some(&id);
-                            let response =
-                                channel_row(ui, app, &channel.name, channel.kind, selected);
-                            if response.clicked() {
-                                actions.push(Action::OpenConversation(id));
-                            }
-                        }
-                    }
-                    _ => {
-                        ui.horizontal(|ui| {
-                            ui.add_space(52.0);
-                            ui.label(
-                                egui::RichText::new("Loading channels…")
-                                    .color(palette.dim)
-                                    .font(theme::regular(12.0)),
-                            );
+                if unified {
+                    account_header(ui, app, j);
+                }
+                for team in &account.teams {
+                    let expanded = account.expanded_teams.contains(&team.id);
+                    let response = team_row(ui, app, &team.name, expanded);
+                    if response.clicked() {
+                        let toggle = Action::ToggleTeam(team.id.clone());
+                        actions.push(if j == active {
+                            toggle
+                        } else {
+                            Action::ForAccount(j, Box::new(toggle))
                         });
                     }
+                    if !expanded {
+                        continue;
+                    }
+                    match account.channels.get(&team.id) {
+                        Some(channels) if !channels.is_empty() => {
+                            for channel in channels {
+                                let id = ConversationId::Channel {
+                                    team: team.id.clone(),
+                                    channel: channel.id.clone(),
+                                };
+                                let selected = j == active && app.open.as_ref() == Some(&id);
+                                let response =
+                                    channel_row(ui, app, &channel.name, channel.kind, selected);
+                                if response.clicked() {
+                                    if j != active {
+                                        actions.push(Action::SwitchAccount(j));
+                                    }
+                                    actions.push(Action::OpenConversation(id));
+                                }
+                            }
+                        }
+                        _ => {
+                            ui.horizontal(|ui| {
+                                ui.add_space(52.0);
+                                ui.label(
+                                    egui::RichText::new("Loading channels…")
+                                        .color(palette.dim)
+                                        .font(theme::regular(12.0)),
+                                );
+                            });
+                        }
+                    }
+                    ui.add_space(6.0);
                 }
-                ui.add_space(6.0);
             }
             ui.add_space(12.0);
         });
     app.actions.extend(actions);
+}
+
+/// Unified: the account's mark and name above its teams.
+fn account_header(ui: &mut egui::Ui, app: &App, j: usize) {
+    let look = app.account_look(j);
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::hover());
+    let mark = egui::Rect::from_min_size(
+        egui::pos2(rect.left() + 16.0, rect.center().y - 9.0),
+        egui::Vec2::splat(18.0),
+    );
+    widgets::paint_account_mark(ui, &look, mark);
+    let galley = widgets::elided(
+        ui,
+        &look.name,
+        theme::semibold(12.0),
+        app.palette.secondary,
+        rect.right() - mark.right() - 24.0,
+    );
+    ui.painter().galley(
+        egui::pos2(mark.right() + 8.0, rect.center().y - galley.size().y / 2.0),
+        galley,
+        app.palette.secondary,
+    );
 }
 
 fn team_row(ui: &mut egui::Ui, app: &App, name: &str, expanded: bool) -> egui::Response {

@@ -23,6 +23,18 @@ fastframe_icons::icons! {
         Teams => lucide "users",
         Calendar => "calendar",
         Phone => "phone",
+        Briefcase => "briefcase",
+        Building => "building-2",
+        House => "house",
+        Star => "star",
+        Heart => "heart",
+        Rocket => "rocket",
+        Globe => "globe",
+        Book => "book-open",
+        Coffee => "coffee",
+        Zap => "zap",
+        Flask => "flask-conical",
+        GraduationCap => "graduation-cap",
         Video => "video",
         Settings => lucide "settings",
         Search => lucide "search",
@@ -81,6 +93,27 @@ fastframe_icons::icons! {
         Quote => "quote",
         List => "list",
         ListOrdered => "list-ordered",
+    }
+}
+
+impl Icon {
+    /// The icon for an account look's Lucide name (`account_look::ICONS`).
+    pub fn for_account(name: &str) -> Option<Icon> {
+        Some(match name {
+            "briefcase" => Icon::Briefcase,
+            "building-2" => Icon::Building,
+            "house" => Icon::House,
+            "star" => Icon::Star,
+            "heart" => Icon::Heart,
+            "rocket" => Icon::Rocket,
+            "globe" => Icon::Globe,
+            "book-open" => Icon::Book,
+            "coffee" => Icon::Coffee,
+            "zap" => Icon::Zap,
+            "flask-conical" => Icon::Flask,
+            "graduation-cap" => Icon::GraduationCap,
+            _ => return None,
+        })
     }
 }
 
@@ -482,6 +515,28 @@ pub fn avatar_color(seed: &str, dark: bool) -> Color32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn for_account_covers_every_icon_name() {
+        for name in [
+            "briefcase",
+            "building-2",
+            "house",
+            "star",
+            "heart",
+            "rocket",
+            "globe",
+            "book-open",
+            "coffee",
+            "zap",
+            "flask-conical",
+            "graduation-cap",
+        ] {
+            assert!(Icon::for_account(name).is_some(), "{name}");
+        }
+        assert_eq!(Icon::for_account("building-2"), Some(Icon::Building));
+        assert_eq!(Icon::for_account("nope"), None);
+    }
 
     #[test]
     fn initials_from_names() {
