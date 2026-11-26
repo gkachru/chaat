@@ -237,7 +237,7 @@ pub fn recording_url_allowed(url: &str) -> bool {
     if !port.bytes().all(|b| b.is_ascii_digit()) {
         return false;
     }
-    let host = host.to_lowercase();
+    let host = host.to_ascii_lowercase();
     // Browsers read a backslash and other odd characters in ways a suffix
     // check would not, so only plain host characters and no empty label pass.
     let plain = host
@@ -944,6 +944,11 @@ mod tests {
             "https://evil.com%2f.sharepoint.com/a",
             "https://evil.com .sharepoint.com/a",
             "https://a..sharepoint.com/x",
+            "https://contoso.sharepoint.com./a",
+            "https://\u{212A}.sharepoint.com/a",
+            "https://xn--80ak6aa92e.sharepoint.com\t.evil.com/a",
+            "https://[::1]/a",
+            "HTTPS://contoso.sharepoint.com/a",
             "https://a.sharepoint.com:44x/x",
             "http://contoso.sharepoint.com/a",
             "javascript:alert(1)",
