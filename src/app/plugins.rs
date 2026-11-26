@@ -1696,9 +1696,9 @@ impl App {
                     };
                 }
                 PushPluginState::Waiting => {
-                    return make(SummaryLevel::Ok, "Waiting for its tunnel");
+                    return make(SummaryLevel::Off, "Waiting for its tunnel");
                 }
-                PushPluginState::Down { .. } => return make(SummaryLevel::Ok, "Tunnel down"),
+                PushPluginState::Down { .. } => return make(SummaryLevel::Error, "Tunnel down"),
                 PushPluginState::NeedsApproval => {}
             }
         }

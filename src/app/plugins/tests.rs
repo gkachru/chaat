@@ -1250,9 +1250,12 @@ fn summary_order_follows_the_table() {
         0,
         PluginEvent::Push(crate::plugin::event::PushEvent::Down { reason: None }),
     );
-    assert_eq!(summary_of(&app, "a"), (Ok, "Tunnel down".into()));
+    assert_eq!(summary_of(&app, "a"), (Error, "Tunnel down".into()));
     app.push_plugin_stopped("a");
-    assert_eq!(summary_of(&app, "a"), (Ok, "Waiting for its tunnel".into()));
+    assert_eq!(
+        summary_of(&app, "a"),
+        (Off, "Waiting for its tunnel".into())
+    );
     // 7: call alerts owner.
     app.plugins.get_mut("a").unwrap().offers = vec![Capability::CallAlerts];
     app.plugins.get_mut("a").unwrap().listening = vec!["u1.t".into()];
