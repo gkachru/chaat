@@ -50,6 +50,21 @@ fn bubble_widths(width: f32) -> (f32, f32) {
     (bubble, text)
 }
 
+/// The messages that carry a recording's link, newest first.
+fn recording_messages(messages: &[Message]) -> Vec<&Message> {
+    let mut found: Vec<&Message> = messages.iter().filter(|m| m.recording.is_some()).collect();
+    found.sort_by_key(|m| std::cmp::Reverse(m.created));
+    found
+}
+
+/// The recordings in a conversation's messages, newest first.
+pub fn recordings_in(messages: &[Message]) -> Vec<&crate::model::Recording> {
+    recording_messages(messages)
+        .into_iter()
+        .filter_map(|m| m.recording.as_ref())
+        .collect()
+}
+
 pub fn show(app: &mut App, ui: &mut egui::Ui, conversation: ConversationId) {
     header(app, ui, &conversation);
     find::show(app, ui, &conversation);

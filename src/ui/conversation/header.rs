@@ -126,9 +126,43 @@ pub(super) fn header(app: &mut App, ui: &mut egui::Ui, conversation: &Conversati
                     call_users.clear();
                     join = None;
                 }
+                // A meeting chat's recordings, from its loaded messages.
+                let recordings: Vec<(String, String)> = match conversation {
+                    ConversationId::Chat(id)
+                        if app.chat(id).is_some_and(|c| c.kind == ChatKind::Meeting) =>
+                    {
+                        let now = crate::time::now();
+                        app.conversations
+                            .get(conversation)
+                            .map(|view| {
+                                recording_messages(&view.messages)
+                                    .into_iter()
+                                    .filter_map(|m| {
+                                        let r = m.recording.as_ref()?;
+                                        let line = match &r.duration {
+                                            Some(d) => format!(
+                                                "{} · {} · {d}",
+                                                r.name,
+                                                crate::time::day_label(m.created, now)
+                                            ),
+                                            None => format!(
+                                                "{} · {}",
+                                                r.name,
+                                                crate::time::day_label(m.created, now)
+                                            ),
+                                        };
+                                        Some((line, r.url.clone()))
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default()
+                    }
+                    _ => Vec::new(),
+                };
                 // The title takes what the buttons on the right leave.
                 let menu = crate::ui::agents::ReadMenu::of(app, conversation);
                 let icons = usize::from(menu != crate::ui::agents::ReadMenu::Hidden)
+                    + usize::from(!recordings.is_empty())
                     + usize::from(web.is_some())
                     + if call_users.is_empty() { 0 } else { 2 };
                 let mut buttons = icons as f32 * 34.0 + 16.0;
@@ -186,6 +220,9 @@ pub(super) fn header(app: &mut App, ui: &mut egui::Ui, conversation: &Conversati
                     if menu != crate::ui::agents::ReadMenu::Hidden {
                         agents_menu(ui, &palette, conversation, menu, &mut app.actions);
                     }
+                    if !recordings.is_empty() {
+                        recordings_menu(ui, &palette, conversation, &recordings, &mut app.actions);
+                    }
                     if let Some(web) = web {
                         let open = widgets::icon_button(
                             ui,
@@ -233,6 +270,29 @@ pub(super) fn header(app: &mut App, ui: &mut egui::Ui, conversation: &Conversati
                 });
             });
         });
+}
+
+/// A meeting chat's recordings: one row each, opening it in the browser.
+fn recordings_menu(
+    ui: &mut egui::Ui,
+    palette: &theme::Palette,
+    conversation: &ConversationId,
+    recordings: &[(String, String)],
+    actions: &mut Vec<Action>,
+) {
+    let button = widgets::icon_button(ui, palette, Icon::Play, "Recordings");
+    let id = match conversation {
+        ConversationId::Chat(chat) => egui::Id::new(("recordings-menu", chat)),
+        ConversationId::Channel { .. } => egui::Id::new("recordings-menu"),
+    };
+    egui::Popup::menu(&button).id(id).show(|ui| {
+        ui.set_min_width(240.0);
+        for (line, url) in recordings {
+            if widgets::menu_item(ui, palette, Icon::Play, line) {
+                actions.push(Action::OpenUrl(url.clone()));
+            }
+        }
+    });
 }
 
 /// The header's More menu, shown while an agents plugin is on: let agents

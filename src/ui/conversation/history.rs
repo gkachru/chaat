@@ -511,6 +511,13 @@ pub(super) fn system_line(
         };
         return (Some(icon), job);
     }
+    if let Some(recording) = &message.recording {
+        job.append("Recording", 0.0, words);
+        if let Some(duration) = &recording.duration {
+            job.append(duration, 6.0, format(theme::semibold(13.0), palette.text));
+        }
+        return (Some(Icon::Play), job);
+    }
     job.append(&message.body.to_plain(), 0.0, words);
     (None, job)
 }

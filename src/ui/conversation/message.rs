@@ -28,10 +28,12 @@ pub(super) fn message_row(
         };
         // Leave room for Call back, so a long date (older than yesterday)
         // wraps instead of pushing the button out of the view.
-        let button_width = if call_back.is_empty() {
-            0.0
-        } else {
+        let button_width = if !call_back.is_empty() {
             CALL_BACK_GAP + widgets::pill_width(ui, "Call back")
+        } else if message.recording.is_some() {
+            CALL_BACK_GAP + widgets::pill_width(ui, "Open")
+        } else {
+            0.0
         };
         let text_width = (width - GUTTER - 8.0 - button_width).max(80.0);
         let (icon, job) = system_line(app, message, text_width, actions);
@@ -67,6 +69,12 @@ pub(super) fn message_row(
                             video: false,
                         },
                     );
+                }
+                if let Some(recording) = &message.recording {
+                    ui.add_space(CALL_BACK_GAP);
+                    let response = widgets::pill(ui, palette, Icon::Play, "Open", false)
+                        .on_hover_text("Open the recording in your browser");
+                    widgets::on_click(&response, actions, Action::OpenUrl(recording.url.clone()));
                 }
             });
             ui.add_space(6.0);

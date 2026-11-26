@@ -2869,6 +2869,126 @@ fn a_missed_call_offers_call_back_in_both_themes_and_widths() {
     }
 }
 
+// -- Meeting recordings -------------------------------------------------------
+
+const DESIGN_REVIEW: &str = "19:meeting_demo-design-review@thread.v2";
+const DESIGN_REVIEW_URL: &str =
+    "https://contoso-my.sharepoint.com/personal/demo/Recordings/design-review.mp4";
+
+/// One frame without applying actions (a click on a link would open the
+/// browser), returning what the views pushed.
+fn captured_frame(h: &mut Harness, events: Vec<egui::Event>) -> Vec<Action> {
+    h.time += 1.0 / 60.0;
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, h.size)),
+        time: Some(h.time),
+        events,
+        ..Default::default()
+    };
+    let app = &mut h.app;
+    let mut output = h.ctx.run_ui(input, |ui| {
+        let ctx = ui.ctx().clone();
+        app.observe_window(&ctx);
+        app.background(&ctx);
+        chaat::ui::show(app, ui);
+    });
+    output.textures_delta.clear();
+    h.shapes = output.shapes;
+    std::mem::take(&mut h.app.actions)
+}
+
+/// Clicks at `pos` and returns the actions the views pushed meanwhile.
+fn captured_click(h: &mut Harness, pos: egui::Pos2) -> Vec<Action> {
+    let button = |pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    let mut actions = captured_frame(h, vec![egui::Event::PointerMoved(pos)]);
+    actions.extend(captured_frame(h, vec![button(true)]));
+    actions.extend(captured_frame(h, vec![button(false)]));
+    actions.extend(captured_frame(h, vec![]));
+    actions
+}
+
+#[test]
+fn recording_line_opens_in_both_themes_and_widths() {
+    for width in [480.0, 720.0, 1280.0] {
+        for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+            let mut h = Harness::new();
+            h.size.x = width;
+            h.app.settings.theme = theme.clone();
+            h.frames(2);
+            h.act(Action::OpenConversation(ConversationId::Chat(
+                DESIGN_REVIEW.into(),
+            )));
+            h.frames(2);
+            let texts = painted_texts(&h);
+            assert!(
+                texts.iter().any(|t| t.starts_with("Recording")),
+                "the recording line is painted at {width} in {theme:?}"
+            );
+            let pos = ring_text_pos(&h, "Open").expect("Open is painted");
+            // At 480 the window is narrower than the sidebar and the chat
+            // together, so the pane runs past the edge (as its times do):
+            // only wider windows must fit the pill and take the click.
+            if width < 720.0 {
+                continue;
+            }
+            assert!(pos.x > 0.0 && pos.x < width, "Open fits at {width}");
+            let actions = captured_click(&mut h, pos);
+            assert!(
+                actions.contains(&Action::OpenUrl(DESIGN_REVIEW_URL.into())),
+                "Open pushes OpenUrl at {width} in {theme:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn meeting_header_lists_recordings() {
+    // The menu is open from the start, so its rows show only if the header
+    // drew the Recordings button.
+    let menu = |chat: &str| egui::Id::new(("recordings-menu", chat.to_owned()));
+    for width in [480.0, 1280.0] {
+        for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+            let mut h = Harness::new();
+            h.size.x = width;
+            h.app.settings.theme = theme.clone();
+            h.frames(2);
+            h.act(Action::OpenConversation(ConversationId::Chat(
+                DESIGN_REVIEW.into(),
+            )));
+            egui::Popup::open_id(&h.ctx, menu(DESIGN_REVIEW));
+            h.frames(3);
+            let row = painted_texts(&h)
+                .into_iter()
+                .find(|t| t.starts_with("Design review · ") && t.ends_with(" · 58m"))
+                .unwrap_or_else(|| panic!("the recordings row shows at {width} in {theme:?}"));
+            let pos = ring_text_pos(&h, &row).unwrap();
+            let actions = captured_click(&mut h, pos);
+            assert!(actions.contains(&Action::OpenUrl(DESIGN_REVIEW_URL.into())));
+
+            // A chat without a recording has no such button.
+            let grace = "19:demo-grace@unq.gbl.spaces";
+            let mut h = Harness::new();
+            h.size.x = width;
+            h.app.settings.theme = theme.clone();
+            h.frames(2);
+            h.act(Action::OpenConversation(ConversationId::Chat(grace.into())));
+            egui::Popup::open_id(&h.ctx, menu(grace));
+            h.frames(3);
+            assert!(
+                !painted_texts(&h)
+                    .iter()
+                    .any(|t| t.starts_with("Design review · ")),
+                "no recordings menu in a chat without one"
+            );
+        }
+    }
+}
+
 // -- People panel -------------------------------------------------------------
 
 const LAUNCH: &str = "19:demo-launch@thread.v2";
