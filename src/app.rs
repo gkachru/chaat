@@ -399,6 +399,8 @@ pub struct Account {
     pub unread_kept: Option<String>,
     pub drafts: HashMap<ConversationId, Draft>,
     pub push: crate::realtime::PushStatus,
+    /// Presence updates; shown while `push` is live.
+    pub push_presence: crate::realtime::PresenceFollow,
 
     /// The browser profile folder for this account's calls, when each
     /// account has its own (`settings.calls.profile_per_account`).
@@ -462,6 +464,7 @@ impl Account {
             unread_kept: None,
             drafts: HashMap::new(),
             push: crate::realtime::PushStatus::Off,
+            push_presence: crate::realtime::PresenceFollow::Connecting,
             browser_profile: format!("Chaat {}", crate::auth::random_token(4)),
             pending_sends: HashMap::new(),
             saved_drafts: HashMap::new(),
@@ -1409,7 +1412,13 @@ impl App {
             AccountEvent::Loading(resource, on) => self.handle_loading(resource, on),
             AccountEvent::Reachable(reachable) => self.unreachable = !reachable,
             AccountEvent::Error(text) => self.toast(ToastKind::Error, text),
-            AccountEvent::Push(status) => self.push = status,
+            AccountEvent::Push(status) => {
+                if status != crate::realtime::PushStatus::Live {
+                    self.push_presence = crate::realtime::PresenceFollow::Connecting;
+                }
+                self.push = status;
+            }
+            AccountEvent::PushPresence(follow) => self.push_presence = follow,
             AccountEvent::Restored { drafts, outbox } => self.on_restored(drafts, outbox),
             AccountEvent::ConversationHits {
                 conversation,

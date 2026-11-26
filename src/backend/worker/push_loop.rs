@@ -357,6 +357,13 @@ async fn search_presence(
 }
 
 /// The ids of the subscriptions a session holds.
+/// What following presence came to, for the person.
+fn presence_follow(presence: Option<&Followed>) -> PresenceFollow {
+    presence.map_or(PresenceFollow::NotFollowed, |p| {
+        PresenceFollow::Following(p.people.len())
+    })
+}
+
 fn held(chat: &str, presence: Option<&Followed>) -> Vec<String> {
     std::iter::once(chat.to_owned())
         .chain(presence.map(|p| p.id.clone()))
@@ -423,7 +430,13 @@ pub(super) async fn push_loop(
     };
     let mut pause = Duration::from_secs(5);
     while !*stop.borrow() {
-        out.send(AccountEvent::Push(PushStatus::Connecting));
+        out.send(AccountEvent::Push(PushStatus::Connecting(
+            if relay_key.is_some() {
+                PushStep::Relay
+            } else {
+                PushStep::Cleanup
+            },
+        )));
         let channel = fixed_channel
             .clone()
             .unwrap_or_else(|| auth::random_token(32));
@@ -460,7 +473,13 @@ pub(super) async fn push_loop(
                 sink = Some(write);
                 stream = Some(read);
             }
+            if relay_key.is_some() {
+                out.send(AccountEvent::Push(PushStatus::Connecting(
+                    PushStep::Cleanup,
+                )));
+            }
             delete_leftovers(&graph, &leftovers).await;
+            out.send(AccountEvent::Push(PushStatus::Connecting(PushStep::Chats)));
             let subscription = match graph
                 .subscribe_chat_messages(
                     &me,
@@ -476,6 +495,10 @@ pub(super) async fn push_loop(
                     break 'session format!("Microsoft Graph refused the subscription ({error})");
                 }
             };
+            // Chat updates arrive from here on; presence follows.
+            out.send(AccountEvent::Push(PushStatus::Live));
+            out.send(AccountEvent::PushPresence(PresenceFollow::Connecting));
+            live_at = Some(Instant::now());
             // Presence: the person's own, so the call bar follows calls, and
             // their one-on-one contacts', for the dots. Optional: chat updates
             // still work without it.
@@ -488,12 +511,13 @@ pub(super) async fn push_loop(
             let mut limits = PresenceLimits::new();
             limits.refused = load_refused(&refused).await;
             let mut presence = follow_presence(&graph, &wanted, &endpoints, &mut limits).await;
+            out.send(AccountEvent::PushPresence(presence_follow(
+                presence.as_ref(),
+            )));
             save_refused(&refused, &mut limits).await;
             let mut subscriptions = held(&subscription.id, presence.as_ref());
             record_subscriptions(&leftovers, &subscriptions).await;
             let mut contacts_open = true;
-            out.send(AccountEvent::Push(PushStatus::Live));
-            live_at = Some(Instant::now());
             let mut reauthorized: HashMap<String, Instant> = HashMap::new();
             // A change may have happened while connecting.
             let _ = internal.send(Internal::PushMissed);
@@ -524,6 +548,7 @@ pub(super) async fn push_loop(
                                 let _ = graph.delete_subscription(&old.id).await;
                             }
                             presence = follow_presence(&graph, &wanted, &endpoints, &mut limits).await;
+                            out.send(AccountEvent::PushPresence(presence_follow(presence.as_ref())));
                             save_refused(&refused, &mut limits).await;
                             subscriptions = held(&subscription.id, presence.as_ref());
                             record_subscriptions(&leftovers, &subscriptions).await;
@@ -547,6 +572,7 @@ pub(super) async fn push_loop(
                             limits.cap = realtime::PRESENCE_LIMIT;
                             let wanted = realtime::presence_watch(&me, &contacts.borrow());
                             presence = follow_presence(&graph, &wanted, &endpoints, &mut limits).await;
+                            out.send(AccountEvent::PushPresence(presence_follow(presence.as_ref())));
                             save_refused(&refused, &mut limits).await;
                             subscriptions = held(&subscription.id, presence.as_ref());
                             record_subscriptions(&leftovers, &subscriptions).await;

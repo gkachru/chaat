@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use chaat::auth::session::AccountRecord;
 use chaat::backend::{AccountCommand, AccountEvent, AuthStatus, Backend, BackendOptions, Waker};
 use chaat::paths::AppDirs;
-use chaat::realtime::PushStatus;
+use chaat::realtime::{PresenceFollow, PushStatus, PushStep};
 use chaat::secrets::{MemoryStore, SecretStore};
 use chaat::sync::{Resource, Trigger};
 use wiremock::matchers::{method, path};
@@ -465,7 +465,11 @@ async fn a_presence_conflict_is_tried_again_at_the_next_renewal() {
         AccountEvent::Push(PushStatus::Failed(reason)) => panic!("push failed: {reason}"),
         _ => None,
     });
-    // Refused twice (once, then after a pause): push is live without it.
+    // Chat updates are live before presence; refused twice (once, then
+    // after a pause), presence is not followed and push stays live.
+    wait_for(&backend, 15, |e| {
+        matches!(e, AccountEvent::PushPresence(PresenceFollow::NotFollowed)).then_some(())
+    });
     assert_eq!(presence_subscriptions(&server).await.len(), 2);
     // The renewal tries once more, and Graph now accepts.
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -573,4 +577,48 @@ async fn a_relay_that_never_answers_counts_as_unreachable() {
     wait_for(&backend, 5, |e| {
         matches!(e, AccountEvent::Push(PushStatus::Off)).then_some(())
     });
+}
+
+/// Chat updates are live as soon as Graph confirms the chat subscription;
+/// a slow presence subscription follows without holding them back. The
+/// status says each step on the way.
+#[tokio::test(flavor = "multi_thread")]
+async fn chat_updates_are_live_before_presence_and_say_each_step() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1.0/subscriptions"))
+        .and(wiremock::matchers::body_string_contains("presences"))
+        .respond_with(
+            ResponseTemplate::new(201)
+                .set_body_json(serde_json::json!({
+                    "id": "sub-p", "expirationDateTime": "2026-10-11T13:00:00Z"
+                }))
+                .set_delay(Duration::from_millis(1500)),
+        )
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    let (backend, relay_url, _dir) = start(&server).await;
+    backend.send(AccountCommand::Relay(Some(relay_url)));
+    let mut seen = Vec::new();
+    let live_at = wait_for(&backend, 10, |e| match e {
+        AccountEvent::Push(PushStatus::Connecting(step)) => {
+            seen.push(step);
+            None
+        }
+        AccountEvent::Push(PushStatus::Live) => Some(Instant::now()),
+        AccountEvent::Push(PushStatus::Failed(reason)) => panic!("push failed: {reason}"),
+        _ => None,
+    });
+    assert_eq!(seen, [PushStep::Relay, PushStep::Cleanup, PushStep::Chats]);
+    let followed = wait_for(&backend, 10, |e| match e {
+        AccountEvent::PushPresence(PresenceFollow::Following(people)) => Some(people),
+        _ => None,
+    });
+    // No chats loaded yet: only the person themselves.
+    assert_eq!(followed, 1);
+    assert!(
+        live_at.elapsed() >= Duration::from_millis(1000),
+        "live came before the presence answer"
+    );
 }

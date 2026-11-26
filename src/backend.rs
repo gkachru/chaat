@@ -499,6 +499,8 @@ pub enum AccountEvent {
     Loading(Resource, bool),
     /// The push relay's state.
     Push(crate::realtime::PushStatus),
+    /// Presence updates, once chat updates are live.
+    PushPresence(crate::realtime::PresenceFollow),
     /// Directory search results for `query`.
     People {
         query: String,

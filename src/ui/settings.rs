@@ -1060,6 +1060,13 @@ fn push(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
             actions.push(Action::RetryRelay);
         }
     });
+    if matches!(app.push, crate::realtime::PushStatus::Live) {
+        ui.label(
+            egui::RichText::new(app.push_presence.label())
+                .color(palette.secondary)
+                .size(12.0),
+        );
+    }
 }
 
 /// What the push plugin says about its tunnel. The plugin's name and reason

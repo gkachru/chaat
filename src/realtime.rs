@@ -29,7 +29,8 @@ pub const RENEW_EVERY: Duration = Duration::from_secs(40 * 60);
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PushStatus {
     Off,
-    Connecting,
+    /// Setting up, at this step.
+    Connecting(PushStep),
     /// Subscribed; changes arrive as they happen.
     Live,
     /// Not working; retrying. The reason is for the person.
@@ -40,9 +41,55 @@ impl PushStatus {
     pub fn label(&self) -> String {
         match self {
             Self::Off => "Off".into(),
-            Self::Connecting => "Connecting…".into(),
+            Self::Connecting(step) => step.label().into(),
             Self::Live => "Live".into(),
             Self::Failed(reason) => format!("Not connected: {reason}"),
+        }
+    }
+}
+
+/// Where connecting stands, for the person.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PushStep {
+    /// Opening the connection to the relay.
+    Relay,
+    /// Deleting subscriptions an earlier run left behind.
+    Cleanup,
+    /// Waiting for Graph to create the chat subscription; Graph first checks
+    /// the relay answers at the notification address.
+    Chats,
+}
+
+impl PushStep {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Relay => "Connecting to the relay…",
+            Self::Cleanup => "Removing the last session's subscriptions…",
+            Self::Chats => "Waiting for Microsoft Graph to confirm chat updates…",
+        }
+    }
+}
+
+/// Presence updates, which follow the chat subscription: chat updates are
+/// live without them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PresenceFollow {
+    /// Waiting for Graph to create the presence subscription.
+    #[default]
+    Connecting,
+    /// Following this many people.
+    Following(usize),
+    /// Nobody to follow, or Graph refused; retried at the next renewal.
+    NotFollowed,
+}
+
+impl PresenceFollow {
+    pub fn label(self) -> String {
+        match self {
+            Self::Connecting => "Presence: waiting for Microsoft Graph…".into(),
+            Self::Following(1) => "Presence: following 1 person".into(),
+            Self::Following(people) => format!("Presence: following {people} people"),
+            Self::NotFollowed => "Presence: not followed".into(),
         }
     }
 }

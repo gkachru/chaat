@@ -74,7 +74,13 @@ How it works:
    (`communications/presences?$filter=id in (…)`, up to 650 people, contacts
    first; only people in your own organisation, since people from other
    organisations get their dots when you look): your own lets the call bar follow calls, the others keep presence
-   dots current. Graph allows one presence subscription per person and app,
+   dots current. Push counts as live once Graph confirms the chat
+   subscription; the presence subscription follows, and Settings › Push
+   updates shows it on its own line (Graph can take tens of seconds to
+   confirm it, since it first checks the notification address answers).
+   While connecting, the status names the step: the relay connection,
+   removing the last session's subscriptions, or waiting for Graph to
+   confirm chat updates. Graph allows one presence subscription per person and app,
    so Chaat replaces it when someone new appears, and a second device on the
    same account goes without. Graph refuses (400) a list that contains users
    it cannot follow and names them ("Remove the failing users and retry");
