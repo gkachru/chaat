@@ -20,6 +20,9 @@ pub(super) fn message_row(
     actions: &mut Vec<Action>,
 ) -> (egui::Rect, egui::Rect) {
     let palette = &app.palette;
+    if let Some(recording) = &message.recording {
+        return super::recording::recording_row(ui, app, message, recording, width, actions);
+    }
     if message.system {
         let call_back = if message.missed_call {
             missed_call_back(app, conversation, me)
@@ -30,8 +33,6 @@ pub(super) fn message_row(
         // wraps instead of pushing the button out of the view.
         let button_width = if !call_back.is_empty() {
             CALL_BACK_GAP + widgets::pill_width(ui, "Call back")
-        } else if message.recording.is_some() {
-            CALL_BACK_GAP + widgets::pill_width(ui, "Open")
         } else {
             0.0
         };
@@ -79,12 +80,6 @@ pub(super) fn message_row(
                             video: false,
                         },
                     );
-                }
-                if let Some(recording) = &message.recording {
-                    ui.add_space(CALL_BACK_GAP);
-                    let response = widgets::pill(ui, palette, Icon::Play, "Open", false)
-                        .on_hover_text("Open the recording in your browser");
-                    widgets::on_click(&response, actions, Action::OpenUrl(recording.url.clone()));
                 }
             });
             ui.add_space(6.0);

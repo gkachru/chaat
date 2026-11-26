@@ -2914,32 +2914,60 @@ fn captured_click(h: &mut Harness, pos: egui::Pos2) -> Vec<Action> {
     actions
 }
 
+fn open_design_review(width: f32, theme: &ThemeChoice) -> Harness {
+    let mut h = Harness::new();
+    h.size.x = width;
+    h.app.settings.theme = theme.clone();
+    h.frames(2);
+    h.act(Action::OpenConversation(ConversationId::Chat(
+        DESIGN_REVIEW.into(),
+    )));
+    h.frames(2);
+    h
+}
+
+fn open_urls(actions: &[Action]) -> usize {
+    actions
+        .iter()
+        .filter(|a| matches!(a, Action::OpenUrl(_)))
+        .count()
+}
+
 #[test]
-fn recording_line_opens_in_both_themes_and_widths() {
+fn recording_card_draws_in_both_themes_and_widths() {
     for width in [480.0, 720.0, 1280.0] {
         for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
-            let mut h = Harness::new();
-            h.size.x = width;
-            h.app.settings.theme = theme.clone();
-            h.frames(2);
-            h.act(Action::OpenConversation(ConversationId::Chat(
-                DESIGN_REVIEW.into(),
-            )));
-            h.frames(2);
+            let mut h = open_design_review(width, &theme);
             let texts = painted_texts(&h);
             assert!(
-                texts.iter().any(|t| t.starts_with("Recording")),
-                "the recording line is painted at {width} in {theme:?}"
+                texts.iter().any(|t| t == "Design review"),
+                "the card's title is painted at {width} in {theme:?}"
             );
-            let pos = ring_text_pos(&h, "Open").expect("Open is painted");
+            assert!(
+                texts.iter().any(|t| t.ends_with(" · 58m")),
+                "the card's time and length are painted at {width} in {theme:?}"
+            );
+            let open = find_text(&h, "Open")
+                .first()
+                .map(|t| t.pos.x + t.galley.size().x)
+                .expect("Open is painted");
+            assert!(open <= width, "Open ends at {open}, inside {width}");
             // At 480 the window is narrower than the sidebar and the chat
-            // together, so the pane runs past the edge (as its times do):
-            // only wider windows must fit the pill and take the click.
+            // together, so the pane runs past the edge: only wider windows
+            // take the clicks.
             if width < 720.0 {
                 continue;
             }
-            assert!(pos.x > 0.0 && pos.x < width, "Open fits at {width}");
+            let title = ring_text_pos(&h, "Design review").unwrap();
+            let actions = captured_click(&mut h, title);
+            assert_eq!(open_urls(&actions), 1, "one action for the card body");
+            assert!(
+                actions.contains(&Action::OpenUrl(DESIGN_REVIEW_URL.into())),
+                "the card opens the recording at {width} in {theme:?}"
+            );
+            let pos = ring_text_pos(&h, "Open").unwrap();
             let actions = captured_click(&mut h, pos);
+            assert_eq!(open_urls(&actions), 1, "one action for Open");
             assert!(
                 actions.contains(&Action::OpenUrl(DESIGN_REVIEW_URL.into())),
                 "Open pushes OpenUrl at {width} in {theme:?}"
@@ -2949,33 +2977,38 @@ fn recording_line_opens_in_both_themes_and_widths() {
 }
 
 #[test]
-fn recording_line_text_is_centred_on_its_pill() {
-    for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
-        let mut h = Harness::new();
-        h.size.x = 1280.0;
-        h.app.settings.theme = theme.clone();
-        h.frames(2);
-        h.act(Action::OpenConversation(ConversationId::Chat(
-            DESIGN_REVIEW.into(),
-        )));
-        h.frames(2);
-        let line = painted_shapes(&h)
-            .into_iter()
-            .find_map(|shape| match shape {
-                egui::epaint::Shape::Text(text)
-                    if text.galley.job.text.starts_with("Recording") =>
-                {
-                    Some(text.pos.y + text.galley.rect.center().y)
-                }
-                _ => None,
-            })
-            .expect("the recording line is painted");
-        let pill = ring_text_pos(&h, "Open").expect("Open is painted").y;
-        assert!(
-            (line - pill).abs() <= 2.0,
-            "line centre {line} vs Open centre {pill} in {theme:?}"
-        );
+fn a_link_less_recording_event_is_hidden_when_a_link_follows() {
+    let count = |h: &Harness| {
+        painted_texts(h)
+            .iter()
+            .filter(|t| t.as_str() == "Call recorded")
+            .count()
+    };
+    let h = open_design_review(1280.0, &ThemeChoice::Dark);
+    let hidden = count(&h);
+    let view = &h.app.conversations[&ConversationId::Chat(DESIGN_REVIEW.into())];
+    assert!(
+        view.messages
+            .iter()
+            .any(|m| m.recording_event && m.recording.is_none()),
+        "the demo has a link-less event"
+    );
+
+    // Without the link, the same events show.
+    let mut h = Harness::new();
+    h.frames(2);
+    let id = ConversationId::Chat(DESIGN_REVIEW.into());
+    let view = h.app.conversations.get_mut(&id).unwrap();
+    for message in &mut view.messages {
+        message.recording = None;
     }
+    view.layout.invalidate();
+    h.act(Action::OpenConversation(id));
+    h.frames(2);
+    assert!(
+        count(&h) > hidden,
+        "a chat with only link-less events still shows Call recorded"
+    );
 }
 
 #[test]

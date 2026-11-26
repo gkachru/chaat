@@ -128,7 +128,7 @@ fn accounts(app: &mut App, ui: &mut egui::Ui) {
     let (rect, logo) = ui.allocate_exact_size(vec2(48.0, 44.0), Sense::click());
     if ui.is_rect_visible(rect) {
         if let Some(selected) = logo_tile(logo_active, single, logo.hovered()) {
-            glass_tile(ui.painter(), &palette, rect, selected);
+            widgets::glass_tile(ui.painter(), &palette, rect, selected);
         }
         egui::Image::new(APP_ICON)
             .fit_to_exact_size(egui::Vec2::splat(26.0))
@@ -252,9 +252,9 @@ fn item(ui: &mut egui::Ui, app: &App, section: Section, badge: usize) -> egui::R
     let active = app.section == section && app.settings_page.is_none();
     if ui.is_rect_visible(rect) {
         if active {
-            glass_tile(ui.painter(), palette, rect, true);
+            widgets::glass_tile(ui.painter(), palette, rect, true);
         } else if response.hovered() {
-            glass_tile(ui.painter(), palette, rect, false);
+            widgets::glass_tile(ui.painter(), palette, rect, false);
         }
         let tint = if active {
             palette.accent
@@ -293,9 +293,9 @@ fn settings_button(ui: &mut egui::Ui, palette: &theme::Palette, open: bool) -> e
     if ui.is_rect_visible(rect) {
         let hovered = response.hovered() || response.has_focus();
         if open {
-            glass_tile(ui.painter(), palette, rect, true);
+            widgets::glass_tile(ui.painter(), palette, rect, true);
         } else if hovered {
-            glass_tile(ui.painter(), palette, rect, false);
+            widgets::glass_tile(ui.painter(), palette, rect, false);
         }
         let tint = if open {
             palette.accent
@@ -316,69 +316,6 @@ fn settings_button(ui: &mut egui::Ui, palette: &theme::Palette, open: bool) -> e
             "Settings (⌘,)"
         })
         .on_hover_cursor(egui::CursorIcon::PointingHand)
-}
-
-/// A rail item's glassy tile: a fill that is lighter at the top, a thin
-/// light edge, and for the selected item a faint shadow. Colors derive from
-/// the palette, so shared palettes get the same look; hover is quieter.
-fn glass_tile(painter: &egui::Painter, palette: &theme::Palette, rect: egui::Rect, active: bool) {
-    const RADIUS: u8 = 12;
-    let base = if active {
-        palette.surface_active
-    } else {
-        palette.surface_hover
-    };
-    // Light toward the top: the text color on dark themes, white on light.
-    let (top, edge) = if palette.dark {
-        (
-            base.lerp_to_gamma(palette.text, if active { 0.10 } else { 0.06 }),
-            palette
-                .text
-                .gamma_multiply(if active { 0.16 } else { 0.09 }),
-        )
-    } else {
-        (
-            base.lerp_to_gamma(egui::Color32::WHITE, if active { 0.65 } else { 0.5 }),
-            egui::Color32::BLACK.gamma_multiply(if active { 0.10 } else { 0.06 }),
-        )
-    };
-    if active {
-        painter.add(
-            egui::epaint::Shadow {
-                offset: [0, 2],
-                blur: 8,
-                spread: 0,
-                color: palette.shadow.gamma_multiply(0.6),
-            }
-            .as_shape(rect, CornerRadius::same(RADIUS)),
-        );
-    }
-    // The gradient: a fan over the rounded outline, each point colored by
-    // its height. The edge stroke on top hides the unfeathered outline.
-    let mut outline = Vec::new();
-    egui::epaint::tessellator::path::rounded_rectangle(
-        &mut outline,
-        rect,
-        CornerRadius::same(RADIUS).into(),
-    );
-    let shade =
-        |y: f32| top.lerp_to_gamma(base, ((y - rect.top()) / rect.height()).clamp(0.0, 1.0));
-    let mut mesh = egui::epaint::Mesh::default();
-    mesh.colored_vertex(rect.center(), shade(rect.center().y));
-    for point in &outline {
-        mesh.colored_vertex(*point, shade(point.y));
-    }
-    let count = outline.len() as u32;
-    for i in 0..count {
-        mesh.add_triangle(0, 1 + i, 1 + (i + 1) % count);
-    }
-    painter.add(mesh);
-    painter.rect_stroke(
-        rect,
-        CornerRadius::same(RADIUS),
-        egui::Stroke::new(1.0, edge),
-        egui::StrokeKind::Inside,
-    );
 }
 
 #[cfg(test)]

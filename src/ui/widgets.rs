@@ -664,6 +664,74 @@ pub fn elided(
     super::chat_list::elided_styled(ui, text, font, color, width, false)
 }
 
+/// A rail item's glassy tile: a fill that is lighter at the top, a thin
+/// light edge, and for the selected item a faint shadow. Colors derive from
+/// the palette, so shared palettes get the same look; hover is quieter.
+pub fn glass_tile(
+    painter: &egui::Painter,
+    palette: &theme::Palette,
+    rect: egui::Rect,
+    active: bool,
+) {
+    const RADIUS: u8 = 12;
+    let base = if active {
+        palette.surface_active
+    } else {
+        palette.surface_hover
+    };
+    // Light toward the top: the text color on dark themes, white on light.
+    let (top, edge) = if palette.dark {
+        (
+            base.lerp_to_gamma(palette.text, if active { 0.10 } else { 0.06 }),
+            palette
+                .text
+                .gamma_multiply(if active { 0.16 } else { 0.09 }),
+        )
+    } else {
+        (
+            base.lerp_to_gamma(egui::Color32::WHITE, if active { 0.65 } else { 0.5 }),
+            egui::Color32::BLACK.gamma_multiply(if active { 0.10 } else { 0.06 }),
+        )
+    };
+    if active {
+        painter.add(
+            egui::epaint::Shadow {
+                offset: [0, 2],
+                blur: 8,
+                spread: 0,
+                color: palette.shadow.gamma_multiply(0.6),
+            }
+            .as_shape(rect, CornerRadius::same(RADIUS)),
+        );
+    }
+    // The gradient: a fan over the rounded outline, each point colored by
+    // its height. The edge stroke on top hides the unfeathered outline.
+    let mut outline = Vec::new();
+    egui::epaint::tessellator::path::rounded_rectangle(
+        &mut outline,
+        rect,
+        CornerRadius::same(RADIUS).into(),
+    );
+    let shade =
+        |y: f32| top.lerp_to_gamma(base, ((y - rect.top()) / rect.height()).clamp(0.0, 1.0));
+    let mut mesh = egui::epaint::Mesh::default();
+    mesh.colored_vertex(rect.center(), shade(rect.center().y));
+    for point in &outline {
+        mesh.colored_vertex(*point, shade(point.y));
+    }
+    let count = outline.len() as u32;
+    for i in 0..count {
+        mesh.add_triangle(0, 1 + i, 1 + (i + 1) % count);
+    }
+    painter.add(mesh);
+    painter.rect_stroke(
+        rect,
+        CornerRadius::same(RADIUS),
+        egui::Stroke::new(1.0, edge),
+        egui::StrokeKind::Inside,
+    );
+}
+
 /// A group's heading inside a page: a [`section_label`] with space above.
 pub fn group(ui: &mut egui::Ui, palette: &Palette, label: &str) {
     ui.add_space(14.0);

@@ -9,6 +9,7 @@ mod header;
 mod history;
 mod message;
 mod pins;
+mod recording;
 mod thread;
 
 use egui::{Align, CornerRadius, Frame, Key, Layout, Margin, Modifiers, Sense, Stroke, vec2};

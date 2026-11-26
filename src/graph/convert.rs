@@ -455,6 +455,7 @@ pub fn message(
         membership: system.then(|| membership(&event)).flatten(),
         call: system.then(|| call_event(&event)).flatten(),
         recording: system.then(|| recording(&event)).flatten(),
+        recording_event: system && matches!(event, g::EventDetail::CallRecorded { .. }),
         author_id: message
             .from
             .as_ref()
@@ -914,6 +915,19 @@ mod tests {
             "callRecordingStatus": "success"
         }));
         assert_eq!(m.recording.unwrap().name, "Meeting recording");
+    }
+
+    #[test]
+    fn recording_events_are_marked_with_or_without_a_link() {
+        let m = recorded(serde_json::json!({
+            "callRecordingUrl": "https://c-my.sharepoint.com/r.mp4",
+            "callRecordingStatus": "success"
+        }));
+        assert!(m.recording_event && m.recording.is_some());
+        let m = recorded(serde_json::json!({"callRecordingStatus": "initial"}));
+        assert!(m.recording_event && m.recording.is_none());
+        let m = call_ended(serde_json::json!({"callDuration": "PT8M"}));
+        assert!(!m.recording_event);
     }
 
     #[test]

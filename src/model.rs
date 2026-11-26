@@ -442,6 +442,10 @@ pub struct Message {
     /// A meeting recording's link (from the chat's recording event).
     #[serde(default)]
     pub recording: Option<Recording>,
+    /// Whether this is a recording event of a call, finished or not. Graph
+    /// posts one while the recording runs (no link) and one when it is done.
+    #[serde(default)]
+    pub recording_event: bool,
     /// Graph's `webUrl` (a link to the message in Teams), when it has one.
     #[serde(default)]
     pub web_url: Option<String>,
@@ -1383,6 +1387,14 @@ mod tests {
             display_name: name.into(),
             email: None,
         }
+    }
+
+    #[test]
+    fn old_message_json_without_recording_event_loads() {
+        let mut value = serde_json::to_value(Message::default()).unwrap();
+        value.as_object_mut().unwrap().remove("recording_event");
+        let message: Message = serde_json::from_value(value).unwrap();
+        assert!(!message.recording_event);
     }
 
     #[test]

@@ -133,6 +133,17 @@ pub fn day_label(millis: Millis, now: Millis) -> String {
     })
 }
 
+/// When something happened, for event lines and cards: the clock for today,
+/// else the day label and the clock (`Tuesday 24 November 00:43`).
+pub fn at_label(millis: Millis, now: Millis) -> String {
+    let clock = clock(millis);
+    if day_key(millis) == day_key(now) {
+        clock
+    } else {
+        format!("{} {clock}", day_label(millis, now))
+    }
+}
+
 /// A key that changes when the local day changes.
 pub fn day_key(millis: Millis) -> i64 {
     local(millis)

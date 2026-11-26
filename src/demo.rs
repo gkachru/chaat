@@ -419,8 +419,14 @@ pub fn populate(app: &mut App) {
             "It does: local full-text search over the cache, then Microsoft Search for the rest.",
         );
         b.system(now - 25 * HOUR, "Meeting ended after 58m");
+        // Graph posts an event while the recording runs (no link), then
+        // the one with the link; the view hides the first.
+        b.system(now - 25 * HOUR + MINUTE / 2, "Call recorded");
+        b.messages.last_mut().expect("just pushed").recording_event = true;
         b.system(now - 25 * HOUR + MINUTE, "Call recorded");
-        b.messages.last_mut().expect("just pushed").recording = Some(crate::model::Recording {
+        let recorded = b.messages.last_mut().expect("just pushed");
+        recorded.recording_event = true;
+        recorded.recording = Some(crate::model::Recording {
             url: "https://contoso-my.sharepoint.com/personal/demo/Recordings/design-review.mp4"
                 .into(),
             name: "Design review".into(),

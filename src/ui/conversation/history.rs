@@ -2,8 +2,10 @@
 
 use super::composer::channel_consent;
 use super::message::{Placement, hover_toolbar, message_row};
+use super::recording::hidden_recording_events;
 use super::thread::thread_card;
 use super::*;
+use std::collections::HashSet;
 
 /// A guess at a row's height before it is laid out.
 fn estimate(message: &Message, width: f32, grouped: bool) -> f32 {
@@ -161,13 +163,23 @@ pub(super) fn history(app: &mut App, ui: &mut egui::Ui, conversation: &Conversat
                             });
                             ui.add_space(12.0);
                         }
+                        let hidden: HashSet<&str> = hidden_recording_events(&messages)
+                            .into_iter()
+                            .map(|index| messages[index].id.as_str())
+                            .collect();
                         layout.prepare(
                             &messages,
                             width,
                             theme::font_revision(ui.ctx()),
                             channel,
                             &mut heights,
-                            |message, grouped| estimate(message, width, grouped),
+                            |message, grouped| {
+                                if hidden.contains(message.id.as_str()) {
+                                    0.0
+                                } else {
+                                    estimate(message, width, grouped)
+                                }
+                            },
                         );
                         let origin = ui.cursor().top();
                         let visible = layout.visible(
@@ -210,6 +222,12 @@ pub(super) fn history(app: &mut App, ui: &mut egui::Ui, conversation: &Conversat
                                 } else {
                                     grouped
                                 };
+                                if hidden.contains(message.id.as_str()) {
+                                    // Nothing to draw, nothing to measure.
+                                    heights.insert(message.id.clone(), 0.0);
+                                    layout.measure(index, 0.0);
+                                    continue;
+                                }
                                 let (rect, bubble) = if channel {
                                     let rect = thread_card(
                                         ui,
@@ -485,12 +503,7 @@ pub(super) fn system_line(
     }
     if let Some(call) = &message.call {
         let now = crate::time::now();
-        let clock = crate::time::clock(message.created);
-        let at = if crate::time::day_key(message.created) == crate::time::day_key(now) {
-            clock
-        } else {
-            format!("{} {clock}", crate::time::day_label(message.created, now))
-        };
+        let at = crate::time::at_label(message.created, now);
         job.append(&at, 0.0, format(theme::regular(12.0), palette.dim));
         let what = if call.meeting { "Meeting" } else { "Call" };
         let words_text = if message.missed_call {
@@ -510,13 +523,6 @@ pub(super) fn system_line(
             Icon::Phone
         };
         return (Some(icon), job);
-    }
-    if let Some(recording) = &message.recording {
-        job.append("Recording", 0.0, words);
-        if let Some(duration) = &recording.duration {
-            job.append(duration, 6.0, format(theme::semibold(13.0), palette.text));
-        }
-        return (Some(Icon::Play), job);
     }
     job.append(&message.body.to_plain(), 0.0, words);
     (None, job)
