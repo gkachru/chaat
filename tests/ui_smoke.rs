@@ -3054,16 +3054,21 @@ fn meeting_header_lists_recordings() {
     }
 }
 
+fn open_recordings(width: f32, theme: &ThemeChoice) -> Harness {
+    let mut h = Harness::new();
+    h.size.x = width;
+    h.app.settings.theme = theme.clone();
+    h.frames(2);
+    h.act(Action::Navigate(Section::Recordings));
+    h.frames(2);
+    h
+}
+
 #[test]
 fn recordings_section_draws_in_both_themes_and_widths() {
     for width in [480.0, 720.0, 1280.0] {
         for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
-            let mut h = Harness::new();
-            h.size.x = width;
-            h.app.settings.theme = theme.clone();
-            h.frames(2);
-            h.act(Action::Navigate(Section::Recordings));
-            h.frames(2);
+            let h = open_recordings(width, &theme);
             assert_eq!(h.app.recordings.len(), 1, "the demo fills the list");
             let texts = painted_texts(&h);
             assert!(
@@ -3071,8 +3076,35 @@ fn recordings_section_draws_in_both_themes_and_widths() {
                 "the recording row shows at {width} in {theme:?}"
             );
             assert!(
-                texts.iter().any(|t| t == "Chat"),
-                "the Chat pill shows at {width} in {theme:?}"
+                texts
+                    .iter()
+                    .any(|t| t.starts_with("Design review: Chaat 0.2 · ") && t.ends_with(" · 58m")),
+                "the row's chat, time and length show at {width} in {theme:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn recordings_section_selects_and_shows_the_card() {
+    let chat = ConversationId::Chat(DESIGN_REVIEW.into());
+    for width in [480.0, 720.0, 1280.0] {
+        for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+            let mut h = open_recordings(width, &theme);
+            assert_eq!(
+                h.app.selected_recording.as_deref(),
+                Some(DESIGN_REVIEW_URL),
+                "the newest recording is selected at {width} in {theme:?}"
+            );
+            let titles = find_text(&h, "Design review").len();
+            assert_eq!(titles, 2, "the row and the card paint the title");
+            assert!(
+                !find_text(&h, "Open recording").is_empty(),
+                "the card paints Open recording at {width} in {theme:?}"
+            );
+            assert!(
+                !find_text(&h, "in Design review: Chaat 0.2").is_empty(),
+                "the card names the meeting chat at {width} in {theme:?}"
             );
             // At 480 the window is narrower than the rail and sidebar
             // together, so the main pane overlaps the list: only wider
@@ -3080,22 +3112,43 @@ fn recordings_section_draws_in_both_themes_and_widths() {
             if width < 720.0 {
                 continue;
             }
+            // The demo's call-alerts sign-in card floats over the pane.
+            dismiss_sign_in_card(&mut h);
             let pos = ring_text_pos(&h, "Design review").unwrap();
             let actions = captured_click(&mut h, pos);
+            assert_eq!(open_urls(&actions), 0, "a row only selects");
+            assert_eq!(h.app.selected_recording.as_deref(), Some(DESIGN_REVIEW_URL));
+
+            let pos = ring_text_pos(&h, "Open recording").unwrap();
+            let actions = captured_click(&mut h, pos);
+            assert_eq!(open_urls(&actions), 1, "one action for Open recording");
             assert!(
                 actions.contains(&Action::OpenUrl(DESIGN_REVIEW_URL.into())),
-                "the row opens the recording at {width} in {theme:?}"
+                "Open recording pushes OpenUrl at {width} in {theme:?}"
             );
-            let pos = ring_text_pos(&h, "Chat").unwrap();
+            let pos = ring_text_pos(&h, "Copy link").unwrap();
             let actions = captured_click(&mut h, pos);
             assert!(
-                actions.contains(&Action::OpenConversation(ConversationId::Chat(
-                    DESIGN_REVIEW.into()
-                ))),
-                "the Chat pill opens the meeting chat at {width} in {theme:?}"
+                actions.contains(&Action::CopyText(DESIGN_REVIEW_URL.into())),
+                "Copy link pushes CopyText at {width} in {theme:?}"
+            );
+            let pos = ring_text_pos(&h, "Open meeting chat").unwrap();
+            let actions = captured_click(&mut h, pos);
+            assert!(
+                actions.contains(&Action::OpenConversation(chat.clone())),
+                "Open meeting chat pushes OpenConversation at {width} in {theme:?}"
             );
         }
     }
+}
+
+#[test]
+fn recording_rows_have_no_chat_button() {
+    let h = open_recordings(1280.0, &ThemeChoice::Dark);
+    assert!(
+        find_text(&h, "Chat").is_empty(),
+        "no Chat pill is painted in the list"
+    );
 }
 
 // -- People panel -------------------------------------------------------------

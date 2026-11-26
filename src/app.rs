@@ -365,6 +365,9 @@ pub struct Account {
     /// The cached meeting recordings for the Recordings section, newest
     /// first (a local query, see `AccountCommand::Recordings`).
     pub recordings: Vec<Message>,
+    /// The recording shown in the Recordings pane, by its link. A stale or
+    /// missing one falls back to the newest (`ui::recordings::selected`).
+    pub selected_recording: Option<String>,
     pub photos: HashMap<String, Image>,
     /// Display names Graph left out of system events, looked up by id.
     pub names: HashMap<String, String>,
@@ -447,6 +450,7 @@ impl Account {
             my_presence: None,
             meetings: Vec::new(),
             recordings: Vec::new(),
+            selected_recording: None,
             photos: HashMap::new(),
             names: HashMap::new(),
             names_asked: HashSet::new(),
