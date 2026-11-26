@@ -336,6 +336,16 @@ fn row(
     if !ui.is_rect_visible(response.rect) {
         return response;
     }
+    // Shared palettes pick their own selected fill, and some leave the grey
+    // text hard to read on it.
+    let (secondary, dim) = if selected {
+        (
+            palette.readable(palette.secondary, palette.surface_active, 4.5),
+            palette.readable(palette.dim, palette.surface_active, 3.0),
+        )
+    } else {
+        (palette.secondary, palette.dim)
+    };
     let title = chat.title(me);
     let avatar_rect =
         egui::Rect::from_min_size(inner.left_top() + vec2(8.0, 9.0), egui::Vec2::splat(38.0));
@@ -393,7 +403,7 @@ fn row(
             } else {
                 theme::regular(12.0)
             },
-            if unread { palette.accent } else { palette.dim },
+            if unread { palette.accent } else { dim },
         )
     });
     let time_pos = egui::pos2(
@@ -417,7 +427,7 @@ fn row(
         title_galley,
         palette.text,
     );
-    ui.painter().galley(time_pos, time_galley, palette.dim);
+    ui.painter().galley(time_pos, time_galley, dim);
 
     // A system event reads in italics, with names but no author.
     let system = chat.preview.as_ref().is_some_and(|p| p.system);
@@ -464,11 +474,7 @@ fn row(
             ui,
             preview.as_deref().unwrap_or(""),
             theme::regular(13.0),
-            if unread {
-                palette.text
-            } else {
-                palette.secondary
-            },
+            if unread { palette.text } else { secondary },
             preview_width,
             system,
         ),
@@ -476,7 +482,7 @@ fn row(
     ui.painter().galley(
         egui::pos2(text_left, inner.top() + 31.0),
         preview_galley,
-        palette.secondary,
+        secondary,
     );
     if unread {
         ui.painter().circle_filled(
@@ -485,7 +491,7 @@ fn row(
             palette.accent,
         );
     } else if muted {
-        Icon::BellOff.image(palette.dim, 14.0).paint_at(
+        Icon::BellOff.image(dim, 14.0).paint_at(
             ui,
             egui::Rect::from_center_size(
                 egui::pos2(inner.right() - 16.0, inner.top() + 39.0),

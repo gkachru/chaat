@@ -216,6 +216,15 @@ impl Palette {
             .lerp_to_gamma(self.accent, if self.dark { 0.16 } else { 0.12 })
     }
 
+    /// `color`, moved toward `text` just enough to reach `ratio` (WCAG
+    /// contrast) on `background`; `color` itself when it already does.
+    pub fn readable(&self, color: Color32, background: Color32, ratio: f32) -> Color32 {
+        (0..=20)
+            .map(|step| color.lerp_to_gamma(self.text, step as f32 / 20.0))
+            .find(|candidate| contrast(*candidate, background) >= ratio)
+            .unwrap_or(self.text)
+    }
+
     pub fn presence(&self, availability: crate::model::Availability) -> Color32 {
         use crate::model::Availability::*;
         match availability {
@@ -289,6 +298,23 @@ impl fastframe_theme::Palette for Palette {
 }
 
 /// The shared palettes, by file name.
+/// The WCAG contrast ratio of two opaque colours, from 1 to 21.
+pub fn contrast(a: Color32, b: Color32) -> f32 {
+    fn luminance(color: Color32) -> f32 {
+        let linear = |channel: u8| {
+            let c = f32::from(channel) / 255.0;
+            if c <= 0.039_28 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * linear(color.r()) + 0.7152 * linear(color.g()) + 0.0722 * linear(color.b())
+    }
+    let (a, b) = (luminance(a), luminance(b));
+    (a.max(b) + 0.05) / (a.min(b) + 0.05)
+}
+
 pub fn presets() -> Vec<fastframe_theme::CustomTheme<Palette>> {
     fastframe_theme::presets::themes::<Palette>().collect()
 }
@@ -515,6 +541,44 @@ pub fn avatar_color(seed: &str, dark: bool) -> Color32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn contrast_spans_one_to_twenty_one() {
+        assert!((contrast(Color32::BLACK, Color32::WHITE) - 21.0).abs() < 0.01);
+        assert!((contrast(Color32::GRAY, Color32::GRAY) - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn readable_keeps_a_colour_that_already_reads() {
+        let dark = Palette::dark();
+        assert_eq!(
+            dark.readable(dark.secondary, dark.surface_active, 4.5),
+            dark.secondary
+        );
+    }
+
+    /// Every shared palette's grey text reads on its selected row, or is as
+    /// dark as the palette's own text (Rose Pine Dawn's text itself stays
+    /// under 4.5 there).
+    #[test]
+    fn selected_rows_read_in_every_shared_palette() {
+        for theme in presets() {
+            let p = theme.palette;
+            let bg = p.surface_active;
+            let secondary = p.readable(p.secondary, bg, 4.5);
+            let dim = p.readable(p.dim, bg, 3.0);
+            assert!(
+                contrast(secondary, bg) >= 4.5 || secondary == p.text,
+                "{}",
+                theme.filename
+            );
+            assert!(
+                contrast(dim, bg) >= 3.0 || dim == p.text,
+                "{}",
+                theme.filename
+            );
+        }
+    }
 
     #[test]
     fn for_account_covers_every_icon_name() {
