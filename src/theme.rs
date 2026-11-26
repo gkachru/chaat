@@ -36,6 +36,7 @@ fastframe_icons::icons! {
         Flask => "flask-conical",
         GraduationCap => "graduation-cap",
         Video => "video",
+        Play => lucide "play",
         Settings => lucide "settings",
         Search => lucide "search",
         Send => "send",

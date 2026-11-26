@@ -403,6 +403,7 @@ pub fn message(
         missed_call,
         membership: system.then(|| membership(&event)).flatten(),
         call: system.then(|| call_event(&event)).flatten(),
+        recording: None,
         author_id: message
             .from
             .as_ref()

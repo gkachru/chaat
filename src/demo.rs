@@ -419,6 +419,13 @@ pub fn populate(app: &mut App) {
             "It does: local full-text search over the cache, then Microsoft Search for the rest.",
         );
         b.system(now - 25 * HOUR, "Meeting ended after 58m");
+        b.system(now - 25 * HOUR + MINUTE, "Call recorded");
+        b.messages.last_mut().expect("just pushed").recording = Some(crate::model::Recording {
+            url: "https://contoso-my.sharepoint.com/personal/demo/Recordings/design-review.mp4"
+                .into(),
+            name: "Design review".into(),
+            duration: Some("58m".into()),
+        });
         let mut c = chat(
             id,
             ChatKind::Meeting,
@@ -1313,6 +1320,26 @@ pub fn populate_agents(app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn demo_meeting_chat_has_a_recording() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::new(
+            crate::paths::AppDirs::under(dir.path()),
+            crate::settings::Settings::default(),
+            crate::backend::Waker::default(),
+            true,
+        );
+        let id = ConversationId::Chat("19:meeting_demo-design-review@thread.v2".into());
+        let recordings: Vec<_> = app.conversations[&id]
+            .messages
+            .iter()
+            .filter_map(|m| m.recording.as_ref())
+            .collect();
+        assert_eq!(recordings.len(), 1);
+        assert_eq!(recordings[0].name, "Design review");
+        assert_eq!(recordings[0].duration.as_deref(), Some("58m"));
+    }
 
     #[test]
     fn demo_data_is_consistent() {

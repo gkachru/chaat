@@ -147,6 +147,16 @@ pub struct CallEvent {
     pub duration: Option<String>,
 }
 
+/// A meeting recording's link, from the chat's recording event.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Recording {
+    pub url: String,
+    pub name: String,
+    /// How long it runs ("58m"), when Graph said.
+    #[serde(default)]
+    pub duration: Option<String>,
+}
+
 /// Someone named in a system event, with the name when Graph gave one.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventPerson {
@@ -429,6 +439,9 @@ pub struct Message {
     /// For a call or meeting starting or ending.
     #[serde(default)]
     pub call: Option<CallEvent>,
+    /// A meeting recording's link (from the chat's recording event).
+    #[serde(default)]
+    pub recording: Option<Recording>,
     /// Graph's `webUrl` (a link to the message in Teams), when it has one.
     #[serde(default)]
     pub web_url: Option<String>,
@@ -1362,6 +1375,14 @@ mod tests {
             display_name: name.into(),
             email: None,
         }
+    }
+
+    #[test]
+    fn old_message_json_without_recording_loads() {
+        let mut value = serde_json::to_value(Message::default()).unwrap();
+        value.as_object_mut().unwrap().remove("recording");
+        let message: Message = serde_json::from_value(value).unwrap();
+        assert_eq!(message.recording, None);
     }
 
     #[test]
