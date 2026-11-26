@@ -413,7 +413,14 @@ pub enum EventDetail {
         /// ISO 8601 `callDuration`, as sent.
         duration: Option<String>,
     },
-    CallRecorded,
+    CallRecorded {
+        url: Option<String>,
+        name: Option<String>,
+        /// ISO 8601 `callRecordingDuration`, as sent.
+        duration: Option<String>,
+        /// `callRecordingStatus` was `success`.
+        success: bool,
+    },
     TranscriptAvailable,
     MeetingPolicyUpdated,
     MessagePinned {
@@ -496,7 +503,16 @@ impl EventDetail {
                     .and_then(|d| d.as_str())
                     .map(str::to_owned),
             },
-            "callRecordingEventMessageDetail" => EventDetail::CallRecorded,
+            "callRecordingEventMessageDetail" => {
+                let text = |key: &str| value.get(key).and_then(|v| v.as_str()).map(str::to_owned);
+                EventDetail::CallRecorded {
+                    url: text("callRecordingUrl"),
+                    name: text("callRecordingDisplayName"),
+                    duration: text("callRecordingDuration"),
+                    success: value.get("callRecordingStatus").and_then(|s| s.as_str())
+                        == Some("success"),
+                }
+            }
             "callTranscriptEventMessageDetail" => EventDetail::TranscriptAvailable,
             "meetingPolicyUpdatedEventMessageDetail" => EventDetail::MeetingPolicyUpdated,
             "messagePinnedEventMessageDetail" => EventDetail::MessagePinned { who: who() },
@@ -553,6 +569,26 @@ mod tests {
         );
         assert_eq!(EventDetail::from_value(&json!("text")), EventDetail::Other);
         assert_eq!(EventDetail::from_value(&json!(null)), EventDetail::Other);
+    }
+
+    #[test]
+    fn recording_detail_keeps_its_fields() {
+        let value = json!({
+            "@odata.type": "#microsoft.graph.callRecordingEventMessageDetail",
+            "callRecordingUrl": "https://c-my.sharepoint.com/r.mp4",
+            "callRecordingDisplayName": "Sync",
+            "callRecordingDuration": "PT58M",
+            "callRecordingStatus": "success"
+        });
+        assert_eq!(
+            EventDetail::from_value(&value),
+            EventDetail::CallRecorded {
+                url: Some("https://c-my.sharepoint.com/r.mp4".into()),
+                name: Some("Sync".into()),
+                duration: Some("PT58M".into()),
+                success: true,
+            }
+        );
     }
 
     #[test]

@@ -169,7 +169,7 @@ fn system_summary(detail: &g::EventDetail, me: &str) -> String {
                 None => ended.into(),
             }
         }
-        D::CallRecorded => "Call recorded".into(),
+        D::CallRecorded { .. } => "Call recorded".into(),
         D::TranscriptAvailable => "Transcript available".into(),
         D::MeetingPolicyUpdated => "Meeting settings changed".into(),
         D::MessagePinned { who: by } => format!("{} pinned a message", who(by)),
@@ -221,6 +221,57 @@ fn call_event(detail: &g::EventDetail) -> Option<crate::model::CallEvent> {
         }),
         _ => None,
     }
+}
+
+/// Whether a recording link may be offered: https, no userinfo, and a
+/// SharePoint host (where Teams stores recordings). Anything else is dropped.
+pub fn recording_url_allowed(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("https://") else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    if authority.is_empty() || authority.contains('@') {
+        return false;
+    }
+    let (host, port) = authority.split_once(':').unwrap_or((authority, ""));
+    if !port.bytes().all(|b| b.is_ascii_digit()) {
+        return false;
+    }
+    let host = host.to_lowercase();
+    // Browsers read a backslash and other odd characters in ways a suffix
+    // check would not, so only plain host characters and no empty label pass.
+    let plain = host
+        .bytes()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'.' || b == b'-');
+    plain
+        && host.split('.').all(|label| !label.is_empty())
+        && (host == "sharepoint.com" || host.ends_with(".sharepoint.com"))
+}
+
+/// A finished meeting recording's link, when Graph gave an allowed one.
+fn recording(detail: &g::EventDetail) -> Option<crate::model::Recording> {
+    let g::EventDetail::CallRecorded {
+        url: Some(url),
+        name,
+        duration,
+        success: true,
+    } = detail
+    else {
+        return None;
+    };
+    if !recording_url_allowed(url) {
+        return None;
+    }
+    Some(crate::model::Recording {
+        url: url.clone(),
+        name: name
+            .as_deref()
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+            .unwrap_or("Meeting recording")
+            .to_owned(),
+        duration: duration.as_deref().and_then(call_duration),
+    })
 }
 
 /// Whether an ended call went unanswered by anyone: a call (not a meeting)
@@ -403,7 +454,7 @@ pub fn message(
         missed_call,
         membership: system.then(|| membership(&event)).flatten(),
         call: system.then(|| call_event(&event)).flatten(),
-        recording: None,
+        recording: system.then(|| recording(&event)).flatten(),
         author_id: message
             .from
             .as_ref()
@@ -819,6 +870,94 @@ mod tests {
         }))
         .unwrap();
         message(raw, None, "u-me", crate::graph::GRAPH_BASE)
+    }
+
+    fn recorded(detail: serde_json::Value) -> Message {
+        let mut detail = detail;
+        detail["@odata.type"] = "#microsoft.graph.callRecordingEventMessageDetail".into();
+        let raw: g::ChatMessage = serde_json::from_value(serde_json::json!({
+            "id": "1", "messageType": "systemEventMessage", "createdDateTime": "2026-10-10T10:00:00Z",
+            "body": {"contentType": "html", "content": "<systemEventMessage/>"},
+            "eventDetail": detail
+        }))
+        .unwrap();
+        message(raw, None, "u-me", crate::graph::GRAPH_BASE)
+    }
+
+    #[test]
+    fn recorded_event_becomes_a_recording() {
+        let m = recorded(serde_json::json!({
+            "callRecordingUrl": "https://c-my.sharepoint.com/r.mp4",
+            "callRecordingDisplayName": "Sync",
+            "callRecordingDuration": "PT58M",
+            "callRecordingStatus": "success"
+        }));
+        assert_eq!(m.body.to_plain(), "Call recorded");
+        assert_eq!(
+            m.recording,
+            Some(crate::model::Recording {
+                url: "https://c-my.sharepoint.com/r.mp4".into(),
+                name: "Sync".into(),
+                duration: Some("58m".into()),
+            })
+        );
+        for name in [serde_json::json!(""), serde_json::json!(null)] {
+            let m = recorded(serde_json::json!({
+                "callRecordingUrl": "https://c-my.sharepoint.com/r.mp4",
+                "callRecordingDisplayName": name,
+                "callRecordingStatus": "success"
+            }));
+            assert_eq!(m.recording.unwrap().name, "Meeting recording");
+        }
+        let m = recorded(serde_json::json!({
+            "callRecordingUrl": "https://c-my.sharepoint.com/r.mp4",
+            "callRecordingStatus": "success"
+        }));
+        assert_eq!(m.recording.unwrap().name, "Meeting recording");
+    }
+
+    #[test]
+    fn recording_needs_success_status() {
+        for status in ["initial", "chunkFinished", "failure"] {
+            let m = recorded(serde_json::json!({
+                "callRecordingUrl": "https://c-my.sharepoint.com/r.mp4",
+                "callRecordingStatus": status
+            }));
+            assert_eq!(m.recording, None, "{status}");
+            assert_eq!(m.body.to_plain(), "Call recorded");
+        }
+        let m = recorded(serde_json::json!({
+            "callRecordingUrl": "https://c-my.sharepoint.com/r.mp4"
+        }));
+        assert_eq!(m.recording, None);
+    }
+
+    #[test]
+    fn recording_url_rejects_lookalikes() {
+        for url in [
+            "https://sharepoint.com.evil.com/a",
+            "https://user@evil.com/.sharepoint.com",
+            "https://evil.com@contoso.sharepoint.com/a",
+            "https://evil.com/x?h=.sharepoint.com",
+            "https://evilsharepoint.com/a",
+            "https://evil.com\\.sharepoint.com/a",
+            "https://evil.com%2f.sharepoint.com/a",
+            "https://evil.com .sharepoint.com/a",
+            "https://a..sharepoint.com/x",
+            "https://a.sharepoint.com:44x/x",
+            "http://contoso.sharepoint.com/a",
+            "javascript:alert(1)",
+            "",
+        ] {
+            assert!(!recording_url_allowed(url), "{url}");
+        }
+        assert!(recording_url_allowed(
+            "https://CONTOSO.SharePoint.com:443/a"
+        ));
+        assert!(recording_url_allowed(
+            "https://contoso-my.sharepoint.com/personal/a/b.mp4"
+        ));
+        assert!(recording_url_allowed("https://sharepoint.com/a"));
     }
 
     #[test]

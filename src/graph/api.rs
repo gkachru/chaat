@@ -1333,6 +1333,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn chat_messages_carry_recordings() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/chats/chat/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"value": [{
+                "id": "1", "createdDateTime": "2026-10-10T09:00:00Z",
+                "messageType": "systemEventMessage",
+                "body": {"contentType": "html", "content": "<systemEventMessage/>"},
+                "eventDetail": {
+                    "@odata.type": "#microsoft.graph.callRecordingEventMessageDetail",
+                    "callRecordingUrl": "https://c-my.sharepoint.com/r.mp4",
+                    "callRecordingDisplayName": "Sync",
+                    "callRecordingDuration": "PT58M",
+                    "callRecordingStatus": "success"
+                }
+            }]})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let page = graph(&server)
+            .await
+            .chat_messages("chat", None)
+            .await
+            .unwrap();
+        assert!(page.messages[0].recording.is_some());
+    }
+
+    #[tokio::test]
     async fn quoting_uses_reply_with_quote() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
