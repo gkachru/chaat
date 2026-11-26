@@ -125,6 +125,11 @@ fn accounts(app: &mut App, ui: &mut egui::Ui) {
         .on_hover_text("All accounts")
         .on_hover_cursor(egui::CursorIcon::PointingHand);
     widgets::on_click(&logo, &mut app.actions, Action::ShowUnified);
+    let tiles = if single { 0 } else { app.accounts.len() };
+    // Nothing under the logo: skip the empty scroll area and its padding.
+    if tiles == 0 && app.settings.unified_only {
+        return;
+    }
     let mut actions = Vec::new();
     egui::ScrollArea::vertical()
         .id_salt("rail-accounts")
@@ -134,7 +139,6 @@ fn accounts(app: &mut App, ui: &mut egui::Ui) {
             ui.spacing_mut().item_spacing.y = 8.0;
             // The selection ring reaches 3 px outside a tile; keep it inside the clip.
             ui.add_space(4.0);
-            let tiles = if single { 0 } else { app.accounts.len() };
             for index in 0..tiles {
                 let look = app.account_look(index);
                 let account = &app.accounts[index];

@@ -7866,6 +7866,31 @@ fn unified_only_hides_tiles() {
 }
 
 #[test]
+fn unified_only_leaves_no_gap_under_the_logo() {
+    let mut h = Harness::new();
+    h.act(Action::SetUnifiedOnly(true));
+    h.frames(2);
+    let separator = painted_shapes(&h)
+        .into_iter()
+        .find_map(|shape| match shape {
+            egui::epaint::Shape::LineSegment { points, .. }
+                if points[0].y == points[1].y
+                    && points[1].x <= chaat::theme::RAIL_WIDTH
+                    && points[0].y > 0.0 =>
+            {
+                Some(points[0].y)
+            }
+            _ => None,
+        })
+        .expect("rail separator");
+    // Logo: 8 px top padding + 44 px tile, then one 12 px item gap.
+    assert!(
+        separator < 8.0 + 44.0 + 12.0 + 8.0,
+        "separator at {separator}"
+    );
+}
+
+#[test]
 fn unified_only_settings_still_add_account() {
     let mut h = Harness::new();
     h.app.demo = false;
