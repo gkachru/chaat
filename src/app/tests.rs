@@ -2125,3 +2125,33 @@ fn a_list_refresh_replaces_a_preview_without_its_message() {
     );
     assert_eq!(app.chats[0].preview.as_ref().unwrap().message_id, "graph");
 }
+
+#[test]
+fn recordings_section_loads_on_navigate() {
+    let (mut app, mut commands) = app();
+    let ctx = egui::Context::default();
+    let _ = sent(&mut commands);
+    for _ in 0..2 {
+        app.apply(Action::Navigate(Section::Recordings), &ctx);
+        app.apply(Action::Navigate(Section::Chats), &ctx);
+    }
+    let asked = sent(&mut commands)
+        .into_iter()
+        .filter(|c| matches!(c, Command::Account(AccountCommand::Recordings)))
+        .count();
+    assert_eq!(asked, 2, "once per navigate, none for other sections");
+}
+
+#[test]
+fn a_recordings_event_replaces_the_list() {
+    let (mut app, _commands) = app();
+    let ctx = egui::Context::default();
+    app.handle(
+        AccountEvent::Recordings(vec![message("a", 1), message("b", 2)]),
+        &ctx,
+    );
+    assert_eq!(app.recordings.len(), 2);
+    app.handle(AccountEvent::Recordings(vec![message("c", 3)]), &ctx);
+    assert_eq!(app.recordings.len(), 1);
+    assert_eq!(app.recordings[0].id, "c");
+}

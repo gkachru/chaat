@@ -840,10 +840,17 @@ pub enum Section {
     Teams,
     Calendar,
     Calls,
+    Recordings,
 }
 
 impl Section {
-    pub const ALL: [Self; 4] = [Self::Chats, Self::Teams, Self::Calendar, Self::Calls];
+    pub const ALL: [Self; 5] = [
+        Self::Chats,
+        Self::Teams,
+        Self::Calendar,
+        Self::Calls,
+        Self::Recordings,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -852,6 +859,7 @@ impl Section {
             Self::Teams => "Teams",
             Self::Calendar => "Calendar",
             Self::Calls => "Calls",
+            Self::Recordings => "Recordings",
         }
     }
 }

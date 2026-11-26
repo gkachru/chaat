@@ -14,6 +14,24 @@ impl App {
             };
         }
         self.fetch_view(Trigger::Opened);
+        // The demo has no backend: its list comes from the demo chats.
+        if self.demo && section == Section::Recordings {
+            let mut found: Vec<Message> = self
+                .conversations
+                .iter()
+                .flat_map(|(id, view)| {
+                    view.messages
+                        .iter()
+                        .filter(|m| m.recording.is_some() && !m.deleted)
+                        .map(|m| Message {
+                            conversation: Some(id.clone()),
+                            ..m.clone()
+                        })
+                })
+                .collect();
+            found.sort_by_key(|m| std::cmp::Reverse(m.created));
+            self.recordings = found;
+        }
     }
 
     pub(in crate::app) fn apply_open_message(

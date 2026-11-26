@@ -362,6 +362,9 @@ pub struct Account {
     /// The signed-in person's own presence.
     pub my_presence: Option<Presence>,
     pub meetings: Vec<Meeting>,
+    /// The cached meeting recordings for the Recordings section, newest
+    /// first (a local query, see `AccountCommand::Recordings`).
+    pub recordings: Vec<Message>,
     pub photos: HashMap<String, Image>,
     /// Display names Graph left out of system events, looked up by id.
     pub names: HashMap<String, String>,
@@ -443,6 +446,7 @@ impl Account {
             presence: HashMap::new(),
             my_presence: None,
             meetings: Vec::new(),
+            recordings: Vec::new(),
             photos: HashMap::new(),
             names: HashMap::new(),
             names_asked: HashSet::new(),
@@ -1139,6 +1143,7 @@ impl App {
             Section::Teams => self.fetch(Resource::Teams, trigger),
             Section::Calendar => self.fetch(Resource::Calendar, trigger),
             Section::Calls => {}
+            Section::Recordings => self.send_account(AccountCommand::Recordings),
         }
     }
 
@@ -1394,8 +1399,7 @@ impl App {
             AccountEvent::Photo { user, bytes } => self.handle_photo(user, bytes, ctx),
             AccountEvent::Media { url, bytes } => self.handle_media(url, bytes, ctx),
             AccountEvent::Meetings { meetings, .. } => self.meetings = meetings,
-            // handled in T3
-            AccountEvent::Recordings(_) => {}
+            AccountEvent::Recordings(list) => self.recordings = list,
             AccountEvent::SearchResults {
                 query,
                 hits,

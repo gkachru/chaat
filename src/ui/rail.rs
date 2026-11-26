@@ -266,7 +266,8 @@ fn item(ui: &mut egui::Ui, app: &App, section: Section, badge: usize) -> egui::R
             Section::Chats => Icon::Chat,
             Section::Teams => Icon::Teams,
             Section::Calendar => Icon::Calendar,
-            _ => Icon::Phone,
+            Section::Calls => Icon::Phone,
+            Section::Recordings => Icon::Play,
         };
         icon.image(tint, 21.0).paint_at(ui, icon_rect);
         if badge > 0 {
@@ -278,6 +279,7 @@ fn item(ui: &mut egui::Ui, app: &App, section: Section, badge: usize) -> egui::R
         Section::Teams => "⌘2",
         Section::Calendar => "⌘3",
         Section::Calls => "⌘4",
+        Section::Recordings => "⌘5",
     };
     response
         .on_hover_text(format!("{} ({shortcut})", section.label()))

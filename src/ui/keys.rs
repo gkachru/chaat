@@ -12,7 +12,7 @@ pub const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
         &[
             ("⌘K", "Search chats, channels and messages"),
             ("⌘F", "Find in the open conversation"),
-            ("⌘1 – ⌘4", "Chat, Teams, Calendar, Calls"),
+            ("⌘1 – ⌘5", "Chat, Teams, Calendar, Calls, Recordings"),
             ("Alt ↑ / Alt ↓", "Previous or next conversation"),
             ("⌘N", "New chat"),
             ("⌘⇧A", "Next account"),
@@ -122,6 +122,7 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             (Key::Num2, Section::Teams),
             (Key::Num3, Section::Calendar),
             (Key::Num4, Section::Calls),
+            (Key::Num5, Section::Recordings),
         ] {
             if input.consume_key(command, key) {
                 actions.push(Action::Navigate(section));

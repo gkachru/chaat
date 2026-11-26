@@ -17,6 +17,7 @@ pub mod onboarding;
 pub mod overlays;
 pub mod plugins;
 pub mod rail;
+pub mod recordings;
 pub mod rich;
 pub mod settings;
 pub mod setup_settings;
@@ -383,6 +384,7 @@ fn sidebar(app: &mut App, ui: &mut egui::Ui) {
                 Section::Teams => teams::show(app, ui),
                 Section::Calendar => calendar::list(app, ui),
                 Section::Calls => calls::list(app, ui),
+                Section::Recordings => recordings::list(app, ui),
             }
         });
     let width = response.response.rect.width();
@@ -426,6 +428,7 @@ fn main(app: &mut App, ui: &mut egui::Ui) {
             },
             Section::Calendar => calendar::detail(app, ui),
             Section::Calls => calls::show(app, ui),
+            Section::Recordings => recordings::show(app, ui),
         });
 }
 

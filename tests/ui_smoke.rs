@@ -1453,7 +1453,9 @@ fn the_rail_shows_icons_without_labels() {
                     }
                     _ => None,
                 })
-                .filter(|text| ["Chaat", "Teams", "Calendar", "Calls"].contains(&text.as_str()))
+                .filter(|text| {
+                    ["Chaat", "Teams", "Calendar", "Calls", "Recordings"].contains(&text.as_str())
+                })
                 .collect();
             assert!(rail_texts.is_empty(), "rail labels painted: {rail_texts:?}");
         }
@@ -2984,6 +2986,50 @@ fn meeting_header_lists_recordings() {
                     .iter()
                     .any(|t| t.starts_with("Design review · ")),
                 "no recordings menu in a chat without one"
+            );
+        }
+    }
+}
+
+#[test]
+fn recordings_section_draws_in_both_themes_and_widths() {
+    for width in [480.0, 720.0, 1280.0] {
+        for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+            let mut h = Harness::new();
+            h.size.x = width;
+            h.app.settings.theme = theme.clone();
+            h.frames(2);
+            h.act(Action::Navigate(Section::Recordings));
+            h.frames(2);
+            assert_eq!(h.app.recordings.len(), 1, "the demo fills the list");
+            let texts = painted_texts(&h);
+            assert!(
+                texts.iter().any(|t| t == "Design review"),
+                "the recording row shows at {width} in {theme:?}"
+            );
+            assert!(
+                texts.iter().any(|t| t == "Chat"),
+                "the Chat pill shows at {width} in {theme:?}"
+            );
+            // At 480 the window is narrower than the rail and sidebar
+            // together, so the main pane overlaps the list: only wider
+            // windows take clicks.
+            if width < 720.0 {
+                continue;
+            }
+            let pos = ring_text_pos(&h, "Design review").unwrap();
+            let actions = captured_click(&mut h, pos);
+            assert!(
+                actions.contains(&Action::OpenUrl(DESIGN_REVIEW_URL.into())),
+                "the row opens the recording at {width} in {theme:?}"
+            );
+            let pos = ring_text_pos(&h, "Chat").unwrap();
+            let actions = captured_click(&mut h, pos);
+            assert!(
+                actions.contains(&Action::OpenConversation(ConversationId::Chat(
+                    DESIGN_REVIEW.into()
+                ))),
+                "the Chat pill opens the meeting chat at {width} in {theme:?}"
             );
         }
     }
