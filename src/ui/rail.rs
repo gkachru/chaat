@@ -98,6 +98,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         });
 }
 
+/// Whether the logo tile is drawn selected. With no account tiles (one
+/// account, or Unified only) the Chats section below already shows where
+/// the person is; the logo is marked only to tell the Unified view from an
+/// account's tile.
+fn logo_marked(single: bool, unified: bool, settings_open: bool) -> bool {
+    !single && unified && !settings_open
+}
+
 /// The logo (all accounts), one tile per account and the add button. Tiles
 /// scroll when the window is too short; right-click opens the look editor.
 fn accounts(app: &mut App, ui: &mut egui::Ui) {
@@ -106,7 +114,7 @@ fn accounts(app: &mut App, ui: &mut egui::Ui) {
     let reserved = 140.0 + Section::ALL.len() as f32 * 56.0 + 56.0 + 24.0;
     let max_height = (ui.available_height() - reserved).max(48.0);
     let single = app.accounts.len() <= 1 || app.settings.unified_only;
-    let logo_active = (single || app.unified) && app.settings_page.is_none();
+    let logo_active = logo_marked(single, app.unified, app.settings_page.is_some());
     let (rect, logo) = ui.allocate_exact_size(vec2(48.0, 44.0), Sense::click());
     if ui.is_rect_visible(rect) {
         if logo_active {
@@ -356,4 +364,23 @@ fn glass_tile(painter: &egui::Painter, palette: &theme::Palette, rect: egui::Rec
         egui::Stroke::new(1.0, edge),
         egui::StrokeKind::Inside,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::logo_marked;
+
+    #[test]
+    fn the_logo_is_marked_only_beside_account_tiles() {
+        assert!(logo_marked(false, true, false), "Unified view among tiles");
+        assert!(
+            !logo_marked(false, false, false),
+            "an account's tile is selected"
+        );
+        assert!(
+            !logo_marked(true, true, false),
+            "no tiles: Chats shows the place"
+        );
+        assert!(!logo_marked(false, true, true), "settings open");
+    }
 }
