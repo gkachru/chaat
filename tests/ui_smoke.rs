@@ -2949,6 +2949,36 @@ fn recording_line_opens_in_both_themes_and_widths() {
 }
 
 #[test]
+fn recording_line_text_is_centred_on_its_pill() {
+    for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
+        let mut h = Harness::new();
+        h.size.x = 1280.0;
+        h.app.settings.theme = theme.clone();
+        h.frames(2);
+        h.act(Action::OpenConversation(ConversationId::Chat(
+            DESIGN_REVIEW.into(),
+        )));
+        h.frames(2);
+        let line = painted_shapes(&h)
+            .into_iter()
+            .find_map(|shape| match shape {
+                egui::epaint::Shape::Text(text)
+                    if text.galley.job.text.starts_with("Recording") =>
+                {
+                    Some(text.pos.y + text.galley.rect.center().y)
+                }
+                _ => None,
+            })
+            .expect("the recording line is painted");
+        let pill = ring_text_pos(&h, "Open").expect("Open is painted").y;
+        assert!(
+            (line - pill).abs() <= 2.0,
+            "line centre {line} vs Open centre {pill} in {theme:?}"
+        );
+    }
+}
+
+#[test]
 fn meeting_header_lists_recordings() {
     // The menu is open from the start, so its rows show only if the header
     // drew the Recordings button.

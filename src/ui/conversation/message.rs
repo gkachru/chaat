@@ -35,6 +35,13 @@ pub(super) fn message_row(
         } else {
             0.0
         };
+        // A pill is taller than the line, so lift the icon and words to its
+        // vertical centre.
+        let lift = if button_width > 0.0 {
+            (widgets::PILL_HEIGHT - 20.0) / 2.0
+        } else {
+            0.0
+        };
         let text_width = (width - GUTTER - 8.0 - button_width).max(80.0);
         let (icon, job) = system_line(app, message, text_width, actions);
         let response = ui.allocate_ui(vec2(width, 0.0), |ui| {
@@ -44,19 +51,22 @@ pub(super) fn message_row(
                 ui.spacing_mut().item_spacing.x = 0.0;
                 // The icon sits in the avatar column, the words where
                 // messages start.
-                let (gutter, _) = ui.allocate_exact_size(vec2(GUTTER, 20.0), Sense::hover());
+                let (gutter, _) = ui.allocate_exact_size(vec2(GUTTER, 20.0 + lift), Sense::hover());
                 if let Some(icon) = icon {
                     icon.image(palette.dim, 18.0).paint_at(
                         ui,
                         egui::Rect::from_min_size(
-                            gutter.min + vec2(7.0, 1.0),
+                            gutter.min + vec2(7.0, 1.0 + lift),
                             egui::Vec2::splat(18.0),
                         ),
                     );
                 }
                 let galley = ui.ctx().fonts_mut(|f| f.layout_job(job));
-                ui.add(egui::Label::new(galley))
-                    .on_hover_text(crate::time::day_label(message.created, crate::time::now()));
+                ui.vertical(|ui| {
+                    ui.add_space(lift);
+                    ui.add(egui::Label::new(galley))
+                        .on_hover_text(crate::time::day_label(message.created, crate::time::now()));
+                });
                 if !call_back.is_empty() {
                     ui.add_space(CALL_BACK_GAP);
                     let response = widgets::pill(ui, palette, Icon::Phone, "Call back", false)

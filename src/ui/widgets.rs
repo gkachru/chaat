@@ -374,6 +374,9 @@ pub fn icon_chip(ui: &mut Ui, palette: &Palette, icon: Icon, on: bool) -> Respon
 /// What a `pill` adds to its text's width: the icon and both insets.
 const PILL_PADDING: f32 = 16.0 + 22.0;
 
+/// The height of a `pill`.
+pub const PILL_HEIGHT: f32 = 28.0;
+
 /// The width a `pill` showing `text` takes, so a row can leave room for it.
 pub fn pill_width(ui: &Ui, text: &str) -> f32 {
     let galley = ui.ctx().fonts_mut(|f| {
@@ -392,7 +395,7 @@ pub fn pill(ui: &mut Ui, palette: &Palette, icon: Icon, text: &str, accent: bool
     let galley = ui
         .ctx()
         .fonts_mut(|f| f.layout_no_wrap(text.to_owned(), theme::semibold(13.0), fg));
-    let size = vec2(galley.size().x + PILL_PADDING, 28.0);
+    let size = vec2(galley.size().x + PILL_PADDING, PILL_HEIGHT);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     if ui.is_rect_visible(rect) {
         let fill = if response.hovered() {
