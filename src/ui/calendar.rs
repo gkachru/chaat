@@ -187,6 +187,7 @@ fn row(
     let palette = &app.palette;
     let (response, inner) = widgets::list_row(ui, palette, 54.0, selected, Sense::click());
     if ui.is_rect_visible(response.rect) {
+        let (secondary, _) = palette.row_text(selected);
         let live = meeting.start <= now && meeting.end > now;
         let bar = egui::Rect::from_min_size(inner.left_top() + vec2(8.0, 9.0), vec2(3.0, 34.0));
         ui.painter().rect_filled(
@@ -239,14 +240,11 @@ fn row(
             ui,
             &detail,
             theme::regular(12.0),
-            palette.secondary,
+            secondary,
             inner.right() - left - 10.0,
         );
-        ui.painter().galley(
-            egui::pos2(left, inner.top() + 28.0),
-            detail,
-            palette.secondary,
-        );
+        ui.painter()
+            .galley(egui::pos2(left, inner.top() + 28.0), detail, secondary);
     }
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }

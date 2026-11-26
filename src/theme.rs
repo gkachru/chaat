@@ -225,6 +225,20 @@ impl Palette {
             .unwrap_or(self.text)
     }
 
+    /// The secondary and dim text colours for a list row. Shared palettes
+    /// pick their own selected fill, and some leave the grey text hard to
+    /// read on it: on a selected row they reach 4.5:1 and 3:1.
+    pub fn row_text(&self, selected: bool) -> (Color32, Color32) {
+        if selected {
+            (
+                self.readable(self.secondary, self.surface_active, 4.5),
+                self.readable(self.dim, self.surface_active, 3.0),
+            )
+        } else {
+            (self.secondary, self.dim)
+        }
+    }
+
     pub fn presence(&self, availability: crate::model::Availability) -> Color32 {
         use crate::model::Availability::*;
         match availability {
@@ -555,6 +569,7 @@ mod tests {
             dark.readable(dark.secondary, dark.surface_active, 4.5),
             dark.secondary
         );
+        assert_eq!(dark.row_text(false), (dark.secondary, dark.dim));
     }
 
     /// Every shared palette's grey text reads on its selected row, or is as
@@ -565,8 +580,7 @@ mod tests {
         for theme in presets() {
             let p = theme.palette;
             let bg = p.surface_active;
-            let secondary = p.readable(p.secondary, bg, 4.5);
-            let dim = p.readable(p.dim, bg, 3.0);
+            let (secondary, dim) = p.row_text(true);
             assert!(
                 contrast(secondary, bg) >= 4.5 || secondary == p.text,
                 "{}",

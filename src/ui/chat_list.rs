@@ -336,16 +336,7 @@ fn row(
     if !ui.is_rect_visible(response.rect) {
         return response;
     }
-    // Shared palettes pick their own selected fill, and some leave the grey
-    // text hard to read on it.
-    let (secondary, dim) = if selected {
-        (
-            palette.readable(palette.secondary, palette.surface_active, 4.5),
-            palette.readable(palette.dim, palette.surface_active, 3.0),
-        )
-    } else {
-        (palette.secondary, palette.dim)
-    };
+    let (secondary, dim) = palette.row_text(selected);
     let title = chat.title(me);
     let avatar_rect =
         egui::Rect::from_min_size(inner.left_top() + vec2(8.0, 9.0), egui::Vec2::splat(38.0));
