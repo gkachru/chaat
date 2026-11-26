@@ -393,6 +393,32 @@ impl Store {
             .collect())
     }
 
+    /// The newest cached messages that carry a meeting recording's link,
+    /// newest first, without deleted ones. Reads the cache only.
+    pub fn recordings(&self, limit: usize) -> rusqlite::Result<Vec<Message>> {
+        let mut query = self.db.prepare(
+            "SELECT conversation, json FROM messages
+             WHERE json_extract(json, '$.recording') IS NOT NULL
+             ORDER BY created DESC LIMIT ?1",
+        )?;
+        let rows = query.query_map(params![limit as i64], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        Ok(rows
+            .filter_map(|row| {
+                let (key, json) = row.ok()?;
+                let mut message: Message = from_json(&json)?;
+                if message.deleted || message.recording.is_none() {
+                    return None;
+                }
+                if message.conversation.is_none() {
+                    message.conversation = ConversationId::from_key(&key);
+                }
+                Some(message)
+            })
+            .collect())
+    }
+
     /// Cached history immediately before the oldest visible message.
     pub fn messages_before(
         &self,
@@ -669,6 +695,55 @@ mod tests {
             body: RichText::plain(text),
             ..Default::default()
         }
+    }
+
+    fn recorded(id: &str, created: i64) -> Message {
+        Message {
+            system: true,
+            recording: Some(crate::model::Recording {
+                url: format!("https://c-my.sharepoint.com/{id}.mp4"),
+                name: id.into(),
+                duration: None,
+            }),
+            ..message(id, created, "Call recorded")
+        }
+    }
+
+    #[test]
+    fn recordings_come_newest_first_with_their_chat() {
+        let mut store = Store::in_memory().unwrap();
+        let chat = ConversationId::Chat("19:m@thread.v2".into());
+        store
+            .save_messages(
+                &chat,
+                &[
+                    recorded("old", 10),
+                    message("plain", 15, "hi"),
+                    recorded("new", 20),
+                ],
+            )
+            .unwrap();
+        let found = store.recordings(50).unwrap();
+        let ids: Vec<_> = found.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["new", "old"]);
+        assert!(found.iter().all(|m| m.conversation.as_ref() == Some(&chat)));
+        assert_eq!(store.recordings(1).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn recordings_skip_deleted_and_plain() {
+        let mut store = Store::in_memory().unwrap();
+        let chat = ConversationId::Chat("19:m@thread.v2".into());
+        let mut gone = recorded("gone", 30);
+        gone.deleted = true;
+        let mut system = message("sys", 40, "Meeting ended");
+        system.system = true;
+        store
+            .save_messages(&chat, &[gone, system, recorded("kept", 5)])
+            .unwrap();
+        let found = store.recordings(50).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].id, "kept");
     }
 
     /// A meeting chat's "Meeting ended" is newer than Graph's preview: the

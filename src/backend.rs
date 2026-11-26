@@ -315,6 +315,9 @@ pub enum AccountCommand {
     UserName(String),
     Media(String),
     Search(String),
+    /// The cached messages that carry a meeting recording's link, newest
+    /// first (local cache only).
+    Recordings,
     /// Find in one open conversation. Without `remote`, local hits only.
     /// With it (the query has paused), the local hits merged with Microsoft
     /// Search hits for the same conversation, in one event.
@@ -483,6 +486,8 @@ pub enum AccountEvent {
         meetings: Vec<Meeting>,
         cached: bool,
     },
+    /// The cached recordings (`AccountCommand::Recordings`), newest first.
+    Recordings(Vec<Message>),
     SearchResults {
         query: String,
         hits: Vec<SearchHit>,

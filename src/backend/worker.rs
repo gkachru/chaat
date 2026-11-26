@@ -14,6 +14,7 @@ mod plugins;
 mod presence;
 mod push;
 mod push_loop;
+mod recordings;
 mod search;
 mod session;
 mod updates;
@@ -615,6 +616,7 @@ impl Worker {
             AccountCommand::UserName(user) => self.user_name(user),
             AccountCommand::Media(url) => self.media(url),
             AccountCommand::Search(query) => self.search(query),
+            AccountCommand::Recordings => self.recordings(),
         }
     }
 

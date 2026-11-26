@@ -1394,6 +1394,8 @@ impl App {
             AccountEvent::Photo { user, bytes } => self.handle_photo(user, bytes, ctx),
             AccountEvent::Media { url, bytes } => self.handle_media(url, bytes, ctx),
             AccountEvent::Meetings { meetings, .. } => self.meetings = meetings,
+            // handled in T3
+            AccountEvent::Recordings(_) => {}
             AccountEvent::SearchResults {
                 query,
                 hits,
