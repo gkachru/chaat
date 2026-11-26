@@ -212,10 +212,41 @@ impl App {
                 chat.last_read = known.last_read;
             }
         }
+        self.keep_newer_previews(&mut chats);
         self.chats = chats;
         // One toast per chat; the kind and title come from the new list.
         for (chat, item) in notices {
             self.notify_batch(&ConversationId::Chat(chat), vec![item]);
+        }
+    }
+
+    /// A preview newer than the list's, taken from a message the chat has
+    /// loaded, stays: Graph's `lastMessagePreview` can lag behind the
+    /// messages (a meeting chat's "Meeting ended" is missing from it), and
+    /// the chat would jump down the list and back each time it is opened.
+    fn keep_newer_previews(&self, chats: &mut [Chat]) {
+        let mut moved = false;
+        for chat in chats.iter_mut() {
+            let Some(local) = self
+                .chats
+                .iter()
+                .find(|c| c.id == chat.id)
+                .and_then(|c| c.preview.as_ref())
+            else {
+                continue;
+            };
+            let newer = chat.preview.as_ref().is_none_or(|p| local.at > p.at);
+            let loaded = self
+                .conversations
+                .get(&ConversationId::Chat(chat.id.clone()))
+                .is_some_and(|c| c.messages.iter().any(|m| m.id == local.message_id));
+            if newer && loaded {
+                chat.preview = Some(local.clone());
+                moved = true;
+            }
+        }
+        if moved {
+            chats.sort_by_key(Chat::list_order);
         }
     }
 

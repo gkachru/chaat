@@ -217,22 +217,9 @@ impl App {
                 .and_then(|c| c.messages.iter().rev().find(|m| m.membership.is_none()))
                 .cloned()
             && let Some(chat) = self.chats.iter_mut().find(|c| &c.id == chat_id)
-            && chat
-                .preview
-                .as_ref()
-                .is_none_or(|p| p.at < last.created || p.membership.is_some())
-            && last.delivery == Delivery::Sent
+            && crate::model::Preview::superseded_by(chat.preview.as_ref(), &last)
         {
-            chat.preview = Some(crate::model::Preview {
-                message_id: last.id.clone(),
-                author_id: last.author_id.clone(),
-                author: Some(last.author.clone()),
-                text: preview_text(&last),
-                at: last.created,
-                deleted: last.deleted,
-                system: last.system,
-                membership: last.membership.clone(),
-            });
+            chat.preview = Some(crate::model::Preview::of(&last));
             self.chats.sort_by_key(Chat::list_order);
         }
         self.trim_conversations();

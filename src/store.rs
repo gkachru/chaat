@@ -14,7 +14,7 @@ use std::path::Path;
 
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::model::{Channel, Chat, ConversationId, Meeting, Message, SearchHit, Team};
+use crate::model::{Channel, Chat, ConversationId, Meeting, Message, Preview, SearchHit, Team};
 use crate::outbox::{OutboxEntry, StoredDraft};
 
 const SCHEMA_VERSION: i32 = 1;
@@ -232,6 +232,24 @@ impl Store {
             }
         }
         tx.commit()
+    }
+
+    /// Gives each chat the preview of its newest cached message when that is
+    /// newer than the one it has. Graph's `lastMessagePreview` can lag
+    /// behind the messages (a meeting chat's "Meeting ended" is missing from
+    /// it), and the chat would otherwise jump up the list only once opened.
+    pub fn freshen_previews(&self, chats: &mut [Chat]) {
+        for chat in chats.iter_mut() {
+            let conversation = ConversationId::Chat(chat.id.clone());
+            let Ok(recent) = self.messages(&conversation, 8) else {
+                continue;
+            };
+            if let Some(last) = recent.iter().rev().find(|m| m.membership.is_none())
+                && Preview::superseded_by(chat.preview.as_ref(), last)
+            {
+                chat.preview = Some(Preview::of(last));
+            }
+        }
     }
 
     pub fn upsert_chat(&self, chat: &Chat) -> rusqlite::Result<()> {
@@ -651,6 +669,49 @@ mod tests {
             body: RichText::plain(text),
             ..Default::default()
         }
+    }
+
+    /// A meeting chat's "Meeting ended" is newer than Graph's preview: the
+    /// cached message wins, at startup as after a refresh.
+    #[test]
+    fn previews_follow_newer_cached_messages() {
+        let mut store = Store::in_memory().unwrap();
+        let chat = |id: &str, preview: &str, at: i64| Chat {
+            id: id.into(),
+            preview: Some(Preview {
+                message_id: preview.into(),
+                at,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let meeting = ConversationId::Chat("19:meeting".into());
+        let ended = Message {
+            system: true,
+            ..message("ended", 300, "")
+        };
+        let added = Message {
+            membership: Some(crate::model::Membership {
+                change: crate::model::MemberChange::Added,
+                by: None,
+                members: Vec::new(),
+            }),
+            ..message("added", 400, "")
+        };
+        store
+            .save_messages(&meeting, &[message("m1", 100, "hi"), ended, added])
+            .unwrap();
+        let mut chats = vec![chat("19:meeting", "m1", 100), chat("19:other", "o9", 900)];
+        store.freshen_previews(&mut chats);
+        let preview = chats[0].preview.as_ref().unwrap();
+        assert_eq!((preview.message_id.as_str(), preview.at), ("ended", 300));
+        assert!(preview.system);
+        assert_eq!(chats[1].preview.as_ref().unwrap().message_id, "o9");
+
+        // A newer preview from Graph stays.
+        let mut chats = vec![chat("19:meeting", "m5", 500)];
+        store.freshen_previews(&mut chats);
+        assert_eq!(chats[0].preview.as_ref().unwrap().message_id, "m5");
     }
 
     #[test]

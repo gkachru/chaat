@@ -111,6 +111,32 @@ pub struct Preview {
     pub membership: Option<Membership>,
 }
 
+impl Preview {
+    /// The chat list's line for `message`.
+    pub fn of(message: &Message) -> Self {
+        Self {
+            message_id: message.id.clone(),
+            author_id: message.author_id.clone(),
+            author: Some(message.author.clone()),
+            text: message.preview_text(),
+            at: message.created,
+            deleted: message.deleted,
+            system: message.system,
+            membership: message.membership.clone(),
+        }
+    }
+
+    /// Whether `message` should stand in the chat list for this preview:
+    /// it is newer, sent, and not people being added or removed (as in
+    /// Teams, those don't move a chat up the list). A preview that is itself
+    /// a membership change gives way to any newer message.
+    pub fn superseded_by(this: Option<&Self>, message: &Message) -> bool {
+        message.membership.is_none()
+            && message.delivery == Delivery::Sent
+            && this.is_none_or(|p| p.at < message.created || p.membership.is_some())
+    }
+}
+
 /// A call or meeting starting or ending in a chat.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CallEvent {

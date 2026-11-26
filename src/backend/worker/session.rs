@@ -287,8 +287,10 @@ async fn emit_cache(store: &Arc<Mutex<Store>>, out: &Outbox) {
     let store = Arc::clone(store);
     let cached = tokio::task::spawn_blocking(move || {
         let store = store.lock().unwrap_or_else(|p| p.into_inner());
+        let mut chats = store.chats().unwrap_or_default();
+        store.freshen_previews(&mut chats);
         (
-            store.chats().unwrap_or_default(),
+            chats,
             store.teams().unwrap_or_default(),
             store.channels().unwrap_or_default(),
             store.meetings().unwrap_or_default(),

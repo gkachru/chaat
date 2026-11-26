@@ -2044,3 +2044,84 @@ fn unified_starts_from_settings() {
     let app = App::new(AppDirs::under(dir.path()), settings, Waker::default(), true);
     assert!(!app.unified);
 }
+
+/// Graph's `lastMessagePreview` of a meeting chat lags behind its messages
+/// (the "Meeting ended" event): opening the chat moved it up the list, and
+/// the next list refresh moved it back down.
+#[test]
+fn a_list_refresh_keeps_a_newer_preview_from_loaded_messages() {
+    let (mut app, _commands) = app();
+    let ctx = egui::Context::default();
+    let chat = |id: &str, preview_id: &str, at| Chat {
+        id: id.into(),
+        preview: Some(crate::model::Preview {
+            message_id: preview_id.into(),
+            at,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let graph_list = || vec![chat("19:other", "o1", 200), chat("19:meeting", "m1", 100)];
+    app.chats = graph_list();
+    app.handle(
+        AccountEvent::Messages {
+            conversation: ConversationId::Chat("19:meeting".into()),
+            messages: vec![message("m1", 100), message("m2", 300)],
+            merge: Merge::Latest,
+            more: None,
+            cached: false,
+        },
+        &ctx,
+    );
+    assert_eq!(app.chats[0].id, "19:meeting", "opening moved it up");
+
+    for cached in [false, true] {
+        app.handle(
+            AccountEvent::Chats {
+                chats: graph_list(),
+                cached,
+            },
+            &ctx,
+        );
+        assert_eq!(app.chats[0].id, "19:meeting");
+        let preview = app.chats[0].preview.as_ref().unwrap();
+        assert_eq!((preview.message_id.as_str(), preview.at), ("m2", 300));
+    }
+
+    // A newer preview from Graph still wins.
+    let mut newer = graph_list();
+    newer[1] = chat("19:meeting", "m3", 400);
+    app.handle(
+        AccountEvent::Chats {
+            chats: newer,
+            cached: false,
+        },
+        &ctx,
+    );
+    assert_eq!(app.chats[0].preview.as_ref().unwrap().message_id, "m3");
+}
+
+/// A preview the chat has no loaded message for is Graph's to set.
+#[test]
+fn a_list_refresh_replaces_a_preview_without_its_message() {
+    let (mut app, _commands) = app();
+    let ctx = egui::Context::default();
+    let chat = |preview_id: &str, at| Chat {
+        id: "19:a".into(),
+        preview: Some(crate::model::Preview {
+            message_id: preview_id.into(),
+            at,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    app.chats = vec![chat("local", 300)];
+    app.handle(
+        AccountEvent::Chats {
+            chats: vec![chat("graph", 100)],
+            cached: false,
+        },
+        &ctx,
+    );
+    assert_eq!(app.chats[0].preview.as_ref().unwrap().message_id, "graph");
+}

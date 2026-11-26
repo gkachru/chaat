@@ -194,6 +194,7 @@ pub(super) async fn fetch_resource(
             }
             {
                 let mut store = store.lock().unwrap_or_else(|p| p.into_inner());
+                store.freshen_previews(&mut chats);
                 if let Err(error) = store.save_chats(&chats) {
                     log::warn!("could not cache chats: {error}");
                 }
