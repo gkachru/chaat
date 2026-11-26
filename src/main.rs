@@ -152,6 +152,8 @@ fn main() -> eframe::Result<()> {
                         recovery_checked: false,
                         paste_input: chaat::clipboard::PasteInput::default(),
                         scrolling: fastframe_scroll::Scrolling::default(),
+                        #[cfg(target_os = "windows")]
+                        touchpad: chaat::touchpad::Touchpad::default(),
                         measure,
                     }))
                 }),
@@ -169,12 +171,24 @@ struct Window {
     recovery_checked: bool,
     paste_input: chaat::clipboard::PasteInput,
     scrolling: fastframe_scroll::Scrolling,
+    #[cfg(target_os = "windows")]
+    touchpad: chaat::touchpad::Touchpad,
     measure: bool,
 }
 
 impl eframe::App for Window {
-    fn raw_input_hook(&mut self, _ctx: &egui::Context, input: &mut egui::RawInput) {
+    fn raw_input_hook(&mut self, ctx: &egui::Context, input: &mut egui::RawInput) {
         self.paste_input.prepare(input);
+        // Before egui and the shared scrolling read the wheel.
+        #[cfg(target_os = "windows")]
+        if self
+            .touchpad
+            .process(&mut input.events, input.time.unwrap_or_default())
+        {
+            ctx.request_repaint();
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = ctx;
     }
     fn persist_egui_memory(&self) -> bool {
         false
@@ -206,6 +220,13 @@ impl eframe::App for Window {
         self.scrolling.apply(&ctx);
         let app = &mut *self.app;
         chaat::ui::show(app, ui);
+        #[cfg(target_os = "windows")]
+        if self
+            .touchpad
+            .after_frame(ctx.input(|i| i.smooth_scroll_delta))
+        {
+            ctx.request_repaint();
+        }
         app.apply_actions(&ctx);
         if app.perf.first_frame.is_none()
             && let Some(started) = app.perf.started

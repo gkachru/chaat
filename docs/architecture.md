@@ -80,6 +80,7 @@ account already open is retired.
 | `app/unified.rs` | The Unified view: merges each account's cached chats, channels and calendar entries, and routes actions to the right account |
 | `theme.rs` | Palettes (fastframe-theme compatible), visuals, type scale, Lucide icon table |
 | `platform.rs` | App icon rasterization, tray item, single-instance slot |
+| `touchpad.rs` | Windows precision touchpads: turns their fractional wheel lines into touch scrolling, glides on after the fingers lift, and uses the late momentum message Windows sends ~350 ms later (it made the view stop, then jump) to end the glide where the system would and to calibrate later glides, and holds pointer movement back from egui until the glide ends so it stays on the list it started on |
 | `notify.rs` | Desktop notifications |
 | `demo.rs` | Offline sample data for the interface tests (not reachable from the app) |
 
