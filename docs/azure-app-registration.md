@@ -70,6 +70,9 @@ permissions**, add:
 | `ChatMember.ReadWrite` *(optional)* | Leaving group chats | **Yes** |
 | `ChannelMessage.Read.All` *(optional)* | Reading channel posts | **Yes** |
 
+Meeting recordings add no permission: the link comes from the chat's
+messages (`Chat.ReadWrite`).
+
 `openid`, `profile` and `offline_access` are added automatically during
 sign-in. Chaat requests the optional permissions only when someone first uses
 the feature. Add them here anyway: a tenant that blocks user consent can then

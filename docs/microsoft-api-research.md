@@ -107,6 +107,36 @@ Teams clients from billable ACS usage. Chaat opens documented
 [Teams deep links][deep-links] and keeps media and call controls in Teams.
 See [calling.md](calling.md) for current behavior and remaining live checks.
 
+## Recordings
+
+Chaat reads the link to a meeting recording from the chat message Teams
+posts for a recording, the [`callRecordingEventMessageDetail`][rec-event]
+system event (`callRecordingUrl`, `callRecordingDisplayName`,
+`callRecordingDuration`, `callRecordingStatus`). It keeps the link only when
+the status is `success` and the address is an https SharePoint link, and
+opens it in the browser. This adds no scope: the event comes with the chat's
+messages (`Chat.ReadWrite`). Learn describes the event both as generated
+"when a call recording starts" and, in the [event list][event-list], as "Call
+recording is available", so Chaat relies on the status. The link's exact host
+has not yet been checked against a live payload.
+
+Recordings live in the organizer's OneDrive (the recorder's for 1:1 and group
+calls, the channel's SharePoint site for channel meetings), and invitees in
+the organization get read access ([recording storage][rec-change]).
+
+Chaat does not use the recording APIs:
+
+- [`GET /me/onlineMeetings/{id}/recordings`][rec-list] needs
+  `OnlineMeetingRecording.Read.All`, which needs admin consent.
+- [Getting the recording content][rec-get] is limited to the organizer by
+  default.
+- They work only while the meeting has not expired: an online meeting
+  expires 60 days after its start or end, extended when it is used again
+  ([onlineMeeting][online-meeting]).
+- [`getAllRecordings`][rec-all] works with application permissions only.
+
+Scopes are listed in the [permissions reference][perm-ref].
+
 ## Terms and branding
 
 Keep the [Microsoft APIs Terms of Use][api-terms] and
@@ -142,6 +172,14 @@ and works with Microsoft Teams; names and artwork must not imply endorsement.
 [calls]: https://learn.microsoft.com/en-us/graph/api/application-post-calls?view=graph-rest-1.0
 [pricing]: https://learn.microsoft.com/en-us/azure/communication-services/concepts/pricing/teams-interop-pricing
 [deep-links]: https://learn.microsoft.com/en-us/microsoftteams/platform/concepts/build-and-test/deep-link-workflow
+[rec-event]: https://learn.microsoft.com/en-us/graph/api/resources/callrecordingeventmessagedetail?view=graph-rest-1.0
+[rec-list]: https://learn.microsoft.com/en-us/graph/api/onlinemeeting-list-recordings?view=graph-rest-1.0
+[rec-get]: https://learn.microsoft.com/en-us/graph/api/callrecording-get?view=graph-rest-1.0
+[rec-all]: https://learn.microsoft.com/en-us/graph/api/onlinemeeting-getallrecordings?view=graph-rest-1.0
+[perm-ref]: https://learn.microsoft.com/en-us/graph/permissions-reference
+[rec-change]: https://learn.microsoft.com/en-us/microsoftteams/tmr-meeting-recording-change
+[online-meeting]: https://learn.microsoft.com/en-us/graph/api/resources/onlinemeeting?view=graph-rest-1.0
+[event-list]: https://learn.microsoft.com/en-us/graph/api/resources/eventmessagedetail?view=graph-rest-1.0
 [api-terms]: https://learn.microsoft.com/en-us/legal/microsoft-apis/terms-of-use
 [identity-terms]: https://learn.microsoft.com/en-us/legal/microsoft-identity-platform/terms-of-use
 [trademarks]: https://www.microsoft.com/en-us/legal/intellectualproperty/trademarks

@@ -47,6 +47,10 @@ which needs `ChannelMessage.Read.All`.
 | `ChatMember.ReadWrite` | First group chat left | `DELETE /chats/{id}/members/{membership-id}`. No other delegated permission allows it | **Yes** |
 | `ChannelMessage.Read.All` | First channel opened | `GET /teams/{id}/channels/{id}/messages`, `…/replies` | **Yes** |
 
+Meeting recordings need no scope of their own: Chaat reads the link from the
+recording event in a meeting chat's messages (`Chat.ReadWrite`), and opens it
+in the browser.
+
 ## Not requested
 
 | Permission | Would enable | Why not yet |

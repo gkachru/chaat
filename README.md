@@ -128,7 +128,7 @@ development and can ask for approval again after each replacement. See
 
 ## Keyboard
 
-`⌘K` jump anywhere or search messages · `⌘N` new chat · `⌘1–4` sections ·
+`⌘K` jump anywhere or search messages · `⌘N` new chat · `⌘1–5` sections ·
 `Alt ↑/↓` previous or next conversation · `⌘⇧A` cycle Unified and accounts · `Enter` send ·
 `Shift Enter` new line · `@` mention · `↑` edit last message · `⌘R` refresh ·
 `⌘,` settings · `⌘/` all shortcuts. (`⌘` is Ctrl on
