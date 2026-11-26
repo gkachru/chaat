@@ -106,6 +106,16 @@ fn logo_marked(single: bool, unified: bool, settings_open: bool) -> bool {
     !single && unified && !settings_open
 }
 
+/// The tile behind the logo, if any, and whether it is drawn selected. With
+/// no account tiles the logo is just the app's mark: no tile on hover either.
+fn logo_tile(marked: bool, single: bool, hovered: bool) -> Option<bool> {
+    if marked {
+        Some(true)
+    } else {
+        (hovered && !single).then_some(false)
+    }
+}
+
 /// The logo (all accounts), one tile per account and the add button. Tiles
 /// scroll when the window is too short; right-click opens the look editor.
 fn accounts(app: &mut App, ui: &mut egui::Ui) {
@@ -117,10 +127,8 @@ fn accounts(app: &mut App, ui: &mut egui::Ui) {
     let logo_active = logo_marked(single, app.unified, app.settings_page.is_some());
     let (rect, logo) = ui.allocate_exact_size(vec2(48.0, 44.0), Sense::click());
     if ui.is_rect_visible(rect) {
-        if logo_active {
-            glass_tile(ui.painter(), &palette, rect, true);
-        } else if logo.hovered() {
-            glass_tile(ui.painter(), &palette, rect, false);
+        if let Some(selected) = logo_tile(logo_active, single, logo.hovered()) {
+            glass_tile(ui.painter(), &palette, rect, selected);
         }
         egui::Image::new(APP_ICON)
             .fit_to_exact_size(egui::Vec2::splat(26.0))
@@ -129,9 +137,14 @@ fn accounts(app: &mut App, ui: &mut egui::Ui) {
                 egui::Rect::from_center_size(rect.center(), egui::Vec2::splat(26.0)),
             );
     }
-    let logo = logo
-        .on_hover_text("All accounts")
-        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    // With no account tiles the logo is just the app's mark: no pointer
+    // hand and no tooltip.
+    let logo = if single {
+        logo
+    } else {
+        logo.on_hover_text("All accounts")
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+    };
     widgets::on_click(&logo, &mut app.actions, Action::ShowUnified);
     let tiles = if single { 0 } else { app.accounts.len() };
     // Nothing under the logo: skip the empty scroll area and its padding.
@@ -368,7 +381,7 @@ fn glass_tile(painter: &egui::Painter, palette: &theme::Palette, rect: egui::Rec
 
 #[cfg(test)]
 mod tests {
-    use super::logo_marked;
+    use super::{logo_marked, logo_tile};
 
     #[test]
     fn the_logo_is_marked_only_beside_account_tiles() {
@@ -382,5 +395,21 @@ mod tests {
             "no tiles: Chats shows the place"
         );
         assert!(!logo_marked(false, true, true), "settings open");
+    }
+
+    #[test]
+    fn the_logo_lights_up_on_hover_only_beside_account_tiles() {
+        assert_eq!(
+            logo_tile(false, false, true),
+            Some(false),
+            "hover among tiles"
+        );
+        assert_eq!(
+            logo_tile(false, true, true),
+            None,
+            "no tiles: no hover tile"
+        );
+        assert_eq!(logo_tile(false, false, false), None);
+        assert_eq!(logo_tile(true, false, false), Some(true));
     }
 }
