@@ -20,6 +20,54 @@ native messaging client in the spirit of
 draws only when something changes, bounded image caches, and every view served
 from a local cache first.
 
+## Every account in one window
+
+Sign in with as many work or school accounts as you use, across different
+organizations. Each account is a tile in the rail on the left, named from its
+sign-in domain, with an icon and color you can change. The Chaat logo opens
+the **Unified** view: chats, teams, calendar and calls from every account in
+one list, each row marked with its account.
+
+- A group chat that two of your accounts share shows once. **Sending as**
+  picks the account you reply from.
+- The same meeting on two calendars shows once.
+- Search (`⌘K`) covers every account.
+- Availability set in Unified applies to every account that allows status
+  changes. Status messages and Out of office stay per account.
+- **Unified only** (Settings › Appearance) hides the tiles, and `⌘⇧A` cycles
+  through Unified and each account.
+
+Each account keeps its own sign-in, cache and push connection. Unified reads
+what Chaat already has cached, so it needs no extra permissions and makes no
+extra requests to Microsoft.
+
+## Plugins
+
+Chaat can run external programs that you install yourself and turn on in
+Settings › Plugins. A plugin talks to Chaat over a small, versioned protocol
+of JSON lines on standard input and output, so it can be written in any
+language ([protocol](docs/plugins.md)).
+
+| Capability | What a plugin can do |
+|---|---|
+| Push updates | Receive Graph's change notifications through a `cloudflared` tunnel, for real-time updates without hosting a relay ([how](docs/realtime.md#through-a-push-plugin)) |
+| AI agents | Let an AI agent read the chats and channels you allow and propose replies and reactions. Nothing is sent until you click ([how](docs/plugins.md#agent-plugins)) |
+| Presence display | Show your availability on a status light or another device |
+| Call alerts | Tell Chaat that a call is ringing, which Graph cannot do. Chaat shows who is calling, with **Place call** and **Open chat** ([how](docs/calling.md#call-alerts-plugin)) |
+
+Chaat stays in control of what a plugin gets:
+
+- A plugin receives nothing until it asks for a specific kind of data and you
+  approve it. It never receives sign-in tokens.
+- Message text goes only to an agent plugin you approved, and only for the
+  chats and channels on that account's allow list, which is empty by default.
+- Chaat records the SHA-256 hash of each plugin file and won't run a changed
+  file until you approve it again.
+- Everything a plugin sends is treated as untrusted. Nothing happens until
+  you click.
+- Chaat never ships, downloads or updates a plugin. Plugins are published
+  separately, and none is public yet.
+
 ## Features
 
 | | Status |
@@ -38,17 +86,23 @@ from a local cache first.
 | Notifications: mentions-only, Do not disturb, pause, mute, urgent repeats, reminders with Join and Snooze | ✅ Implemented; verified on Windows ([rules](docs/notifications.md)) |
 | App updates | ✅ Daily checks and verified downloads from GitHub releases; restart when ready ([details](docs/updates.md)) |
 | Real-time updates | ✅ On open, focus and refresh. ✅ Push through a self-hostable `chaat-relay`, or through a push relay plugin with a `cloudflared` tunnel instead of a hosted relay, since Microsoft forbids polling ([why](docs/realtime.md)) |
-| Multiple accounts, setting your availability and status message | ✅ Implemented |
+| Multiple accounts with a Unified view, setting your availability and status message | ✅ Implemented ([above](#every-account-in-one-window)) |
 | Out of office (automatic replies) | ✅ In Settings and an account's menu, for accounts with an Exchange Online mailbox |
-| Incoming-call alerts | ⚠️ Only with an optional, separately installed call-alerts plugin; Chaat shows who is calling with **Place call** and **Open chat** ([how](docs/calling.md#call-alerts-plugin)) |
-| Plugins | ⚠️ Optional external programs you add in Settings › Plugins, for incoming-call alerts and a presence display such as a status light. Chaat never ships one ([protocol](docs/plugins.md)) |
-| Agents | ⚠️ Optional plugin: an AI agent reads the cached chats you allow and proposes replies and reactions that are sent only when you click ([how](docs/plugins.md#agent-plugins)) |
+| Plugins: push, AI agents, presence display, call alerts | ✅ Plugin host and protocol implemented. ⚠️ Each capability needs a separately installed plugin, and none is public yet ([above](#plugins)) |
 | Audio and video inside Chaat's own window, answering calls | ❌ No free official way: Microsoft's licence covers call media only in its own clients ([why](docs/calling.md)) |
 
 The full matrix, including what was verified and how, is in
 [docs/features.md](docs/features.md). API constraints and official references
 are in
 [docs/microsoft-api-research.md](docs/microsoft-api-research.md).
+
+## Platforms
+
+| Platform | Status |
+|---|---|
+| Windows (x86_64) | Main development platform, run with real accounts |
+| Linux (x86_64) | Builds and passes the test suite (checked in WSL). A `.deb` for Ubuntu 22.04+ and Debian 12+. Not yet tried on a Linux desktop |
+| macOS (Apple Silicon) | Checked on macOS 27 before Chaat started from Wren. Recent changes have not been built or run on a Mac |
 
 ## Getting started
 
@@ -121,15 +175,6 @@ development and can ask for approval again after each replacement. See
 `⌘,` settings · `⌘/` all shortcuts. (`⌘` is Ctrl on
 Windows and Linux.)
 
-`Tab` or `Enter` picks a mention suggestion and keeps focus in the composer.
-Space after completing a mention adds a space so you can keep typing.
-
-Long drafts grow to a limited height, then scroll inside the composer. The
-conversation and the Send and Attach buttons stay visible when pasting large text.
-
-Search fields keep their height when typing or clearing. Settings and sign-in
-fields use the same padded input style.
-
 ## Architecture
 
 The views read state and emit actions, a single reducer applies them, and a
@@ -181,8 +226,8 @@ and `chaat-relay --licenses` print the complete notices embedded in the binary.
 The passphrase wordlist is the EFF large wordlist, copyright the Electronic
 Frontier Foundation, under
 [CC BY 3.0 US](https://creativecommons.org/licenses/by/3.0/us/).
-Chaat is based on Wren (MIT); the upstream copyright is kept in
-[LICENSE](LICENSE).
+Chaat is based on [Wren](https://github.com/MaxTheTurtle0/wren) by Andrei
+Antonescu (MIT); the upstream copyright is kept in [LICENSE](LICENSE).
 Chaat is an independent project, not affiliated with or endorsed by Microsoft.
 Microsoft Teams is a trademark of the Microsoft group of companies.
 
