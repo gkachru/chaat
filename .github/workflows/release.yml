@@ -36,8 +36,8 @@ jobs:
           # 22.04 keeps the binary on glibc 2.35, the baseline of the .deb.
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-          - os: macos-latest
-            target: aarch64-apple-darwin
+          # macOS is left out until a Developer ID signing identity is set
+          # up (MACOS_SIGNING_CERTIFICATE); see docs/macos-keychain.md.
           - os: windows-latest
             target: x86_64-pc-windows-msvc
     runs-on: ${{ matrix.os }}
@@ -55,14 +55,8 @@ jobs:
         run: |
           cargo install --locked cargo-deb
           cargo deb --no-build --locked --target ${{ matrix.target }} --output dist/
-      - name: Import persistent macOS signing identity
-        if: runner.os == 'macOS'
-        env:
-          MACOS_SIGNING_CERTIFICATE: ${{ secrets.MACOS_SIGNING_CERTIFICATE }}
-          MACOS_SIGNING_PASSWORD: ${{ secrets.MACOS_SIGNING_PASSWORD }}
-        run: packaging/macos/import-signing-identity.sh
-      - name: Package Linux or macOS
-        if: runner.os != 'Windows'
+      - name: Package Linux
+        if: runner.os == 'Linux'
         shell: bash
         env:
           RELEASE_TAG: ${{ github.ref_name }}
@@ -85,16 +79,12 @@ jobs:
           $name = "chaat-$env:RELEASE_TAG-$env:RELEASE_TARGET"
           Copy-Item "target/$env:RELEASE_TARGET/release/chaat.exe", packaging/chaat-portable.txt "dist/$name/"
           Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip"
-      - name: Remove macOS signing keychain
-        if: always() && runner.os == 'macOS' && env.CODESIGN_KEYCHAIN != ''
-        run: security delete-keychain "$CODESIGN_KEYCHAIN"
       - uses: actions/upload-artifact@v7
         with:
           name: release-${{ matrix.target }}
           path: |
             dist/*.tar.gz
             dist/*.zip
-            dist/*.dmg
             dist/*.deb
 
   publish:

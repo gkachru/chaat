@@ -56,17 +56,17 @@ check in Settings.
    with `openssl genpkey -algorithm ed25519 -out key.pem`; derive the hex
    file with `openssl pkey -in key.pem -pubout -outform DER | tail -c 32 |
    od -An -v -tx1 | tr -d ' \n'`.
-   For macOS, also configure `MACOS_SIGNING_CERTIFICATE` with the base64
-   PKCS#12 export of the persistent code-signing certificate and private key,
-   and `MACOS_SIGNING_PASSWORD` with its export password. Use a Developer ID
-   Application identity for distribution and keep it consistent across
-   releases. CI imports it into an isolated runner keychain and removes that
-   keychain after packaging. Missing credentials stop macOS release packaging;
-   it never falls back to an ad-hoc signature.
+   Releases do not include macOS yet: the release workflow builds Linux and
+   Windows only until a Developer ID Application identity is set up. To add
+   macOS, configure `MACOS_SIGNING_CERTIFICATE` with the base64 PKCS#12
+   export of that certificate and private key and `MACOS_SIGNING_PASSWORD`
+   with its export password, then restore the `macos-latest` entry and its
+   signing steps in `.github/workflows/release.yml`. Release packaging never
+   falls back to an ad-hoc signature.
 3. Push the version tag. `.github/workflows/release.yml` runs format, lint,
    tests and the dependency/font notice check, then builds the Linux x86_64
    (a tarball and a `.deb` for Ubuntu 22.04+ and Debian 12+, built on
-   `ubuntu-22.04`), Windows x86_64, and macOS arm64
+   `ubuntu-22.04`) and Windows x86_64
    packages. The `.deb` is covered by the signed checksums but has no
    self-update path; `packaging/linux/deb.sh` builds it locally. It checks that the signing key matches the compiled public key,
    signs `checksums.txt`, and creates a **draft** release.
