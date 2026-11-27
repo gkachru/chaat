@@ -478,6 +478,23 @@ fn export_passphrase_stays_until_done() {
     assert!(!h.app.export.open);
 }
 
+/// The passphrase dialog fits its content instead of keeping the taller
+/// form's height, with the buttons pushed down into empty space.
+#[test]
+fn export_passphrase_dialog_fits_its_content() {
+    let mut h = Harness::advanced();
+    h.act(Action::Setup(SetupAction::OpenExportForm(true)));
+    h.app.export.org_label = "Contoso".into();
+    h.frames(3);
+    let passphrase = "one-two-three-four-five-six";
+    h.app.export.passphrase = Some(passphrase.into());
+    h.frames(5);
+    let text = h.text_pos(passphrase).expect("passphrase drawn");
+    let done = h.text_pos("  Done  ").expect("Done drawn");
+    let gap = done.y - text.y;
+    assert!(gap < 60.0, "Done sits under the passphrase, {gap} below");
+}
+
 #[test]
 fn export_dialog_draws_in_both_themes_and_widths() {
     for width in [480.0, 1280.0] {

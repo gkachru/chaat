@@ -165,7 +165,7 @@ fn export_form(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         );
     }
     ui.add_space(14.0);
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+    button_row(ui, |ui| {
         let ready = !busy && !label.is_empty();
         if widgets::accent_button(
             ui,
@@ -209,13 +209,22 @@ fn reveal(app: &mut App, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         .selectable(true),
     );
     ui.add_space(14.0);
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+    button_row(ui, |ui| {
         if widgets::primary_button(ui, &palette, "  Done  ").clicked() {
             actions.push(Action::Setup(SetupAction::DismissPassphrase));
         }
         if widgets::secondary_button(ui, &palette, "  Copy  ").clicked() {
             actions.push(Action::CopyText(passphrase));
         }
+    });
+}
+
+/// Right-aligned dialog buttons on one row. A bare right-to-left layout
+/// takes all the height left in the dialog, and the dialog remembers its
+/// size, so the passphrase view kept the taller form's height.
+fn button_row(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
+    ui.horizontal(|ui| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), add);
     });
 }
 
