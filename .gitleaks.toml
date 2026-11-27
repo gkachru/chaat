@@ -1,0 +1,11 @@
+# Gitleaks: the default rules, plus the fake relay keys used in tests.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Fake relay keys in tests"
+regexTarget = "match"
+regexes = [
+    '''office-relay-key-0123''',
+    '''existing-key-0123456789''',
+]
