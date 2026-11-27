@@ -57,13 +57,15 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Tests (unit, Graph against a mock server, headless UI)
         run: cargo test --locked --workspace --all-targets
+      - name: macOS release build
+        if: runner.os == 'macOS'
+        run: cargo build --locked --release
       - name: macOS window smoke test
         if: runner.os == 'macOS'
         timeout-minutes: 5
         env:
           CODESIGN_IDENTITY: '-'
         run: |
-          cargo build --locked --release
           packaging/macos/bundle.sh target/release/chaat "$RUNNER_TEMP/Chaat.app" 0.1.0
           open -W -n --stdout "$RUNNER_TEMP/startup.txt" "$RUNNER_TEMP/Chaat.app" --args --measure-startup
           grep -q "first frame after" "$RUNNER_TEMP/startup.txt"
