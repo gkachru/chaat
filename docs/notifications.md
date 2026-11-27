@@ -36,7 +36,7 @@ this order:
      Chaat since Chaat started.
 
 Messages that arrive together in one chat make one toast, with the newest
-message and "(+N more)". Chaat never notifies the same message twice.
+message and "(+N more)". Chaat does not notify the same message twice.
 
 With "Show message preview" off, toasts say "New message" or "N new
 messages" instead of the text. With several accounts, the title adds the

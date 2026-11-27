@@ -11,8 +11,10 @@
   ([realtime.md](realtime.md)); and GitHub for app update
   checks and downloads. Automatic app updates are checked at most daily and
   can be disabled in Settings. No Microsoft credentials or account data are
-  sent to GitHub ([updates.md](updates.md)). Chaat opens Microsoft Teams
-  links in your browser when you ask it to.
+  sent to GitHub ([updates.md](updates.md)). Chaat opens a link in your
+  browser only when you click it: Teams links, links in messages and cards,
+  meeting recordings on SharePoint, a plugin's **About this plugin** link and
+  sign-in pages.
 - **Setup files** stay local. Chaat reads or writes a `.chaatsetup` file only
   where you choose, never uploads it, and never logs its path, contents or
   passphrase. The relay access key it may carry is stored in the OS credential
@@ -60,13 +62,32 @@
 - **Least privilege.** Delegated permissions only, requested incrementally;
   see [permissions.md](permissions.md).
 - **Local data.** The cache of your chats, channels, meetings, photos and
-  downloaded Graph-hosted images is a SQLite file in a folder only your user
+  downloaded Graph-hosted images, plus your drafts and your outbox (the text
+  of messages not sent yet), is a SQLite file in a folder only your user
   can read (0700/0600 on macOS and Linux).
   It is not encrypted yet; full-disk encryption (FileVault, BitLocker, LUKS)
   protects it at rest. Encrypting it with a key held in the credential store
   is on the roadmap. Signing out deletes it. Encoded message images use a
   128 MiB least-recently-used cache per account. The SQLite file can also
   contain unused pages and journal data.
+- **Files on disk.** Chaat keeps these in its config, data and state folders:
+  - `settings.json` (config): your preferences, each account's ID and its
+    rail name, icon and color, the agents allow list (`agent_access`), each
+    plugin's path, file hash, approved and refused needs and non-secret
+    option values, muted chat ids, the ids and names of people you chose
+    "Notify when available" for, the relay address and the window's size.
+  - Per account, under `accounts/<account>/` (data): `chaat.db` (the cache
+    above), `account.json` (the account's ID, display name, sign-in name,
+    tenant, granted permissions and the client ID it signed in with),
+    `push-subscriptions.json` (ids of Graph subscriptions to delete after a
+    run that ended without deleting them) and `presence-refused.json` (ids
+    of people whose presence Graph refused to follow, with when).
+  - `chaat.log`, `chaat.log.1` (the previous run's log), `panic.log` and
+    `window.ron` (saved window state) in the state folder.
+  - Secrets are never in these files. They go to the OS credential store
+    under `refresh-token:<account>`, `relay-key` and, for a plugin's secret
+    options, `plugin-option:<plugin id>:<option id>`.
+  - Message text is never written to the logs.
 - **Notifications** ([notifications.md](notifications.md)). Notification text
   (titles, message previews, names) is never logged. Settings keep the ids of
   chats you muted and the ids and names of people you chose "Notify when

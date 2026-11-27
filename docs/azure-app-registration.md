@@ -8,8 +8,9 @@ reasons:
   so a shared registration would share one global request budget
   ([refresh and throttling](microsoft-api-research.md#refresh-and-throttling)).
 - Most tenants block users from consenting to unverified multi-tenant apps,
-  and the default consent policy excludes `Chat.*` and `Calendars.*`
-  ([identity and consent](microsoft-api-research.md#identity-and-consent)).
+  and many tenants' user-consent policy blocks `Chat.ReadWrite` and
+  `Calendars.Read`, although Microsoft does not mark either as needing admin
+  consent ([identity and consent](microsoft-api-research.md#identity-and-consent)).
 - Reusing one of Microsoft's own client IDs would breach the API terms.
 
 The registration takes about five minutes and costs nothing. App
@@ -55,13 +56,13 @@ permissions**, add:
 |---|---|---|
 | `User.Read` | Your profile | No |
 | `User.ReadBasic.All` | Names and photos of people in your chats; finding people for new chats and mentions | No |
-| `Chat.ReadWrite` | List chats, read messages, edit, delete, mark read, list and add group chat members | Not by flag, but excluded from the default user-consent policy |
+| `Chat.ReadWrite` | List chats, read messages, edit, delete, mark read, list and add group chat members | Not by Microsoft's definition, but many tenants' user-consent policy blocks it |
 | `ChatMessage.Send` | Send messages, quote replies, reactions | No |
 | `Team.ReadBasic.All` | The teams you belong to | No |
 | `Channel.ReadBasic.All` | Their channels | No |
 | `ChannelMessage.Send` | Post and reply in channels | No |
 | `Presence.Read.All` | Availability of people in your chats | No |
-| `Calendars.Read` | Upcoming meetings and their join links | Not by flag, but excluded from the default user-consent policy |
+| `Calendars.Read` | Upcoming meetings and their join links | Not by Microsoft's definition, but many tenants' user-consent policy blocks it |
 | `Chat.Create` *(optional)* | Starting new chats | No |
 | `Files.ReadWrite` *(optional)* | Sending files (upload to your OneDrive and share) | No |
 | `Presence.ReadWrite` *(optional)* | Setting your availability and status message | No |
@@ -119,8 +120,8 @@ Once Chaat is pointed at the registration, create a setup file in
 **Settings → Advanced → Setup file → Create a setup file…**. It carries the
 client ID, the tenant and, if you choose, the push relay address and access
 key, encrypted with a generated passphrase. Colleagues drop it on Chaat's first
-screen and skip step 4. You can limit the file to accounts from your tenant.
-Send the passphrase separately from the file. Details and limits:
+screen and skip step 4. The file does not decide who can sign in; the app
+registration does. Send the passphrase separately from the file. Details and limits:
 [setup-file.md](setup-file.md).
 
 ## Accounts in several organisations
@@ -134,8 +135,8 @@ than one organisation, for example a work account and a school account:
   `organizations`.
 - Each other organisation decides whether to allow it. To them it is an app
   from another publisher. Most only let their administrator approve that,
-  and `Chat.ReadWrite` and `Calendars.Read` usually need an administrator
-  anyway. Their administrator can use
+  and their user-consent policy often blocks `Chat.ReadWrite` and
+  `Calendars.Read` anyway. Their administrator can use
   `https://login.microsoftonline.com/{their tenant}/adminconsent?client_id={your client ID}`.
 - Personal Microsoft accounts (Outlook.com, Teams free) cannot be added:
   Graph's Teams APIs serve work and school accounts only.

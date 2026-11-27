@@ -6,11 +6,15 @@ plugin gets its data its own way and is documented in its own repository;
 what Chaat knows about it is the protocol on this page. Chaat itself uses
 only official, documented Microsoft APIs.
 
-Three kinds of plugin exist today: a call-alerts plugin ([calling.md](calling.md#call-alerts-plugin)),
-any program that shows presence (a status light), and a push relay plugin that
-receives Graph's change notifications ([realtime.md](realtime.md#through-a-push-plugin)).
-Presence display and push are covered by tests with fake plugins only, not
-live.
+Four kinds of plugin exist today: a call-alerts plugin ([calling.md](calling.md#call-alerts-plugin)),
+any program that shows presence (a status light), a push relay plugin that
+receives Graph's change notifications ([realtime.md](realtime.md#through-a-push-plugin)),
+and an agents plugin that lets an AI agent read the chats you allow and
+propose replies ([Agent plugins](#agent-plugins)). Presence display and push
+are covered by tests with fake plugins only, not live. Agents are covered by
+the protocol fixtures and by tests of Chaat's own side (allow list, reads
+from the cache, proposals) without a plugin process, not live. For call
+alerts, see [calling.md](calling.md#open-questions).
 
 ## In Settings
 
@@ -26,13 +30,14 @@ statuses show in a card under the caption "Settings · from the plugin".
 
 **Add plugin…** (**Add…** on a narrow window) sits in the header, with
 **Reorder** when there are two or more plugins. Each plugin is one row with
-its name and a one-line summary in Chaat's words, such as **Off**,
+a status dot, its name, a one-line summary in Chaat's words, its on/off
+switch and a chevron. Summaries include **Off**,
 **Starting…**, **Listening on 1 account**, **Tunnel at <host>**, **Needs
 setup**, **Asks for <data>**, **The file changed. Review it**, **Stopped:
 <reason>** or **Finish setup**. Rows that need you (a pending question,
 missing required settings, a changed file, an unfinished setup, a failure)
-are grouped first under **Needs you**. Clicking a row opens that plugin's
-page, or its add flow if setup was never finished.
+are grouped first under **Needs you**. Clicking a row anywhere but the switch
+opens that plugin's page, or its add flow if setup was never finished.
 
 ### A plugin's page
 
@@ -41,10 +46,11 @@ the turn-off question when you just switched off a plugin that provides
 something, its description and **About this plugin** link (HTTPS only, host
 shown), a **Needs you** box for the other open questions from Chaat (changed
 file, consent for needs, required settings still empty), **Status**, **Gets
-from Chaat** (what Chaat sends it now: "nothing", or a list of "your accounts'
+from Chaat** (what Chaat sends it now: "Nothing", or a list of "your accounts'
 IDs and sign-in names", "your presence (availability and activity)", "your
-update notifications: which chats changed and when, no message text" and "its
-own settings below"), **Settings · from the plugin** (see
+update notifications: which chats changed and when, no message text", "the
+text of messages in the chats and channels you allow" and "its own settings
+below"), **Settings · from the plugin** (see
 [Options](#options)), then **Accounts** (for a running plugin that gets
 accounts: **Listening for calls**, **Waiting for sign-in** or
 **Connecting…**, with **New code** while a sign-in waits), and last **File**,
@@ -150,7 +156,7 @@ Limits per plugin:
 
 | Limit | Value |
 |---|---|
-| Lines from the plugin | Forwarded push bodies: 50 a second on average, bursts of 200. Everything else: 20 a second, bursts of 50. At most 200 lines a second are read at all. The excess is dropped and reported once per run |
+| Lines from the plugin | Forwarded push bodies: 50 a second on average, bursts of 200. Everything else: 20 a second, bursts of 50. At most 200 lines a second are read at all, with bursts of 400. The excess is dropped and reported once per run |
 | Line length | 64 KiB; longer lines are dropped |
 | Messages waiting to be written to the plugin | 256; more are dropped |
 | A write to the plugin | 5 seconds; a timeout ends the run |
@@ -186,7 +192,8 @@ replaced file; it does not tell you whether the original file was safe.
 Chaat sends `hello` first. The plugin answers with `ready`.
 
 `hello` carries `host: "chaat"`, `capabilities` (the capabilities Chaat
-knows: `call_alerts`, `presence_display`, `push`), `accounts` and `forget`.
+knows: `call_alerts`, `presence_display`, `push`, `agents`), `accounts` and
+`forget`.
 `accounts` is empty unless the plugin declared the `accounts` need and you
 approved it (see below). `forget` lists accounts signed out of Chaat while the
 plugin was off, and is sent only while accounts are approved and needed.
@@ -227,7 +234,7 @@ presence.
 | `accounts` | The ID (`oid.tid`) and sign-in name of each Chaat account, and later changes |
 | `presence` | Your busiest presence across accounts: availability and activity |
 | `push` | One random channel name per account for each run, no account IDs. The plugin sends back notification bodies Graph posted to it |
-| `messages` | For the `agents` plugin only: answers to its read requests and message events, limited to the chats and channels you allowed per account (Settings › Plugins, "What agents can see"). Suggested consent text: "the text of messages in the chats and channels you allow" |
+| `messages` | For the `agents` plugin only: answers to its read requests and message events, limited to the chats and channels you allowed per account (Settings › Plugins, "What agents can see"). Consent text: "the text of messages in the chats and channels you allow" |
 
 The first start sends an empty account list. Whatever the need, Chaat never
 sends a plugin its tokens or its settings (except the plugin's own option
@@ -250,7 +257,7 @@ Settings › Plugins shows `Plugin “Name” asks for:` with each pending need 
 Chaat's words, and **Allow** and **Don't allow** buttons. Until you answer, nothing is sent for that
 need. A need approved earlier but no longer declared in the current `ready`
 is not sent either. A plugin's own option values are sent without a separate
-question, and the **Receives** line lists them.
+question, and the **Gets from Chaat** list shows them.
 
 The call-alerts entry migrated from earlier Chaat settings starts with
 `accounts` approved, because it already received them.
@@ -401,9 +408,9 @@ describe, or of an unsupported kind, are kept.
 - Each section has **Reset to defaults**: options with a default get it,
   options without one lose their stored value, and secrets are untouched.
 - A plugin with a required, visible option that has no value shows **Needs
-  setup** and a **Set up** button on its row. It still runs, since it may need
-  to run to find devices.
-- After **Add plugin...**, the first `ready` that leaves required options
+  setup** as its row's summary and is listed under **Needs you**. It still
+  runs, since it may need to run to find devices.
+- After **Add plugin…**, the first `ready` that leaves required options
   unset opens that plugin's setup view: the required options first, then the
   rest.
 - A status under an option is shown as the plugin's own words, in quotation
@@ -434,7 +441,7 @@ Chaat to plugin:
 - `action { id }`: the person clicked that action's button. Chaat sends it only
   after a click, only to a running plugin that has sent `ready`, and only for
   an option the plugin described as an `action`. It never sends one on its own.
-  The button shows "Working..." from the click until an `ok` or `error` status
+  The button shows "Working…" from the click until an `ok` or `error` status
   for the action arrives, or while its latest status is `working`, and for at
   most 30 seconds either way. What the action does is the plugin's business.
 
@@ -591,9 +598,9 @@ Outcomes, each sent as it happens:
 |---|---|
 | `sent` | You clicked **Send** and Chaat sent the reply (it shows as your message and, if Graph refuses it, can be retried) |
 | `edited` | You clicked **Edit**: the text went into the composer as a draft and the proposal is gone |
-| `discarded` | You clicked **Discard**, or you took the chat off the allow list |
+| `discarded` | You clicked **Discard**, took the conversation off the allow list, turned off the account's propose switch, or signed the account out. A plugin that is no longer the active agents plugin (stopped, turned off, removed, or its `messages` need withdrawn) is not told; its proposals are simply dropped |
 | `accepted` | You clicked **Accept** and Chaat reacted |
-| `outdated` | You wrote in that conversation yourself. The card stays so you can discard it, but it can no longer be sent or edited as is |
+| `outdated` | You wrote in that conversation yourself (the card stays so you can discard it, but it can no longer be sent or edited as is), or you clicked **Accept** on a reaction whose message is no longer loaded (no reaction is sent) |
 | `replaced` | A newer proposal took its place |
 
 Events arrive only for allowed conversations, as `agent_event` with an
@@ -652,9 +659,12 @@ stops another.
 
 ## Fixtures
 
-Every message has an example in `tests/fixtures/plugin-protocol/`, kept
-identical in each plugin's repository; tests on both sides check against
-them (as JSON values; key order does not matter).
+The messages in the table below have an example in
+`tests/fixtures/plugin-protocol/`, kept identical in each plugin's
+repository; tests on both sides check against them (as JSON values; key
+order does not matter). The agent messages Chaat sends (`agent_result`,
+`agent_outcome` and `agent_event`) have no fixture yet; the
+[Agent plugins](#agent-plugins) example shows their shape.
 
 | Direction | Message | Fixture |
 |---|---|---|
@@ -686,7 +696,7 @@ them (as JSON values; key order does not matter).
 A status-light plugin that needs presence and has one option:
 
 ```
-chaat  -> {"v":1,"type":"hello","host":"chaat","capabilities":["call_alerts","presence_display"],"accounts":[]}
+chaat  -> {"v":1,"type":"hello","host":"chaat","capabilities":["call_alerts","presence_display","push","agents"],"accounts":[]}
 plugin -> {"v":1,"type":"ready","capabilities":["presence_display"],"name":"Status light","needs":["presence"],"options":[{"id":"ip","kind":"text","label":"Light address","default":"192.168.1.20"}]}
 chaat  -> {"v":1,"type":"options","values":{"ip":"192.168.1.20"}}
 chaat  -> {"v":1,"type":"presence","availability":"Busy","activity":"InACall"}

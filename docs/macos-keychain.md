@@ -28,7 +28,7 @@ builds.
 ```sh
 export CODESIGN_IDENTITY='Developer ID Application: Your Name (TEAMID)'
 cargo build --locked --release
-packaging/macos/bundle.sh target/release/chaat Chaat.app 0.2.0
+packaging/macos/bundle.sh target/release/chaat Chaat.app 0.4.0
 ```
 
 The bundler stops before changing the output if no identity is supplied.

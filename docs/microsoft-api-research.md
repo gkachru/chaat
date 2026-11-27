@@ -1,6 +1,6 @@
 # Microsoft API reference
 
-API constraints used by Chaat 0.1. [Feature support](features.md) records what
+API constraints Chaat relies on. [Feature support](features.md) records what
 is implemented and verified; [permissions](permissions.md) maps features to
 scopes, and [app registration](azure-app-registration.md) covers setup.
 
@@ -18,9 +18,11 @@ undocumented Teams endpoints.
   the port when matching localhost redirect URIs. See [redirect rules][redirect].
 - Chaat's Teams features require work or school accounts. The
   [chat API][chats] does not support delegated personal Microsoft accounts.
-- Permission flags alone do not guarantee user consent. The
-  [Microsoft-managed policy][consent] restricts chat, calendar and meeting
-  scopes, and [publisher verification][publisher] affects multi-tenant apps.
+- Permission flags alone do not guarantee user consent. None of Chaat's
+  sign-in scopes needs admin consent by Microsoft's definition, but a
+  tenant's [user-consent policy][consent] decides what users may approve,
+  and many tenants block `Chat.ReadWrite` and `Calendars.Read`.
+  [Publisher verification][publisher] also affects multi-tenant apps.
   Expect an administrator to approve Chaat in many tenants. Request optional
   scopes only when their feature is used.
 
@@ -30,10 +32,10 @@ undocumented Teams endpoints.
 |---|---|
 | [Chat list][chats] | Maximum page size 50; expanded members are capped at 25 |
 | [Chat messages][messages] | Maximum page size 50; descending creation/modification order, with matching date filters; follow paging links |
-| Notes to yourself | Not in Microsoft's documentation. The chat id is `48:notes`; `GET /chats/48:notes` answers 400 and the chat is missing from `/me/chats`, but `GET`/`POST /chats/48:notes/messages` work with Chat.ReadWrite (tested 18 Nov 2026). It does not exist until the person first writes to themselves (404). Treat it as fragile: a failure must leave the rest of the chat list alone. A `/chats/getAllMessages` subscription sent no notification for a message to yourself in one live test (18 Nov 2026), while a one-on-one chat did |
+| Notes to yourself | Not in Microsoft's documentation. The chat id is `48:notes`; `GET /chats/48:notes` answers 400 and the chat is missing from `/me/chats`, but `GET`/`POST /chats/48:notes/messages` work with Chat.ReadWrite. It does not exist until the person first writes to themselves (404). Treat it as fragile: a failure must leave the rest of the chat list alone. A `/chats/getAllMessages` subscription may send no notification for a message to yourself, so Chaat updates this chat when the chat list refreshes |
 | [Message export][export] | `GET /chats/getAllMessages` is application-only; it is not the delegated notification resource below |
 | [Channel messages][channels] | Chaat uses `ChannelMessage.Read.All` for reads, requested incrementally with admin consent |
-| [Presence change notifications][presence-push] | One presence subscription per person and app, for at most an hour; the bulk form `communications/presences?$filter=id in (…)` follows up to 650 people. Without resource data, each notification names the person, and Chaat fetches their presence. Graph cannot change whom a subscription follows, so Chaat replaces it when a new contact appears. By that rule a second device on the same account and app cannot hold its own presence subscription and falls back to fetching on look (not tested with two devices; Graph answered `409 ExtensionError` on 18 Nov 2026 while an earlier run's presence subscription still existed). Bulk subscriptions are refused with `400 ExtensionError` when the list includes users Graph cannot follow, even ones in the same organisation whose presence `getPresencesByUserId` returns; the message names them: "Subscription failed for some users. Remove the failing users and retry. (id, id)" (seen 18 Nov 2026, not in Microsoft's documentation). Both users named on 18 Nov 2026 had left the organisation (one disabled with name and email still listed, one deleted and listed without them). Chaat removes the named users, remembers them for a week, and retries; it searches for the longest accepted list only if a 400 names nobody |
+| [Presence change notifications][presence-push] | One presence subscription per person and app, for at most an hour; the bulk form `communications/presences?$filter=id in (…)` follows up to 650 people. Without resource data, each notification names the person, and Chaat fetches their presence. Graph cannot change whom a subscription follows, so Chaat replaces it when a new contact appears. By that rule a second device on the same account and app cannot hold its own presence subscription and falls back to fetching on look (not tested with two devices; Graph answers `409 ExtensionError` while an earlier run's presence subscription still exists). Bulk subscriptions are refused with `400 ExtensionError` when the list includes users Graph cannot follow, even ones in the same organisation whose presence `getPresencesByUserId` returns; the message names them: "Subscription failed for some users. Remove the failing users and retry. (id, id)" (not in Microsoft's documentation). Users who left the organisation can cause it. Chaat removes the named users, remembers them for a week, and retries; it searches for the longest accepted list only if a 400 names nobody |
 | [Listing subscriptions][subscription-list] | With delegated permissions, `GET /subscriptions` returns only the subscriptions this app created for the signed-in person, needing no permission beyond the ones that created them (`Presence.Read.All` for presence); paged with `@odata.nextLink`. Chaat uses it only to clear its own presence subscription after a 409 |
 | [Presence sessions][presence] | Sessions expire; Chaat updates its session only on input and clears it at sign-out or exit |
 | [Calendar events][calendar] | Use `onlineMeeting.joinUrl` for meeting links; Chaat requests `Calendars.Read` |
@@ -62,7 +64,8 @@ The people panel in group and meeting chats uses three calls:
   permission for both calls. No new scope is needed.
 - `DELETE /chats/{id}/members/{membership-id}` leaves a group chat. Only
   `ChatMember.ReadWrite` allows it, among delegated permissions. It needs admin
-  consent, so Chaat requests it the first time someone leaves a group chat.
+  consent, so Chaat requests it only when the person tries to leave a group
+  chat and then clicks **Request access**.
 - Adding history: "Don't include chat history" omits
   `visibleHistoryStartDateTime`. "Include all chat history" sends
   `0001-01-01T00:00:00Z`.
@@ -71,8 +74,11 @@ Microsoft documents roster changes for group chats (chatType group) and fixes
 the roster of one-on-one chats; it does not document adding or removing members
 of meeting chats, and notes that methods on a chat tied to an online meeting can
 affect the meeting. Chaat offers Add people and Leave in meeting chats as Teams
-does; a refusal from Graph shows as an error. Presence is followed for members
-of group chats only, so a meeting chat's panel shows no presence dots.
+does; a refusal from Graph shows as an error. The presence subscription and
+the chat-list presence fetch cover members of group chats only, not meeting
+chats. Opening any chat, a meeting chat included, fetches presence once for
+up to 20 of its other members, and the panel shows dots for the members Chaat
+has presence for.
 
 The chat list's `$expand=members` returns at most 25 members. The panel
 therefore fetches the full list with `GET /chats/{id}/members` when it opens.

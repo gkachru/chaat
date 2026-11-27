@@ -17,9 +17,9 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use sha2::{Digest, Sha256};
 
-/// The scopes asked for at sign-in. Each one is consentable by users in a
-/// tenant with default settings; see docs/permissions.md for why each is
-/// needed.
+/// The scopes asked for at sign-in. None needs admin consent by Microsoft's
+/// definition, but many tenants' user-consent policy blocks Chat.ReadWrite
+/// and Calendars.Read; see docs/permissions.md for why each is needed.
 pub const SIGN_IN_SCOPES: &[&str] = &[
     "openid",
     "profile",
@@ -36,7 +36,8 @@ pub const SIGN_IN_SCOPES: &[&str] = &[
 ];
 
 /// Reading channel posts. Requires tenant admin consent, so Chaat asks for it
-/// separately (incremental consent) when someone opens a channel.
+/// separately (incremental consent) when someone clicks Request access on a
+/// channel whose posts it cannot read.
 pub const CHANNEL_READ_SCOPE: &str = "ChannelMessage.Read.All";
 
 /// Starting new chats. User-consentable; asked for on first use.

@@ -6,8 +6,8 @@ Teams. Chaat does not request microphone, camera or screen-recording access.
 Graph cannot tell Chaat that a call is ringing; an optional, separately
 installed [call-alerts plugin](#call-alerts-plugin) can.
 
-The implementation has mock, headless UI and macOS screenshot coverage.
-A real call has not yet been confirmed; see [open questions](#open-questions).
+The implementation has mock and headless UI coverage; it has not been run on
+macOS. A real call has not yet been confirmed; see [open questions](#open-questions).
 
 ## Opening a call
 
@@ -23,13 +23,17 @@ The **Calls and meetings** page in Settings controls:
 | Setting | Behavior |
 |---|---|
 | Open in | A Teams web app window, the default browser, or the Teams app |
-| Browser | An installed Edge or Chrome; Edge is preferred by default |
+| Browser | An installed Edge or Chrome; Edge is preferred by default. Shown when calls open in a Teams web app window or "Open all links" is on |
 | Open all links in Edge or Chrome | Links in messages, the calendar and "Open in Teams" open in the chosen browser and the same profile as calls, instead of the default browser; off by default. `mailto:` links still use the default mail app. Shown whenever Edge or Chrome is installed |
 | Move Chaat beside the call window during calls | Dock Chaat in a 380-point panel and restore its previous geometry afterward; on by default |
-| A separate browser profile for each account | Optional, shown with multiple accounts; off by default |
+| A separate browser profile for each account | Optional, shown with multiple accounts or once it is on; off by default |
 | Signing out of Chaat also signs the browser out of Microsoft | Optional; off by default |
 | Sign in to Teams on the web | Open Teams once to complete browser sign-in and choose whether to stay signed in |
-| Call alerts | A line and an **Open Plugins** button; call alerts come from a plugin you add in Settings › Plugins. None by default; see [below](#call-alerts-plugin) |
+| Call alerts | A line and an **Open Plugins** button, or **Open** for the plugin that provides call alerts; call alerts come from a plugin you add in Settings › Plugins. None by default; see [below](#call-alerts-plugin) |
+
+The docking, browser profile, browser sign-out and **Sign in to Teams on the
+web** rows show only when calls open in a Teams web app window and Edge or
+Chrome is installed.
 
 Docking needs a window at least 960 × 400 points. It is unavailable on
 Wayland and beside the Teams desktop app. Browser window placement is a
@@ -53,6 +57,11 @@ avoids flicker before the window is restored. **Done** restores it at once.
 Calendar-derived `InAMeeting` counts only for meetings Chaat opened. It can
 outlast a meeting you leave early; use **Done** if the bar stays visible.
 Calls started elsewhere can also appear when your presence indicates a call.
+
+A meeting's recording shows in its meeting chat as a card with an **Open**
+button, and the Recordings section (⌘5; Ctrl 5 on Windows and Linux) lists
+the recordings from meeting chats Chaat has loaded. Recordings open in the
+browser, in Teams' own player; see [features](features.md).
 
 ## Sign-in and privacy
 
@@ -93,7 +102,8 @@ plugin whose `ready` offers no capability Chaat knows is stopped with a
 notice and not restarted. Only one plugin gets rings: the first enabled
 plugin in the list that is running and offers `call_alerts`.
 The order is the list order in Settings › Plugins, which you can change with
-**Reorder**. Settings › Calls has an **Open** link to that plugin's page.
+**Reorder**. Settings › Calls and meetings has an **Open** button for that
+plugin's page.
 
 Settings shows the plugin's name and description as it gives them in
 `ready`, as plain shortened text (control and invisible formatting
@@ -174,8 +184,9 @@ JSON over the plugin's stdin and stdout, each message with `"v": 1` and a
 `type`. Chaat drops lines with another version, lines over
 64 KB, and types it does not know, so either side can be newer. A ring
 field of the wrong type is read as absent rather than dropping the ring. Every
-message below has an example in `tests/fixtures/plugin-protocol/`, kept
-identical in the plugin's repository; tests on both sides check against it.
+message below has an example in `tests/fixtures/plugin-protocol/`, and
+Chaat's tests check against them. A plugin can test against the same
+fixtures.
 
 | Direction | `type` | Fields |
 |---|---|---|

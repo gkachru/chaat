@@ -32,16 +32,21 @@ one-directional data flow between them.
 3. **Optimistic and cached.** A sent message, a reaction or an edit appears
    at once, marked *Sending* where it matters. Graph's answer reconciles it.
    Every list opens from the SQLite cache before the network answers.
-4. **No polling.** `src/sync.rs` is the only place that decides whether to
-   fetch. Every fetch answers something the person did, or a Graph change
-   notification (see [realtime.md](realtime.md)).
+4. **No polling.** Every refresh of a cached list (chats, channels,
+   messages, older pages) goes through `src/sync.rs`. On-demand lookups for
+   what the person is looking at or typing (names, photos, presence, images,
+   search) skip it, but each is deduplicated elsewhere by a cache, an
+   asked-set or a reuse window. Every fetch answers something the person did,
+   or a Graph change notification (see [realtime.md](realtime.md)).
 5. **Platform code stays behind `cfg`.** Shared code compiles on macOS,
    Windows and Linux. Platform pieces come from fastframe crates or sit
    in `#[cfg(target_os = …)]` blocks.
 
 `fastframe-titlebar` handles macOS header presses and traffic-light alignment.
-Windows and Linux retain their native window frames; `ui/widgets.rs` handles
-dragging and double-clicking the headers inside those frames.
+On Windows and Linux it draws Chaat's own title bar by default, with minimize,
+maximize and close in the header; "Use Chaat's own title bar" in Settings ›
+General turns it off for the system's window frame. `ui/widgets.rs`
+handles dragging and double-clicking the headers.
 
 ## Accounts
 
@@ -61,27 +66,42 @@ account already open is retired.
 | `main.rs` | CLI, logging, single instance, tray, the eframe window and the window shell (`fastframe-shell`) |
 | `app.rs` | `App` state, event handling, the action reducer, optimistic sends, message merging |
 | `model.rs` | Chaat's own types (`Chat`, `Message`, `Team`, `Channel`, `Meeting`, `Presence`, `Action`, …) |
-| `ui/` | Views: rail, chat list, teams tree, conversation (virtualized history, composer, threads), calendar, calls, welcome/sign-in, settings (pages in place of the sidebar and content), overlays (⌘K switcher, new chat, dialogs), widgets, rich text |
+| `ui/` | Views: rail, chat list, teams tree, conversation (virtualized history, composer, threads), find in the open conversation (`find.rs`), calendar, calls, recordings (`recordings.rs`), welcome/sign-in, settings (pages in place of the sidebar and content), overlays (⌘K switcher, new chat, dialogs), widgets, rich text |
 | `html.rs` | Teams HTML → `RichText` (a tolerant tokenizer, no browser engine) and composer markdown → HTML |
+| `cards.rs` | Adaptive Cards read for display only; never submits a card or fetches its images |
+| `compose_format.rs` | Format bar and shortcut edits on the draft text (pure text and selection in, text and selection out) |
+| `compose_style.rs` | Live styling of markdown in the composer; the markers stay in the text, dimmed |
+| `emoji.rs` | Emoji search for the picker, `:shortcode:` and emoticon conversion while typing |
+| `outbox.rs` | Drafts and unsent messages that survive a restart, and the rules for sending them again |
+| `images.rs` | Local image sources, bounded thumbnail textures and short-lived originals; decoding on one worker, no URL fetches |
+| `clipboard.rs` | Pasted images, kept in memory until sent as Graph hosted content |
+| `time.rs` | Graph's ISO 8601 timestamps in, short local labels out |
 | `backend.rs`, `backend/worker.rs` | The runtime thread, `Command`/`Event`, and the worker's tasks |
 | `auth/` | Entra ID: PKCE authorize URL, loopback listener, token endpoint (code, refresh, device code), `Session` with refresh-token rotation |
 | `secrets.rs` | Refresh tokens and the relay access key in the OS credential store (`keyring-core` with each platform's native store) |
-| `graph/` | Graph client (token only to the Graph origin, 401 refresh, `Retry-After`), endpoints (`api.rs`; OneDrive uploads and sharing in `files.rs`; people, new chats and your own presence in `people.rs`), JSON shapes (`types.rs`), translation (`convert.rs`) |
+| `settings.rs` | Process-wide settings as JSON in the config folder; unknown fields ignored, missing ones defaulted, no secrets |
+| `paths.rs` | Where Chaat keeps its files (config, data and state folders) and atomic writes |
+| `setup_file/` | The encrypted setup file: container format, Argon2id key derivation, EFF-wordlist passphrases, payload ([setup-file.md](setup-file.md)) |
+| `graph/` | Graph client (token only to the Graph origin, 401 refresh, `Retry-After`), endpoints (`api.rs`; OneDrive uploads and sharing in `files.rs`; people, new chats and your own presence in `people.rs`; Out of office in `mailbox.rs`), JSON shapes (`types.rs`), translation (`convert.rs`) |
 | `store.rs` | Per-account SQLite cache with FTS5 search |
 | `sync.rs` | Fetch policy (no polling; dedupe repeated requests) |
-| `calling/` | Calls in Teams on the web: finding Edge and Chrome and starting their app windows (`browser.rs`), docking geometry (`dock.rs`), the call session behind the call bar (`session.rs`); the app side is in `app/calls.rs` ([calling.md](calling.md)) |
+| `calling/` | Calls in Teams on the web: finding Edge and Chrome and starting their app windows (`browser.rs`), docking geometry (`dock.rs`), the call session behind the call bar (`session.rs`), checks for call alerts from a plugin (`alerts.rs`); the app side is in `app/calls.rs` ([calling.md](calling.md)) |
 | `plugin/` | External plugins: the host, the line protocol, capabilities and needs (`registry.rs`), and the agent protocol parser (`agent.rs`, untrusted input) ([plugins.md](plugins.md)) |
 | `agents/` | Pure agent state: the per-account allow list (`access.rs`), pending reply and reaction proposals (`proposals.rs`), and the plain view of a message and its size fit (`view.rs`) |
 | `app/agents.rs` | Chooses the one agents plugin, checks access, answers plugin lines, shows proposals and runs your clicks as ordinary `Action`s; sends new-message and user-sent events |
 | `backend/agents.rs` | Answers agent reads from the SQLite cache on the blocking pool (8 at once, 60 000-byte answers); never calls Graph |
 | `realtime.rs` | Push updates: relay WebSocket, Graph subscription lifecycle, notification parsing |
+| `relay_protocol.rs` | Constants the app and the relay agree on; both crates compile this file |
 | `relay/` (crate `chaat-relay`, binary `chaat-relay`) | The self-hostable relay: validation handshake, forwarding of Graph notifications, optional client access key |
 | `account_look.rs` | Automatic account names (sign-in domain), the icon and color choices, and resolving an account's look from settings |
 | `app/unified.rs` | The Unified view: merges each account's cached chats, channels and calendar entries, and routes actions to the right account |
-| `theme.rs` | Palettes (fastframe-theme compatible), visuals, type scale, Lucide icon table |
+| `theme.rs` | Palettes (fastframe-theme compatible), visuals, type scale, Lucide icon table; script fallback fonts loaded on demand (`theme/lazy_fonts.rs`) |
+| `pacing.rs` | A frame-rate ceiling for native render loops whose OpenGL swap does not block for vsync; never schedules a frame |
 | `platform.rs` | App icon rasterization, tray item, single-instance slot |
 | `touchpad.rs` | Windows precision touchpads: turns their fractional wheel lines into touch scrolling, glides on after the fingers lift, and uses the late momentum message Windows sends ~350 ms later (it made the view stop, then jump) to end the glide where the system would and to calibrate later glides, and holds pointer movement back from egui until the glide ends so it stays on the list it started on |
-| `notify.rs` | Desktop notifications |
+| `notify.rs`, `notify/` | Desktop notifications, shown from a short-lived thread; which messages notify and their text (`rules.rs`); pause, urgent repeats and the seen set (`schedule.rs`) |
+| `updates.rs` | App updates through fastframe-update; never uses Graph credentials |
+| `notices.rs` | The license notices embedded in the binary, printed by `chaat --licenses` |
 | `demo.rs` | Offline sample data for the interface tests (not reachable from the app) |
 
 ## Data on disk
@@ -90,6 +110,7 @@ account already open is retired.
 |---|---|
 | Settings (no secrets) | config folder, `settings.json` |
 | Cache: chats, messages, teams, channels, meetings, photos | data folder, `accounts/<account>/chaat.db` (0600) |
+| Drafts and messages not yet confirmed as sent (text is never logged) | `accounts/<account>/chaat.db`, tables `drafts` and `outbox` |
 | Account record (name, granted scopes; no tokens) | `accounts/<account>/account.json` |
 | Push subscriptions this installation made and has not deleted yet (ids only) | `accounts/<account>/push-subscriptions.json` |
 | People Graph refused to follow for presence, for a week (user ids and times) | `accounts/<account>/presence-refused.json` |
@@ -120,7 +141,7 @@ conversations. A plugin never sees a Graph shape, a token or a URL.
   the same font to placeholder and entered text, so empty and filled search
   fields keep the same height. Settings and sign-in reuse it for their fields.
 - **glow** (OpenGL) renderer, the same as Spotifast and ZapFast. It keeps the
-  binary small (15 MB release on macOS arm64).
+  binary small.
 - The egui and winit forks shared by the crmne apps carry fixes that matter
   for an idle client, most importantly egui's busy-loop fix.
 - **Virtualized lists.** The chat list uses fixed-height rows

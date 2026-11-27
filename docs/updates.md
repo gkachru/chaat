@@ -33,8 +33,9 @@ portable marker beside its installed executable. Source builds and older
 CI artifacts do not opt into automatic binary replacement.
 
 Every archive and app bundle includes `LICENSE`, `THIRD-PARTY-NOTICES.md`,
-`licenses/`, and the font and icon notices under `assets/`. The relay archive
-ships the same notice set. The Linux installer preserves it under
+`licenses/`, and the font and icon notices under `assets/`. Releases contain
+only the app; the relay archive is a CI build artifact, not a release
+package, and carries the same notice set. The Linux installer preserves it under
 `$PREFIX/share/doc/chaat`, or `~/.local/share/doc/chaat` by default.
 Notices are also embedded in the executables. Run `chaat --licenses` or
 `chaat-relay --licenses` to read the current build's texts, including after a
@@ -48,7 +49,7 @@ check in Settings.
 ## Making a release
 
 1. Keep Cargo.toml and Cargo.lock at the intended version. A release tag
-   must match it exactly, such as `v0.2.0`.
+   must match it exactly, such as `v0.4.0`.
 2. Ensure the GitHub repository secret `UPDATE_SIGNING_KEY` holds the PEM
    Ed25519 private key matching `packaging/update-public-key.hex`. Keep a
    separate secure backup. Never commit the private key. Generate a pair
@@ -69,8 +70,9 @@ check in Settings.
    packages. The `.deb` is covered by the signed checksums but has no
    self-update path; `packaging/linux/deb.sh` builds it locally. It checks that the signing key matches the compiled public key,
    signs `checksums.txt`, and creates a **draft** release.
-4. Inspect the packages and release notes, complete the live-account and
-   OSS acceptance checks, then publish the draft. This publication is what
+4. Inspect the packages and release notes. On each platform, install the
+   packages and check sign-in, a chat, and an update with a real account.
+   Then publish the draft. This publication is what
    makes the update available to users.
 
 Stable builds follow GitHub's latest stable release. Builds whose Cargo

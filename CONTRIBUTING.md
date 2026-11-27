@@ -51,10 +51,12 @@ font and icon licenses described in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES
 Keep every fastframe crate on the same tag. Dependabot groups their updates
 into one pull request so internal dependencies use the same revision too.
 
-The protected `main` branch requires format/lint/docs, tests on all three
-platforms, the macOS signing regression, secret scanning, and the dependency
-audit. History stays linear; force pushes and branch deletion are blocked.
-Repository admins retain their maintenance bypass.
+CI runs on pushes to `main` and on pull requests: format, lint and docs
+(with a check that the license notices are current), tests on Linux, macOS
+and Windows, and the macOS signing regression. Pushes to `main` also build
+packages for all three platforms. The security workflow adds the secret scan
+and the dependency audit. History stays linear: pull requests are squash-merged, with no merge
+commits.
 
 Keep local environment files, signing keys, account databases, and logs out
 of commits. Sanitised `.env.example` files are allowed. Report suspected

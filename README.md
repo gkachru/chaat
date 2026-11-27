@@ -34,8 +34,9 @@ one list, each row marked with its account.
 - Search (`⌘K`) covers every account.
 - Availability set in Unified applies to every account that allows status
   changes. Status messages and Out of office stay per account.
-- **Unified only** (Settings › Appearance) hides the tiles, and `⌘⇧A` cycles
-  through Unified and each account.
+- `⌘⇧A` cycles through Unified and each account. **Unified only**
+  (Settings › Appearance) hides the tiles and keeps Chaat in Unified, so
+  `⌘⇧A` does nothing while it is on.
 
 Each account keeps its own sign-in, cache and push connection. Unified reads
 what Chaat already has cached, so it needs no extra permissions and makes no
@@ -74,12 +75,18 @@ Chaat stays in control of what a plugin gets:
 |---|---|
 | Chats: list, unread, filter by unread, group or meeting chats, history, send, quote replies, reactions, edit, delete, mark read | ✅ Implemented (Graph) |
 | New chats, @mentions in the composer, sending files (OneDrive upload and sharing) | ✅ Implemented |
-| People in group and meeting chats: members (with presence in group chats), add people (with or without chat history), leave | ✅ Implemented; leaving needs admin consent |
+| Drafts and unsent messages | ✅ Kept across a restart. A message under 10 minutes old is sent again after a check for a duplicate; older ones and channel replies wait with Retry |
+| Format bar (bold, italic, underline, strikethrough, code, quote, lists), emoji picker and `:shortcodes:` | ✅ Implemented; markdown is styled as you type |
+| Find in the open chat or channel (`⌘F`) | ✅ Local cache as you type, then Microsoft Search results for that conversation |
+| Pinned messages in chats | ✅ Banner under the header; pin and unpin from a message's menu |
+| People in group and meeting chats: members with presence, add people (with or without chat history), leave | ✅ Implemented; leaving needs admin consent. Opening any chat fetches presence once for up to 20 members; group-chat members are also followed for presence |
 | Rich text, mentions, emoji, links, code, inline images | ✅ Implemented (native rendering of Teams HTML) |
+| Adaptive Cards | ⚠️ Display only: text, facts, columns and Open URL buttons. Inputs and Submit open in Teams, and card images are not fetched |
 | Images in chats and drafts | ✅ Cropped draft thumbnails; click either for the same full preview with fit and 100% views |
 | Teams and channels, threaded posts and replies | ✅ Implemented; reading channel posts needs admin consent |
 | Local full-text search plus Microsoft Search, ⌘K switcher | ✅ Implemented |
 | Calendar, meeting reminders, Join | ✅ Implemented |
+| Meeting recordings | ✅ Links from meeting chats, in the chat and in the Recordings section (`⌘5`); open in the browser |
 | Calls and meetings | ✅ In Teams on the web, in its own Edge or Chrome window beside Chaat, with the meeting chat and a call bar in Chaat; free, since the call runs in Microsoft's client ([how](docs/calling.md)) |
 | Presence, photos | ✅ Implemented |
 | Light, dark and system themes, 8 palettes, keyboard shortcuts, tray | ✅ Implemented |
@@ -127,13 +134,14 @@ tenants, and most tenants block unverified multi-tenant apps.
 2. Start Chaat, enter the **Application (client) ID** and your **tenant**, and
    select **Sign in with Microsoft**. Or set `CHAAT_CLIENT_ID` and
    `CHAAT_TENANT` in the environment.
-3. In most tenants an administrator must approve `Chat.ReadWrite` and
-   `Calendars.Read`, which the default consent policy excludes, and
-   `ChannelMessage.Read.All` for channel posts, and `ChatMember.ReadWrite` for
-   leaving group chats. Chaat shows an admin-consent link under
-   **Settings → Advanced**. Starting a chat, sending a file, setting your status
-   and leaving a group chat each ask for one more permission the first time. Each
-   permission is explained in [docs/permissions.md](docs/permissions.md).
+3. Many tenants' user-consent policy blocks `Chat.ReadWrite` and
+   `Calendars.Read`, so an administrator often has to approve them.
+   `ChannelMessage.Read.All` (channel posts) and `ChatMember.ReadWrite`
+   (leaving group chats) always need admin consent. Chaat shows an admin-consent link under
+   **Settings → Advanced**. Starting a chat, sending a file, setting your status,
+   leaving a group chat, Out of office, joining by meeting ID, and finding a
+   meeting's chat from its join link each ask for one more permission the
+   first time. Each permission is explained in [docs/permissions.md](docs/permissions.md).
 
 To skip typing the IDs and the relay access key, an administrator can create
 an encrypted setup file in **Settings → Advanced** and send it to colleagues.
@@ -157,8 +165,9 @@ artifacts. Version tags create a signed draft release with packages that
 support automatic updates. Nothing is published as a release yet. See
 [app updates and release steps](docs/updates.md).
 
-On Debian and Ubuntu (amd64, Ubuntu 22.04+ or Debian 12+), install the `.deb`
-from the releases page with `sudo apt install ./chaat_<version>-1_amd64.deb`.
+On Debian and Ubuntu (amd64, Ubuntu 22.04+ or Debian 12+), once releases are
+published, install the `.deb` from the releases page with
+`sudo apt install ./chaat_<version>-1_amd64.deb`.
 Updates arrive as new `.deb` files on the releases page; the package does not
 include the portable marker, so Chaat's self-updater stays off for it.
 
@@ -169,7 +178,8 @@ development and can ask for approval again after each replacement. See
 
 ## Keyboard
 
-`⌘K` jump anywhere or search messages · `⌘N` new chat · `⌘1–5` sections ·
+`⌘K` jump anywhere or search messages · `⌘F` find in the open conversation ·
+`⌘N` new chat · `⌘1–5` sections (Chats, Teams, Calendar, Calls, Recordings) ·
 `Alt ↑/↓` previous or next conversation · `⌘⇧A` cycle Unified and accounts · `Enter` send ·
 `Shift Enter` new line · `@` mention · `↑` edit last message · `⌘R` refresh ·
 `⌘,` settings · `⌘/` all shortcuts. (`⌘` is Ctrl on

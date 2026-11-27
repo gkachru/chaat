@@ -124,8 +124,8 @@ How it works:
    only deletes its own, so another device sharing the relay is unaffected.
 
 The chat with yourself (notes, `48:notes`) is not documented by Microsoft.
-In testing on 18 November 2026, a message to yourself produced no change
-notification, while a one-on-one chat did. That chat updates when the chat
+A message to yourself may produce no change notification, while a
+one-on-one chat does. That chat updates when the chat
 list refreshes: when Chaat comes to the foreground, on ⌘R, or when another
 chat's notification refreshes the list.
 
@@ -202,6 +202,11 @@ the first one in the list order of Settings › Plugins (changeable with
 cargo build --release -p chaat-relay
 ./target/release/chaat-relay --listen 127.0.0.1:8787
 ```
+
+The listen address defaults to `127.0.0.1:8787`. `--listen ADDRESS` or the
+`CHAAT_RELAY_LISTEN` environment variable sets another; the flag wins when
+both are given, and an unparsable `CHAAT_RELAY_LISTEN` falls back to the
+default.
 
 Put it behind HTTPS on a public hostname, because Graph only posts to
 `https://` URLs. For example, with [Caddy](https://caddyserver.com):
@@ -293,8 +298,9 @@ pings keep it within Cloudflare's idle timeout.
 
 ### Limits
 
-- Graph allows 10,000 Teams subscriptions per organisation. Each running Chaat
-  holds one.
+- Graph allows 10,000 Teams subscriptions per organisation. Each signed-in
+  account in a running Chaat holds one chats subscription, plus one presence
+  subscription while it follows presence.
 - Channel posts are not subscribed yet. They would need `ChannelMessage.Read.All`
   and one subscription per channel.
 - Organisations on Azure could deliver through Event Hubs instead. Not

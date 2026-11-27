@@ -16,7 +16,7 @@ source. Their current [license summary](licenses/objc2-license.md), including
 the Apple SDK note, is included too. dpi's embedded libm code has a separate
 [MIT notice](licenses/dpi-libm-MIT.txt).
 
-The font and icon notices below also accompany every package. Cargo package
+The font, icon and wordlist notices below also accompany every package. Cargo package
 metadata alone does not describe every embedded asset's license.
 
 | Work | Licence | Where |
@@ -30,6 +30,7 @@ metadata alone does not describe every embedded asset's license.
 | [fastframe](https://github.com/crmne/fastframe) crates | MIT | Cargo dependencies |
 | [egui / eframe](https://github.com/emilk/egui) (crmne/egui fork) and [winit](https://github.com/rust-windowing/winit) (crmne/winit fork) | MIT or Apache-2.0 | Cargo dependencies |
 | [SQLite](https://sqlite.org) via rusqlite's bundled build | Public domain | Compiled into the binary |
+| [EFF large wordlist](https://www.eff.org/dice), copyright Electronic Frontier Foundation | [CC BY 3.0 US](https://creativecommons.org/licenses/by/3.0/us/) | `assets/eff_large_wordlist.txt`, compiled into the binary for setup-file passphrases |
 | Other Rust crates | See the selected license for each crate | [licenses/dependencies.txt](licenses/dependencies.txt) |
 
 Regenerate the notices after dependency changes with
