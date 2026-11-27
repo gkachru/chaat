@@ -1,1 +1,1 @@
-{"v":1,"type":"ready","capabilities":["call_alerts"],"name":"Ring alerts","description":"Tells Chaat who is calling you in Teams.","docs_url":"https://github.com/gkachru/call-alerts","forgotten":["o9.t9"]}
+{"v":1,"type":"ready","capabilities":["call_alerts"],"name":"Ring alerts","description":"Tells Chaat who is calling you in Teams.","docs_url":"https://example.com/call-alerts","forgotten":["o9.t9"]}

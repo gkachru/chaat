@@ -3906,10 +3906,7 @@ fn plugin_text_is_quoted_under_chaats_line() {
     assert!(texts_in_order(&h, &[intro, "Ring alerts"]));
     let mut h = plugins_page_harness_for("demo-alerts");
     let painted = painted_texts(&h);
-    assert!(
-        painted.iter().any(|t| t == "Ring alerts"),
-        "the name shows"
-    );
+    assert!(painted.iter().any(|t| t == "Ring alerts"), "the name shows");
     assert!(
         painted
             .iter()
@@ -5819,9 +5816,10 @@ fn removing_a_provider_says_what_stops() {
     }
     plugins_page_click(&mut h, "Remove plugin\u{2026}");
     assert!(
-        painted_texts(&h).iter().any(|t| t
-            .starts_with("Remove \u{201C}Ring alerts\u{201D}?")
-            && t.ends_with("Chaat stops showing incoming calls from this plugin.")),
+        painted_texts(&h)
+            .iter()
+            .any(|t| t.starts_with("Remove \u{201C}Ring alerts\u{201D}?")
+                && t.ends_with("Chaat stops showing incoming calls from this plugin.")),
         "{:?}",
         painted_texts(&h)
     );

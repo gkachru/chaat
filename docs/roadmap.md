@@ -41,6 +41,6 @@ Next:
 The plugin system is built: a plugin list in Settings › Plugins, one host
 per plugin, capabilities routed to features (`call_alerts`, `presence_display`),
 plugin-described options and presence for a status light
-([plugins.md](plugins.md), [design note](plans/2026-11-20-plugin-system.md)).
+([plugins.md](plugins.md)).
 Still open: a `commands` capability that lets a plugin ask Chaat to act, and
 pinning plugin executables so a replaced file is noticed.

@@ -2049,7 +2049,7 @@ fn an_account_error_names_the_account_and_stops_listening() {
             "ca",
             crate::plugin::event::PluginEvent::Error {
                 account: Some(FABRIKAM.into()),
-                message: "could not find the push service host".into(),
+                message: "could not reach the push service".into(),
             },
         ),
         &ctx,

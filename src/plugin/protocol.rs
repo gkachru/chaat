@@ -927,7 +927,7 @@ mod tests {
                 capabilities: vec!["call_alerts".into()],
                 name: Some("Ring alerts".into()),
                 description: Some("Tells Chaat who is calling you in Teams.".into()),
-                docs_url: Some("https://github.com/gkachru/call-alerts".into()),
+                docs_url: Some("https://example.com/call-alerts".into()),
                 forgotten: vec!["o9.t9".into()],
                 needs: vec![],
                 options: vec![],
@@ -1037,7 +1037,7 @@ mod tests {
     #[test]
     fn plugin_self_descriptions_are_cleaned_for_display() {
         let info = PluginInfo::from_ready(
-            Some("  Teams\ncall\talerts ".into()),
+            Some("  Ring\n\talerts ".into()),
             Some("x".repeat(400)),
             Some("http://example.com".into()),
         );

@@ -15,9 +15,9 @@ It does not request `Files.ReadWrite` or create a OneDrive sharing link.
 
 Hide, unhide, mark as unread, pinned messages, status expiry and join by meeting ID add no scope: each call uses one of the permissions in the table below.
 
-Call alerts need no Chaat permission. The optional call-alerts plugin is a
-separate program with its own sign-in and consent (Teams' own client); Chaat
-never shares its tokens with it ([calling.md](calling.md#call-alerts-plugin)).
+Call alerts need no Chaat permission. A call-alerts plugin is a separate
+program with its own sign-in and consent; Chaat never shares tokens with it
+([calling.md](calling.md#call-alerts-plugin)).
 
 Agents (an optional plugin that reads cached messages and proposes replies and
 reactions, [plugins.md](plugins.md#agent-plugins)) need no new Graph

@@ -396,8 +396,6 @@ describe, or of an unsupported kind, are kept.
 
 ### What you see
 
-This describes the page from the design note ([plans/2026-11-20-plugin-options.md](plans/2026-11-20-plugin-options.md)).
-
 - Toggles and choices save at once. Text, number and multiline values save on
   Enter (Ctrl+Enter for multiline) or when the field loses focus.
 - Each section has **Reset to defaults**: options with a default get it,
@@ -689,7 +687,7 @@ A status-light plugin that needs presence and has one option:
 
 ```
 chaat  -> {"v":1,"type":"hello","host":"chaat","capabilities":["call_alerts","presence_display"],"accounts":[]}
-plugin -> {"v":1,"type":"ready","capabilities":["presence_display"],"name":"Status light","needs":["presence"],"options":[{"id":"ip","kind":"text","label":"Bulb address","default":"192.168.1.20"}]}
+plugin -> {"v":1,"type":"ready","capabilities":["presence_display"],"name":"Status light","needs":["presence"],"options":[{"id":"ip","kind":"text","label":"Light address","default":"192.168.1.20"}]}
 chaat  -> {"v":1,"type":"options","values":{"ip":"192.168.1.20"}}
 chaat  -> {"v":1,"type":"presence","availability":"Busy","activity":"InACall"}
 chaat  -> {"v":1,"type":"shutdown"}

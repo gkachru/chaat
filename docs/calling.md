@@ -76,9 +76,6 @@ call-alerts plugin can supply that signal. It is a separate program the
 person installs and turns on; Chaat does not ship, download or update one.
 How a plugin detects calls, how it signs in and what that means for your
 organization's policy are the plugin's own business and documented with it.
-For `call-alerts`, which uses Teams' own push service and sign-in
-outside Microsoft's documented APIs, see its
-[README](https://github.com/gkachru/call-alerts#readme).
 
 What Chaat knows about a plugin is the protocol in [plugins.md](plugins.md):
 it starts the program as `<plugin> serve` and exchanges JSON lines with it.
@@ -207,8 +204,8 @@ additional usage charges; Chaat keeps media in Microsoft's own clients.
 See the official sources in the [API reference](microsoft-api-research.md#calling).
 
 Chaat has no embedded browser engine and uses no undocumented Teams endpoints
-or call-control protocols. The optional call-alerts plugin does (push service);
-it is a separate program, outside Chaat. Ringing, mute, camera and leave controls belong to
+or call-control protocols. A call-alerts plugin is a separate program, outside
+Chaat. Ringing, mute, camera and leave controls belong to
 the Teams client carrying the call.
 
 ## Open questions
@@ -222,4 +219,4 @@ These still need a real browser, meeting and tenant:
 | Browser session reuse and creation of missing account profiles | Sign in to Teams on the web; separate profiles are optional |
 | Presence timing when entering or leaving a real call | One-minute grace period and **Done** |
 | Focusing the exact call window | **Show call** activates the browser on macOS |
-| Call-alerts plugin with a real group call, and with several accounts signed in live | Tested with fixtures only; one live account and one-on-one rings were verified before multi-account support |
+| A call-alerts plugin with a real group call, and with several accounts signed in live | Tested with fixtures only |

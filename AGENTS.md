@@ -16,9 +16,8 @@ Microsoft Graph. These rules are for coding agents and contributors. Follow
   first-party client IDs, never present Chaat as Microsoft's client.
 - **Plugins stay outside Chaat.** Chaat may launch external plugins the
   person installs and turns on (Settings › Plugins) and read their versioned
-  JSON lines (`docs/plugins.md`). How a plugin gets its data (the call-alerts
-  plugin uses push service and Teams' own sign-in) lives only in the plugin's
-  repository, never in Chaat; the rule above still binds Chaat itself. Chaat
+  JSON lines (`docs/plugins.md`). How a plugin gets its data lives only in the
+  plugin's repository, never in Chaat; the rule above still binds Chaat itself. Chaat
   never ships, downloads or updates a plugin, and never passes it tokens,
   settings or messages. Only when a plugin declares the need in `ready.needs`
   and the person has approved it may Chaat send it each account's ID

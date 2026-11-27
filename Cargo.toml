@@ -185,8 +185,8 @@ debug = "line-tables-only"
 debug = false
 
 [patch.crates-io]
-# crmne/egui apps-0.36 and crmne/winit apps-0.30, shared with Spotifast,
-# ZapFast: egui 0.36.1 with egui's busy-loop fix
+# crmne/egui apps-0.36 and crmne/winit apps-0.30, shared with Spotifast
+# and ZapFast: egui 0.36.1 with egui's busy-loop fix
 # (emilk/egui#8398, idle CPU), Wayland frame pacing by compositor callbacks
 # (emilk/egui#8631), a compatibility-profile GL fallback for old Windows
 # drivers (emilk/egui#8655), and window size persistence at any zoom

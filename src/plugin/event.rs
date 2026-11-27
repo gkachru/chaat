@@ -320,7 +320,7 @@ mod tests {
         let ready = parsed(json!({
             "v": 1, "type": "ready",
             "capabilities": ["presence_display", "x"],
-            "name": " Busy\nlight ",
+            "name": " Status\nlight ",
             "needs": ["presence", "tokens"],
             "options": [
                 {"id": "ip", "kind": "text", "label": "Bulb address"},

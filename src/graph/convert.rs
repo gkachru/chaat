@@ -276,9 +276,9 @@ fn recording(detail: &g::EventDetail) -> Option<crate::model::Recording> {
 
 /// Whether an ended call went unanswered by anyone: a call (not a meeting)
 /// that someone else placed and nobody joined besides them. Graph has no
-/// answered or declined state, so this is inferred: a
-/// decline looks the same, and a group call one other person answered does
-/// not count as missed.
+/// answered or declined state, so this is inferred: a decline looks the
+/// same, and a group call one other person answered does not count as
+/// missed.
 pub fn call_missed(detail: Option<&serde_json::Value>, me: &str) -> bool {
     call_missed_detail(&detail_of(detail), me)
 }
