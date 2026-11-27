@@ -16,10 +16,3 @@ or screenshots containing account data.
 For a normal bug without a security impact, open a GitHub issue. Chaat's
 [privacy documentation](docs/privacy.md) explains its network access, local
 cache, credential storage, and current limits.
-
-## Maintainer setup
-
-GitHub private vulnerability reporting is available for public repositories.
-Enable it in the repository's security settings when making Chaat public, and
-verify that the reporting form works before announcing the project. Until
-then, the private repository is accessible only to its collaborators.

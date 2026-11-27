@@ -7,10 +7,8 @@
 <p align="center">A fast, native app that works with Microsoft Teams chats, channels and meetings.<br>
 Rust and egui. No browser engine. Works with Microsoft Teams through Microsoft's official APIs.</p>
 
-> **Status: early preview (0.1).** The interface, sign-in, Graph integration
-> and cache are tested against mocks. The maintainer has also completed the
-> live-account acceptance checks, including real push notifications. See
-> [what works and what was verified](docs/features.md) for the verified scope
+> **Status: early preview.** See
+> [what works and what was verified](docs/features.md) for the tested scope
 > and remaining platform checks.
 
 ## Why
@@ -21,17 +19,6 @@ native messaging client in the spirit of
 [ZapFast](https://github.com/crmne/zapfast): one small binary, a window that
 draws only when something changes, bounded image caches, and every view served
 from a local cache first.
-
-Measured on a Mac mini (Apple Silicon, macOS 27), release build with demo data
-([details and method](docs/performance.md)). These numbers date from before
-the rename, when the app still had a demo mode:
-
-| | Chaat 0.1 |
-|---|---|
-| Launch to first frame | 101–120 ms across six demo launches |
-| Idle CPU, window open | 0.0% |
-| Memory (physical footprint) | 57 MiB settled offline demo |
-| Binary / app bundle | About 16 MiB |
 
 ## Features
 
@@ -106,7 +93,7 @@ APIs serve work and school accounts only.
 
 | Platform | Command |
 |---|---|
-| macOS | Set `CODESIGN_IDENTITY`, then `cargo build --release && packaging/macos/bundle.sh target/release/chaat Chaat.app 0.2.0` |
+| macOS | Set `CODESIGN_IDENTITY`, then `cargo build --release && packaging/macos/bundle.sh target/release/chaat Chaat.app 0.4.0` |
 | Linux | `cargo build --release && packaging/linux/install.sh` (installs to `~/.local`) |
 | Debian and Ubuntu (.deb) | `packaging/linux/deb.sh` builds `dist/chaat_<version>-1_amd64.deb` for Ubuntu 22.04+ and Debian 12+ (glibc 2.35). Needs `cargo-zigbuild`, `zig` and `cargo-deb`. |
 | Windows | `cargo build --release` (icon and version embedded by `build.rs`) |

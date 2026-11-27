@@ -40,16 +40,10 @@ Notices are also embedded in the executables. Run `chaat --licenses` or
 `chaat-relay --licenses` to read the current build's texts, including after a
 Linux or Windows self-update that replaces only the executable.
 
-There is no public release feed until a maintainer publishes the first
-GitHub release. A private repository or an empty release feed cannot serve
-updates to normal users; Chaat reports the failed check in Settings.
-
-The `gkachru/chaat` repository is private. The update check calls GitHub
-without authentication, so it cannot see its releases, and automatic updates
-do not work while the repository stays private. Releases also need the
-maintainer's own update signing key: replace
-`packaging/update-public-key.hex` with the public half of that key, and set
-the matching `UPDATE_SIGNING_KEY` secret, before automatic updates can work.
+Automatic updates need a release published by the release workflow below,
+with a `checksums.txt.sig` signed by the key that matches
+`packaging/update-public-key.hex`. Until one exists, Chaat reports the failed
+check in Settings.
 
 ## Making a release
 
