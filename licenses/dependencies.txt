@@ -8915,7 +8915,7 @@ Used by:
   epaint_default_fonts 0.36.1 <https://github.com/emilk/egui/tree/main/crates/epaint_default_fonts>
     Author: Emil Ernerfeldt <emil.ernerfeldt@gmail.com>
     Source: git+https://github.com/crmne/egui?rev=ba6790fe7cf46e58e8d27ce1524cbfdee745e938#ba6790fe7cf46e58e8d27ce1524cbfdee745e938
-  chaat 0.4.0 <https://github.com/gkachru/chaat>
+  chaat 0.4.1 <https://github.com/gkachru/chaat>
 
 MIT License
 
@@ -9604,7 +9604,7 @@ SOFTWARE.
 MIT License (MIT)
 
 Used by:
-  chaat 0.4.0 <https://github.com/gkachru/chaat>
+  chaat 0.4.1 <https://github.com/gkachru/chaat>
   chaat-relay 0.1.0 <https://github.com/gkachru/chaat>
 
 MIT License
