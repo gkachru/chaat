@@ -8,10 +8,12 @@ only official, documented Microsoft APIs.
 
 Four kinds of plugin exist today: a call-alerts plugin ([calling.md](calling.md#call-alerts-plugin)),
 any program that shows presence (a status light), a push relay plugin that
-receives Graph's change notifications ([realtime.md](realtime.md#through-a-push-plugin)),
+receives Graph's change notifications ([realtime.md](realtime.md#through-a-push-plugin);
+for example [chaat-push-relay](https://github.com/gkachru/chaat-push-relay)),
 and an agents plugin that lets an AI agent read the chats you allow and
-propose replies ([Agent plugins](#agent-plugins)). Presence display and push
-are covered by tests with fake plugins only, not live. Agents are covered by
+propose replies ([Agent plugins](#agent-plugins)). Presence display is
+covered by tests with fake plugins only, not live. Push is covered by tests
+with fake plugins and has been used live on Windows with chaat-push-relay. Agents are covered by
 the protocol fixtures and by tests of Chaat's own side (allow list, reads
 from the cache, proposals) without a plugin process, not live. For call
 alerts, see [calling.md](calling.md#open-questions).

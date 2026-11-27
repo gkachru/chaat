@@ -141,11 +141,10 @@ gives background notifications for new messages.
 ### Through a push plugin
 
 A plugin that offers the `push` capability can receive Graph's notifications
-instead of a hosted `chaat-relay`. The maintainer's plugin
-(`chaat-push-relay`, a separate repository) runs a receiver on 127.0.0.1 and
-puts it on the internet through a `cloudflared` tunnel you install yourself.
-Chaat never ships or installs either. It has not yet been tried against real
-Graph notifications.
+instead of a hosted `chaat-relay`. [chaat-push-relay](https://github.com/gkachru/chaat-push-relay), a separate repository, runs a
+receiver on 127.0.0.1 and puts it on the internet through a `cloudflared`
+tunnel you install yourself. Chaat never ships or installs either. It has
+been used on Windows with real Graph notifications.
 
 How it works:
 

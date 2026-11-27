@@ -51,7 +51,7 @@ language ([protocol](docs/plugins.md)).
 
 | Capability | What a plugin can do |
 |---|---|
-| Push updates | Receive Graph's change notifications through a `cloudflared` tunnel, for real-time updates without hosting a relay ([how](docs/realtime.md#through-a-push-plugin)) |
+| Push updates | Receive Graph's change notifications through a `cloudflared` tunnel, for real-time updates without hosting a relay ([how](docs/realtime.md#through-a-push-plugin)). Available: [chaat-push-relay](https://github.com/gkachru/chaat-push-relay) |
 | AI agents | Let an AI agent read the chats and channels you allow and propose replies and reactions. Nothing is sent until you click ([how](docs/plugins.md#agent-plugins)) |
 | Presence display | Show your availability on a status light or another device |
 | Call alerts | Tell Chaat that a call is ringing, which Graph cannot do. Chaat shows who is calling, with **Place call** and **Open chat** ([how](docs/calling.md#call-alerts-plugin)) |
@@ -67,7 +67,7 @@ Chaat stays in control of what a plugin gets:
 - Everything a plugin sends is treated as untrusted. Nothing happens until
   you click.
 - Chaat never ships, downloads or updates a plugin. Plugins are published
-  separately, and none is public yet.
+  separately. [chaat-push-relay](https://github.com/gkachru/chaat-push-relay) is public; the others are not yet.
 
 ## Features
 
@@ -95,7 +95,7 @@ Chaat stays in control of what a plugin gets:
 | Real-time updates | ✅ On open, focus and refresh. ✅ Push through a self-hostable `chaat-relay`, or through a push relay plugin with a `cloudflared` tunnel instead of a hosted relay, since Microsoft forbids polling ([why](docs/realtime.md)) |
 | Multiple accounts with a Unified view, setting your availability and status message | ✅ Implemented ([above](#every-account-in-one-window)) |
 | Out of office (automatic replies) | ✅ In Settings and an account's menu, for accounts with an Exchange Online mailbox |
-| Plugins: push, AI agents, presence display, call alerts | ✅ Plugin host and protocol implemented. ⚠️ Each capability needs a separately installed plugin, and none is public yet ([above](#plugins)) |
+| Plugins: push, AI agents, presence display, call alerts | ✅ Plugin host and protocol implemented. ⚠️ Each capability needs a separately installed plugin. Push: [chaat-push-relay](https://github.com/gkachru/chaat-push-relay); the others are not public yet ([above](#plugins)) |
 | Audio and video inside Chaat's own window, answering calls | ❌ No free official way: Microsoft's licence covers call media only in its own clients ([why](docs/calling.md)) |
 
 The full matrix, including what was verified and how, is in
