@@ -459,7 +459,7 @@ license = "MIT"
 [[chaat-relay.clarify.files]]
 path = "../LICENSE"
 license = "MIT"
-checksum = "b0c24710b28e67c1d63da67c673f8166ab3fda0a70d8bb383976db27e6b38bc9"
+checksum = "e64bf953716d1897206f8de3e220b4f55bc876b716f743cce015b77216a647c4"
 
 [dispatch2.clarify]
 license = "MIT OR Apache-2.0 OR Zlib"
