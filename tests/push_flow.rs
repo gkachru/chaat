@@ -151,10 +151,17 @@ async fn a_change_notification_fetches_the_chat() {
         .position(|r| r.method.as_str() == "POST" && r.url.path() == "/v1.0/subscriptions")
         .unwrap();
     assert!(old < first_new);
-    assert_eq!(
-        chaat::realtime::read_leftovers(&leftovers),
-        ["sub-1", "sub-1"]
-    );
+    // The worker records what it holds once presence is followed, a moment
+    // after it reports Live.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let recorded = loop {
+        let recorded = chaat::realtime::read_leftovers(&leftovers);
+        if recorded.len() == 2 || std::time::Instant::now() > deadline {
+            break recorded;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    assert_eq!(recorded, ["sub-1", "sub-1"]);
 
     // What Chaat asked Graph for.
     let subscribe = requests
