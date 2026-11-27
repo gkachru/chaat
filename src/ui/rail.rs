@@ -125,16 +125,26 @@ fn accounts(app: &mut App, ui: &mut egui::Ui) {
     let max_height = (ui.available_height() - reserved).max(48.0);
     let single = app.accounts.len() <= 1 || app.settings.unified_only;
     let logo_active = logo_marked(single, app.unified, app.settings_page.is_some());
-    let (rect, logo) = ui.allocate_exact_size(vec2(48.0, 44.0), Sense::click());
+    // Unified only: the logo never has a tile and the rule follows it, so
+    // drop the tile's empty bottom (the mark ends 9 px above the tile's edge)
+    // and the 2 px the Chats tile's edge reaches above its own rect. The rule
+    // then sits halfway between the mark and the Chats tile.
+    let height = if app.settings.unified_only {
+        33.0
+    } else {
+        44.0
+    };
+    let (rect, logo) = ui.allocate_exact_size(vec2(48.0, height), Sense::click());
     if ui.is_rect_visible(rect) {
+        let tile = egui::Rect::from_min_size(rect.min, vec2(48.0, 44.0));
         if let Some(selected) = logo_tile(logo_active, single, logo.hovered()) {
-            widgets::glass_tile(ui.painter(), &palette, rect, selected);
+            widgets::glass_tile(ui.painter(), &palette, tile, selected);
         }
         egui::Image::new(APP_ICON)
             .fit_to_exact_size(egui::Vec2::splat(26.0))
             .paint_at(
                 ui,
-                egui::Rect::from_center_size(rect.center(), egui::Vec2::splat(26.0)),
+                egui::Rect::from_center_size(tile.center(), egui::Vec2::splat(26.0)),
             );
     }
     // With no account tiles the logo is just the app's mark: no pointer

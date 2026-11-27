@@ -8170,6 +8170,50 @@ fn unified_only_leaves_no_gap_under_the_logo() {
     );
 }
 
+/// Unified only: the logo has no tile, so the rule under it sits halfway
+/// between the logo's mark and the Chats tile.
+#[test]
+fn unified_only_centres_the_rule_between_logo_and_chats() {
+    let mut h = Harness::new();
+    h.act(Action::SetUnifiedOnly(true));
+    h.frames(2);
+    let shapes = painted_shapes(&h);
+    let separator = shapes
+        .iter()
+        .find_map(|shape| match shape {
+            egui::epaint::Shape::LineSegment { points, .. }
+                if points[0].y == points[1].y
+                    && points[1].x <= chaat::theme::RAIL_WIDTH
+                    && points[0].y > 0.0 =>
+            {
+                Some(points[0].y)
+            }
+            _ => None,
+        })
+        .expect("rail separator");
+    let in_rail: Vec<egui::Rect> = shapes
+        .iter()
+        .map(|shape| shape.visual_bounding_rect())
+        .filter(|r| r.is_finite() && r.max.x <= chaat::theme::RAIL_WIDTH && r.width() > 4.0)
+        .collect();
+    let logo_bottom = in_rail
+        .iter()
+        .filter(|r| r.max.y < separator)
+        .map(|r| r.max.y)
+        .fold(f32::MIN, f32::max);
+    let chats_top = in_rail
+        .iter()
+        .filter(|r| r.min.y > separator)
+        .map(|r| r.min.y)
+        .fold(f32::MAX, f32::min);
+    let above = separator - logo_bottom;
+    let below = chats_top - separator;
+    assert!(
+        (above - below).abs() <= 1.5,
+        "gap above the rule {above}, below {below}"
+    );
+}
+
 #[test]
 fn unified_only_settings_still_add_account() {
     let mut h = Harness::new();
