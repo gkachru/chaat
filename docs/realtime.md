@@ -50,8 +50,7 @@ What this means in practice:
 ## With a relay: push updates
 
 **Status:** implemented and tested end to end against a local relay and a
-simulated Graph (`tests/push_flow.rs`). The maintainer confirmed real push
-notifications during live-account acceptance on 17 October 2026. See the
+simulated Graph (`tests/push_flow.rs`). See the
 [verification record](features.md#verification).
 
 How it works:

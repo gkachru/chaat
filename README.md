@@ -102,7 +102,7 @@ are in
 |---|---|
 | Windows (x86_64) | Main development platform, run with real accounts |
 | Linux (x86_64) | Builds and passes the test suite (checked in WSL). A `.deb` for Ubuntu 22.04+ and Debian 12+. Not yet tried on a Linux desktop |
-| macOS (Apple Silicon) | Checked on macOS 27 before Chaat started from Wren. Recent changes have not been built or run on a Mac |
+| macOS (Apple Silicon) | Supported by the code and packaging. Not yet built or run on a Mac since Chaat started from Wren |
 
 ## Getting started
 

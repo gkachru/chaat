@@ -1,4 +1,5 @@
-//! Offline performance workloads. See docs/performance.md.
+//! Offline performance workloads, for example:
+//! `cargo run --release --example perf_probe -- --case history --messages 100000 --frames 300 --output history.jsonl`.
 //! This executable uses demo data and never reads credentials or contacts Graph.
 
 use std::io::{BufWriter, Write};

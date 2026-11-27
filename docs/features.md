@@ -1,10 +1,10 @@
 # Feature support
 
-Status as of Chaat 0.1 (unreleased).
+Status as of Chaat 0.4.
 
 - **Works**: implemented against Microsoft Graph, unit-tested against a mock
-  Graph server and drawn in the headless UI tests. Automated coverage and
-  maintainer-confirmed live-account acceptance are listed below.
+  Graph server and drawn in the headless UI tests. Automated coverage is
+  listed below.
 - **Hand-off**: opens Microsoft Teams through documented deep links.
 - **Experimental / planned**: designed, not built.
 - **Not possible**: no official API allows it.
@@ -108,19 +108,12 @@ Official portable downloads and macOS bundles check GitHub daily and download si
 | Backend and feature flows | `tests/backend_flow.rs` and `tests/features_flow.rs`: sign-in, session restoration, sign-out, messaging, files, new chats, mentions, presence and meeting-chat lookup |
 | Push | `tests/push_flow.rs`: real relay and backend with simulated Graph, subscription validation, notifications and cleanup |
 | Interface | `tests/ui_smoke.rs`: headless frames for every screen, dialogs, account switching, the account rail, the Unified view and a 5,000-message chat |
-| Native macOS | Apple Silicon, macOS 27; demo screenshots at 1280 × 800, call bar, docked panel and QR code; signed-in performance checks in [performance.md](performance.md) |
-| Persistent macOS signing | Synthetic-certificate regression and maintainer-confirmed reopening without another Keychain prompt; setup in [macos-keychain.md](macos-keychain.md) |
-
-**Live-account acceptance**, confirmed by the maintainer on 17 October 2026:
-a fresh sign-in and consent flow, chat and channel reads and writes, file
-sharing, presence, calendar, account switching, sign-out cleanup, and real
-push notifications. This was a manual check with a real account.
+| Persistent macOS signing | Synthetic-certificate regression; setup in [macos-keychain.md](macos-keychain.md) |
 
 Remaining checks and known issues:
 
-- Native Windows and Linux windows have not been inspected. Both compile
-  and pass tests in CI.
+- Chaat is run with real accounts on Windows. Native Linux windows have not
+  been inspected on a desktop, and recent changes have not been run on a Mac.
 - A real call in the Teams web window has not been confirmed. See the
   [calling open questions](calling.md#open-questions).
-- The Calls capability table clips at 760 × 700, observed in both themes
-  during the macOS demo checks.
+- The Calls capability table clips at 760 × 700, observed in both themes.

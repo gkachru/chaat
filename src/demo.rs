@@ -646,7 +646,7 @@ pub fn populate(app: &mut App) {
         if let Some(m) = b.messages.last_mut() {
             m.replies = replies;
         }
-        let root = b.text("u-ada", now - 6 * HOUR, "Idle should cost nothing: egui only repaints on input or backend events, and nothing polls. How to measure it is in docs/performance.md.");
+        let root = b.text("u-ada", now - 6 * HOUR, "Idle should cost nothing: egui only repaints on input or backend events, and nothing polls.");
         root.subject = Some("Performance check".into());
         let root_id = root.id.clone();
         b.react("🎉", &["u-margaret", "u-hedy"]);

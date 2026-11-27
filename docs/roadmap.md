@@ -2,10 +2,6 @@
 
 Roughly in order. Each step lands as its own focused change with tests.
 
-The maintainer confirmed initial live-account acceptance, including real
-push notifications, on 17 October 2026. The completed checks are listed in
-[the verification record](features.md#verification).
-
 ## Next
 
 1. **Windows and Linux visual pass.** Run on both, capture screenshots, fix
