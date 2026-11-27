@@ -8006,6 +8006,16 @@ fn selected_tile_ring_is_not_clipped() {
     assert!(rings > 0, "the selection ring is painted");
 }
 
+/// Where the rail's first item starts: macOS keeps the header's height free
+/// for the window buttons (`ui::rail::show`).
+fn rail_top() -> f32 {
+    if cfg!(target_os = "macos") {
+        chaat::theme::HEADER_HEIGHT + 4.0
+    } else {
+        8.0
+    }
+}
+
 #[test]
 fn logo_and_tiles_switch_scope() {
     let mut h = Harness::new();
@@ -8018,7 +8028,10 @@ fn logo_and_tiles_switch_scope() {
     assert!(!h.app.unified);
     assert_eq!(h.app.active, 1);
     // The logo (first item of the rail) goes back to all accounts.
-    h.click(egui::pos2(chaat::theme::RAIL_WIDTH / 2.0, 30.0));
+    h.click(egui::pos2(
+        chaat::theme::RAIL_WIDTH / 2.0,
+        rail_top() + 22.0,
+    ));
     assert!(h.app.unified, "the logo shows all accounts");
     h.act(Action::ShowAccount(0));
     assert!(!h.app.unified);
@@ -8163,9 +8176,9 @@ fn unified_only_leaves_no_gap_under_the_logo() {
             _ => None,
         })
         .expect("rail separator");
-    // Logo: 8 px top padding + 44 px tile, then one 12 px item gap.
+    // Logo: the rail's top padding + 44 px tile, then one 12 px item gap.
     assert!(
-        separator < 8.0 + 44.0 + 12.0 + 8.0,
+        separator < rail_top() + 44.0 + 12.0 + 8.0,
         "separator at {separator}"
     );
 }
